@@ -80,7 +80,8 @@ class GeneticEvolver:
         cls,
         competitors: List[BaseCompetitor],
         rankings: List[CompetitorStats],
-        preserve_portfolio: bool = True
+        preserve_portfolio: bool = True,
+        save_history: bool = True
     ) -> List[str]:
         """
         Evolves the competitor pool in-place for the next generation based on Arena rankings.
@@ -187,11 +188,13 @@ class GeneticEvolver:
                 "new_genome": {k: str(v) if isinstance(v, Decimal) else v for k, v in asdict(new_g).items()}
             })
 
-        cls._save_evolution_history(next_gen, evolution_records)
+        if save_history:
+            cls.save_history(next_gen, evolution_records)
+        cls._last_records = (next_gen, evolution_records)
         return logs
 
-    @staticmethod
-    def _save_evolution_history(generation: int, records: List[Dict[str, Any]]) -> None:
+    @classmethod
+    def save_history(cls, generation: int, records: List[Dict[str, Any]]) -> None:
         mem_dir = os.environ.get("ARENA_MEMORY_DIR", "memory")
         os.makedirs(mem_dir, exist_ok=True)
         hist_path = os.path.join(mem_dir, "arena_history.json")
@@ -210,6 +213,10 @@ class GeneticEvolver:
         })
         if len(history) > 500:
             history = history[-500:]
-        with open(hist_path, "w", encoding="utf-8") as f:
+        tmp_path = hist_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, hist_path)
+
+    _save_evolution_history = save_history
 

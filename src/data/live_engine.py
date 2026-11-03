@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Dict, List, Any, Optional
+import logging
 import math
 import threading
 import time
@@ -11,7 +12,6 @@ from src.arena.broker_sim import BrokerSim
 from src.arena.order import OrderTicket, OrderSide, OrderType, ExecutionReason, FillEvent
 from src.arena.leaderboard import Leaderboard
 from src.arena.evolution import GeneticEvolver
-from src.ai.omniroute_client import OmniRouteGateway
 from src.competitors.aggressive import AggressiveCompetitor
 from src.competitors.conservative import ConservativeCompetitor
 from src.competitors.atr_dynamic import ATRDynamicCompetitor
@@ -20,6 +20,8 @@ from src.competitors.orb import ORBCompetitor
 from src.competitors.vwap import VWAPPullbackCompetitor
 from src.data.eth_feed import ETHFeed
 from src.data.timemachine import MonteCarloOddsEvaluator
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,6 +35,7 @@ class LiveQuote:
     change_24h_pct: Decimal
     source: str
     timestamp: float
+    is_offline: bool = False
 
 
 class LiveArenaEngine:
@@ -41,14 +44,13 @@ class LiveArenaEngine:
     - Streams real-time live spot quotes from Coinbase / Binance / Kraken public REST APIs every 1.5s.
     - Bootstraps with the most recent 60 minutes of 1-minute live ETH/USD bars so indicators and
       active strategy positions are immediately hot on startup.
-    - Operates 4 distinct real-time strategies (Aggressive Breakout, Conservative Scalper,
-      ATR Volatility Adaptive, Trailing Profit Ratchet) simultaneously on every live tick.
+    - Operates 6 distinct real-time strategies simultaneously on every live tick.
     """
     def __init__(self, initial_cash: Decimal = Decimal("500000.00"), symbol: str = "ETH/USD"):
         self.symbol = symbol
         self.initial_cash = initial_cash
         self.lock = threading.RLock()
-        self.omniroute = OmniRouteGateway()
+        self.market_online: bool = False
         self.running = False
         self.paused = False
         self.interval_sec: float = 1.5
@@ -76,14 +78,6 @@ class LiveArenaEngine:
         self.eth_price_series: List[float] = []
         self.ema_fast_series: List[float] = []
         self.ema_slow_series: List[float] = []
-        self.equity_series: Dict[str, List[float]] = {
-            "comp_agg": [],
-            "comp_cons": [],
-            "comp_atr": [],
-            "comp_trail": [],
-            "comp_orb": [],
-            "comp_vwap": [],
-        }
         self.live_logs: List[Dict[str, str]] = []
         self.latest_quote: Optional[LiveQuote] = None
         self.tick_count: int = 0
@@ -98,9 +92,6 @@ class LiveArenaEngine:
         # 1-minute OHLC candles (bootstrap bars + live ticks aggregated) for charting & live RSI/ATR
         self.candles: List[Dict[str, float]] = []
         self.max_candles: int = 200
-        # Equity curve keeps ~1 hour of live ticks (one full generation) with epoch timestamps
-        self.equity_ts: List[float] = []
-        self.max_equity_pts: int = 3000
         self.live_start_ts: Optional[float] = None
 
         # Style-B automatic hourly evolution
@@ -205,10 +196,11 @@ class LiveArenaEngine:
                     volume_24h=Decimal(str(b["volume"])).quantize(Decimal("0.01")),
                     change_24h_pct=Decimal(str(b["priceChangePercent"])).quantize(Decimal("0.01")),
                     source="Binance Live",
-                    timestamp=time.time()
+                    timestamp=time.time(),
+                    is_offline=False
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Binance quote feed unavailable: %s", e)
 
         # 2. Kraken Live Ticker Fallback
         try:
@@ -230,10 +222,11 @@ class LiveArenaEngine:
                         volume_24h=Decimal(str(k["v"][1])).quantize(Decimal("0.01")),
                         change_24h_pct=chg,
                         source="Kraken Live",
-                        timestamp=time.time()
+                        timestamp=time.time(),
+                        is_offline=False
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Kraken quote feed unavailable: %s", e)
 
         # 3. Coinbase Exchange Live Ticker Fallback
         try:
@@ -264,13 +257,14 @@ class LiveArenaEngine:
                     volume_24h=vol,
                     change_24h_pct=chg_pct,
                     source="Coinbase Live",
-                    timestamp=time.time()
+                    timestamp=time.time(),
+                    is_offline=False
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Coinbase quote feed unavailable: %s", e)
 
         # 4. In-Memory Resilient Cache Fallback (survives transient network disconnects)
-        if self.latest_quote is not None:
+        if self.latest_quote is not None and not self.latest_quote.is_offline and self.latest_quote.price > Decimal("0.00"):
             return LiveQuote(
                 price=self.latest_quote.price,
                 bid=self.latest_quote.bid,
@@ -280,20 +274,22 @@ class LiveArenaEngine:
                 volume_24h=self.latest_quote.volume_24h,
                 change_24h_pct=self.latest_quote.change_24h_pct,
                 source=f"{self.latest_quote.source} (Cache)",
-                timestamp=time.time()
+                timestamp=time.time(),
+                is_offline=False
             )
 
-        # 5. Cold-boot default baseline if completely offline on first start
+        # 5. Cold-boot default baseline if completely offline on first start: marked offline to safely block mock fills
         return LiveQuote(
-            price=Decimal("2250.00"),
-            bid=Decimal("2249.80"),
-            ask=Decimal("2250.20"),
-            high_24h=Decimal("2280.00"),
-            low_24h=Decimal("2220.00"),
-            volume_24h=Decimal("125000.00"),
+            price=Decimal("0.00"),
+            bid=Decimal("0.00"),
+            ask=Decimal("0.00"),
+            high_24h=Decimal("0.00"),
+            low_24h=Decimal("0.00"),
+            volume_24h=Decimal("0.00"),
             change_24h_pct=Decimal("0.00"),
-            source="Offline Default",
-            timestamp=time.time()
+            source="Market Offline (No Feed)",
+            timestamp=time.time(),
+            is_offline=True
         )
 
     def bootstrap_intraday_session(self) -> None:
@@ -304,7 +300,8 @@ class LiveArenaEngine:
         try:
             bars = ETHFeed.fetch_historical_bars(ticker="ETH-USD", period="1d", interval="1m")
             recent_bars = bars[-120:] if len(bars) > 120 else bars
-        except Exception:
+        except Exception as e:
+            logger.debug("Intraday bars fetch failed: %s", e)
             recent_bars = []
 
         with self.lock:
@@ -792,15 +789,6 @@ class LiveArenaEngine:
             self.ema_fast_series = self.ema_fast_series[-max_pts:]
             self.ema_slow_series = self.ema_slow_series[-max_pts:]
 
-        # Equity curve: longer window so a whole generation (1 hour) stays visible
-        self.equity_ts.append(float(ts))
-        for c in self.competitors:
-            self.equity_series[c.portfolio_id].append(float(c.portfolio.total_equity))
-        if len(self.equity_ts) > self.max_equity_pts:
-            self.equity_ts = self.equity_ts[-self.max_equity_pts:]
-            for pid in self.equity_series:
-                self.equity_series[pid] = self.equity_series[pid][-self.max_equity_pts:]
-
     def start_live_loop(self, interval_sec: float = 1.5) -> None:
         if self.running:
             return
@@ -831,8 +819,17 @@ class LiveArenaEngine:
                 continue
             try:
                 quote = self.fetch_realtime_eth_quote()
+                if quote.is_offline or quote.price <= Decimal("0.00"):
+                    with self.lock:
+                        self.market_online = False
+                        self.latest_quote = quote
+                    self.log_event("FEED_OFFLINE", "Market feed offline. Trading and simulated fills suspended.", "loss")
+                    time.sleep(self.interval_sec)
+                    continue
+
                 with self.lock:
-                    prev_p = self.latest_quote.price if self.latest_quote else quote.price
+                    self.market_online = True
+                    prev_p = self.latest_quote.price if (self.latest_quote and not self.latest_quote.is_offline and self.latest_quote.price > Decimal("0")) else quote.price
                     self.latest_quote = quote
                     self.tick_count += 1
 
@@ -909,6 +906,7 @@ class LiveArenaEngine:
             return self.auto_evolve_interval_sec
 
     def evolve_now(self, trigger: str = "manual") -> List[str]:
+        records_to_save = None
         with self.lock:
             self._harvest_fills()
             rankings = Leaderboard.get_rankings(self.broker.portfolios)
@@ -918,7 +916,8 @@ class LiveArenaEngine:
             rebuilt = [short.get(r.portfolio_id, r.portfolio_id) for r in rankings[2:]]
             leader_roi = float(rankings[0].roi_pct) if rankings else 0.0
 
-            logs = GeneticEvolver.evolve_generation(self.competitors, rankings, preserve_portfolio=True)
+            logs = GeneticEvolver.evolve_generation(self.competitors, rankings, preserve_portfolio=True, save_history=False)
+            records_to_save = GeneticEvolver._last_records
             # Update broker position caps with evolved genomes while preserving open positions & active brackets
             for c in self.competitors:
                 self.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
@@ -953,24 +952,19 @@ class LiveArenaEngine:
                     "status": f"Gen #{prev_gen} Champion (Win Rate {float(top.win_rate_pct):.0f}%)",
                 }
                 self.log_event("TV_AUTOPILOT", f"TradingView Auto-Pilot: Locked previous hour champion '{self.tv_champion['name']}'", "info")
-
-            # OmniRoute Intelligent Strategic Post-Mortem Synthesis
-            try:
-                omni_report = self.omniroute.synthesize_post_mortem(
-                    rankings=rankings,
-                    generation=prev_gen,
-                    bar_count=len(self.candles),
-                    tier="fast"
-                )
-                if omni_report:
-                    first_line = omni_report.splitlines()[0]
-                    self.log_event("OMNIROUTE", f"{first_line}", "info")
-            except Exception:
-                pass
+                self.log_event("STRATEGY_SYNTHESIS", f"Generation #{new_gen} online. Champion: {top.name} (ROI {float(top.roi_pct):+.2f}%, Sharpe {top.sharpe_ratio:+.2f})", "info")
 
             for line in logs:
                 self.log_event("EVOLVE", line, "evolve")
-            return logs
+
+        # Save history outside self.lock to prevent UI jitter
+        if records_to_save and records_to_save[0] and records_to_save[1]:
+            try:
+                GeneticEvolver.save_history(records_to_save[0], records_to_save[1])
+            except Exception as e:
+                logger.warning("Failed to persist evolution history outside lock: %s", e)
+
+        return logs
 
     # High-contrast vibrant electric palette: vivid pop on ultra-deep dark #08090C
     STRATEGY_COLORS: Dict[str, str] = {
@@ -1102,16 +1096,14 @@ class LiveArenaEngine:
             })
 
         leader = strategies[0] if strategies else None
-        is_online = self.omniroute.metrics.gateway_online
-        omni_source = f"OmniRoute Gateway ({self.omniroute.fast_model})" if is_online else "Local Quant Engine (0 Token Offline)"
-        omni_meta = {
-            "source": omni_source,
-            "is_online": is_online,
-            "endpoint": self.omniroute.base_url,
-            "active_model": f"{self.omniroute.fast_model} (Tactical Reasoning)" if is_online else "Pure Offline Math Engine (No External API)",
-            "quota_pct": self.omniroute.metrics.quota_remaining_pct,
-            "tokens_used": self.omniroute.metrics.tokens_used,
-            "tokens_saved": self.omniroute.metrics.tokens_saved,
+        quant_meta = {
+            "source": "Local Pure-Math Quant Core",
+            "is_online": self.market_online,
+            "endpoint": "In-Memory Native Engine",
+            "active_model": "Genetic Evolution + Monte Carlo EV",
+            "quota_pct": 100.0,
+            "tokens_used": 0,
+            "tokens_saved": 0,
         }
         omni_summary = (
             f"Leader: {leader['name']} ROI {leader['roi_pct']:+.2f}% | "
@@ -1173,10 +1165,11 @@ class LiveArenaEngine:
                 "champion": active_tv_champ,
                 "next_rotation_sec": int(next_evolve_sec),
                 "payloads": tv_payloads[:6],
-                "webhook_endpoint": "http://localhost:20128/tradingview/webhook",
+                "webhook_endpoint": "Internal Signal Bus",
                 "is_connected": False,
             },
-            "omni_meta": omni_meta,
+            "quant_meta": quant_meta,
+            "omni_meta": quant_meta,
             "omni_summary": omni_summary,
             "strategies": strategies,
             "fills": fills_view,
@@ -1196,6 +1189,7 @@ class LiveArenaEngine:
                 "generation": gen,
                 "tick_count": self.tick_count,
                 "running": self.running,
+                "market_online": self.market_online,
                 "quote": {
                     "price": float(q.price) if q else 0.0,
                     "bid": float(q.bid) if q else 0.0,
@@ -1206,6 +1200,7 @@ class LiveArenaEngine:
                     "change_24h_pct": float(q.change_24h_pct) if q else 0.0,
                     "source": q.source if q else "Connecting...",
                     "timestamp": time.strftime("%H:%M:%S", time.localtime(q.timestamp)) if q else "",
+                    "is_offline": q.is_offline if q else True,
                 },
                 "indicators": {
                     "ema_fast": float(self.live_ema_fast),
@@ -1215,10 +1210,6 @@ class LiveArenaEngine:
                     "orb_low": float(self.live_orb_low),
                     "rsi": float(self.live_rsi),
                     "atr": float(self.live_atr),
-                },
-                "quota": {
-                    "remaining_pct": self.omniroute.metrics.quota_remaining_pct,
-                    "saved_tokens": self.omniroute.metrics.tokens_saved,
                 },
             }
             state.update(self._build_view_model(rankings, gen))

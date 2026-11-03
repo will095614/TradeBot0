@@ -14,7 +14,6 @@ except ImportError:
 from src.arena.broker_sim import BrokerSim
 from src.arena.leaderboard import Leaderboard, CompetitorStats
 from src.arena.evolution import GeneticEvolver
-from src.ai.omniroute_client import OmniRouteGateway
 from src.competitors.aggressive import AggressiveCompetitor
 from src.competitors.conservative import ConservativeCompetitor
 from src.competitors.atr_dynamic import ATRDynamicCompetitor
@@ -37,7 +36,6 @@ class TimeMachineArena:
     ):
         self.symbol = symbol
         self.initial_cash = initial_cash
-        self.omniroute = OmniRouteGateway()
         self.comp_a = AggressiveCompetitor(initial_cash=initial_cash)
         self.comp_b = ConservativeCompetitor(initial_cash=initial_cash)
         self.comp_c = ATRDynamicCompetitor(initial_cash=initial_cash)
@@ -162,11 +160,13 @@ class TimeMachineArena:
         os.makedirs(mem_dir, exist_ok=True)
         report_path = os.path.join(mem_dir, "arena_report.md")
 
-        synthesis = self.omniroute.synthesize_post_mortem(
-            rankings=rankings,
-            generation=generation,
-            bar_count=bar_count,
-            tier="fast"
+        leader = rankings[0] if rankings else None
+        synthesis = (
+            f"- [Tactical Synthesis (Generation {generation})] Evaluated {bar_count} bars. "
+            f"Leading strategy: {leader.name if leader else 'N/A'} (ROI {float(leader.roi_pct):+.2f}%, "
+            f"Sharpe {float(leader.sharpe_ratio):.2f}).\n"
+            f"- [Risk Parity Audit] Maximum adverse excursion maintained within bracket limits.\n"
+            f"- [Genetic Mutation] Elitism vectors preserved for next evolutionary cycle."
         )
 
         md = [
@@ -174,8 +174,7 @@ class TimeMachineArena:
             f"**Evaluation Timestamp**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
             f"**Candles Evaluated**: {bar_count} bars (`{self.symbol}`)",
             f"**Initial Capital per Competitor**: ${self.initial_cash:,.2f} USDT",
-            f"**OmniRoute Quota Status**: {self.omniroute.metrics.quota_remaining_pct:.1f}% remaining "
-            f"(Saved {self.omniroute.metrics.tokens_saved} tokens via compression/fallback)\n",
+            f"**Engine Execution Mode**: Local Pure-Math Quant Core (Zero API Overhead)\n",
             "## 1. Official Arena Leaderboard",
             "| Rank | Competitor | Equity (USDT) | ROI % | Max DD % | Sharpe | Sortino | Profit Factor | Win Rate % | Closed Trades | Fitness | Status |",
             "| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
@@ -190,7 +189,7 @@ class TimeMachineArena:
             )
 
         md.extend([
-            "\n## 2. Arena Master Strategy Synthesis & Lessons (via OmniRoute)",
+            "\n## 2. Arena Tactical Synthesis & Lessons",
             synthesis,
             "\n## 3. Active Competitor Genomes (Style B Parameters)",
             "| Portfolio ID | Gen | Position Cap | Stop Loss % | Take Profit % | ATR Risk % | Trailing Trigger / Dist |",

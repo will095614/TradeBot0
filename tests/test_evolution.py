@@ -6,7 +6,6 @@ from src.arena.order import OrderTicket, OrderSide, OrderType, ExecutionReason
 from src.arena.portfolio import Portfolio
 from src.arena.leaderboard import Leaderboard
 from src.arena.evolution import GeneticEvolver
-from src.ai.omniroute_client import OmniRouteGateway
 from src.competitors.aggressive import AggressiveCompetitor
 from src.competitors.conservative import ConservativeCompetitor
 from src.competitors.atr_dynamic import ATRDynamicCompetitor
@@ -94,17 +93,27 @@ def test_style_b_genetic_evolution_elitism_and_mutation():
     assert os.path.exists(os.path.join("memory", "arena_history.json"))
 
 
-def test_omniroute_token_compression_and_quota_fallback():
-    gw = OmniRouteGateway(base_url="http://127.0.0.1:59999/v1", daily_token_limit=10000)
-    raw = "Please kindly analyze   in order to   essentially evaluate the ETH/USD arena results.\n\n\nThank you."
-    compressed, saved = gw.compress_prompt(raw)
-    assert len(compressed) < len(raw)
-    assert saved > 0
+def test_evolution_save_history_decoupled_from_lock():
+    comp_a = AggressiveCompetitor()
+    comp_b = ConservativeCompetitor()
+    comp_c = ATRDynamicCompetitor()
+    comp_d = TrailingGuardCompetitor()
+    competitors = [comp_a, comp_b, comp_c, comp_d]
 
-    p = Portfolio("comp_cons", "Conservative", initial_cash=Decimal("3000.00"))
-    rankings = Leaderboard.get_rankings({"comp_cons": p})
-    report = gw.synthesize_post_mortem(rankings, generation=1, bar_count=100)
-    assert "Quant Synthesis" in report
-    assert gw.metrics.fallback_count == 1
-    assert gw.metrics.quota_remaining_pct == 100.0
+    broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
+    for c in competitors:
+        broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
+    rankings = Leaderboard.get_rankings(broker.portfolios)
+
+    # Calling with save_history=False produces records without disk I/O
+    logs = GeneticEvolver.evolve_generation(competitors, rankings, preserve_portfolio=True, save_history=False)
+    assert len(logs) == 4
+    last_records = GeneticEvolver._last_records
+    assert last_records is not None
+    assert last_records[0] == 2  # next generation
+    assert len(last_records[1]) == 4
+
+    # Explicit save_history call outside locks succeeds
+    GeneticEvolver.save_history(last_records[0], last_records[1])
+    assert os.path.exists(os.path.join("memory", "arena_history.json"))
 

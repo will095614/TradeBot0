@@ -19,8 +19,9 @@ Industrial-grade quantitative multi-strategy paper trading and genetic evolution
    - Primary real-time stream from Coinbase Exchange API with automatic sub-second failover to Binance 24hr ticker and Kraken public market data.
    - Memory-cached fallback ensures seamless zero-interruption execution even during transient network disconnects.
 
-4. **OmniRoute Microservice & Keyless Diagnostics**:
-   - Automated local background microservice with RTK/Caveman prompt compression, providing live narrative tactical assessments without external credential dependencies.
+4. **Deterministic Pure-Math Quant Core & Monte Carlo EV Gating**:
+   - Zero external AI socket or token quota dependencies; 100% offline-capable mathematical core.
+   - Evaluates each bracket setup across 10,000 synthetic paths before placing orders, strictly blocking negative expectation entries.
 
 5. **Obsidian High-Contrast Quant Terminal (`Edge WebView2 DirectX 11`)**:
    - Native GPU-accelerated desktop workstation adhering to professional dark quant terminal aesthetics (`#08090C` background, high-contrast palette).
@@ -33,7 +34,7 @@ Industrial-grade quantitative multi-strategy paper trading and genetic evolution
 ### 1. Launch Packaged Desktop Executable (`.exe`)
 Run the standalone pre-packaged Windows binary directly:
 ```powershell
-dist\TradeBot0_Arena\TradeBot0_Arena.exe
+dist\TradeBot0_Arena.exe
 ```
 
 Or run via the Python virtual environment:

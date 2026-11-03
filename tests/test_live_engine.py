@@ -54,8 +54,9 @@ def test_live_engine_ui_state_is_json_safe_and_complete():
     assert "tv_hub" in state
     assert "champion" in state["tv_hub"]
     assert "payloads" in state["tv_hub"]
-    assert "omni_meta" in state
-    assert state["omni_meta"]["quota_pct"] == 100.0
+    assert "market_online" in state
+    assert "quant_meta" in state
+    assert state["quant_meta"]["active_model"] == "Genetic Evolution + Monte Carlo EV"
 
 
 def test_live_engine_evolve_preserves_fill_tape_and_portfolio_positions():
@@ -237,7 +238,22 @@ def test_startup_ev_gate_enforcement():
         assert "EV Gate Blocked" in engine.strategy_telemetry[c.portfolio_id]["intent"]
 
 
+def test_offline_feed_safety_blocks_mock_fills():
+    import unittest.mock as mock
 
+    engine = LiveArenaEngine(initial_cash=Decimal("500000.00"), symbol="ETH/USD")
+    engine.latest_quote = None  # No cache
 
+    with mock.patch.object(engine.session, "get", side_effect=Exception("Total network disconnect")):
+        q = engine.fetch_realtime_eth_quote()
+        assert q.is_offline is True
+        assert q.price == Decimal("0.00")
+        assert "Offline" in q.source
+
+    # Ensure state exposes market_online=False and no simulated orders are filled
+    state = engine.get_ui_state()
+    assert state["market_online"] is False
+    assert state["quote"]["price"] == 0.0
+    assert state["quote"]["is_offline"] is True
 
 
