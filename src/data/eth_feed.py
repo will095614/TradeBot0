@@ -71,7 +71,7 @@ class ETHFeed:
     @classmethod
     def fetch_historical_bars(
         cls,
-        ticker: str = "ETH-USD",
+        ticker: str = "BTC-USD",
         period: str = "1mo",
         interval: str = "15m"
     ) -> List[CandleBar]:
@@ -181,7 +181,7 @@ class ETHFeed:
             exchange = ccxt.kraken({"enableRateLimit": True})
             tf_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "1d": "1d"}
             ccxt_tf = tf_map.get(interval, "15m")
-            ohlcv = exchange.fetch_ohlcv("ETH/USD", timeframe=ccxt_tf, limit=720)
+            ohlcv = exchange.fetch_ohlcv("BTC/USD", timeframe=ccxt_tf, limit=720)
             if ohlcv:
                 df = pd.DataFrame(
                     ohlcv, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"]
@@ -284,3 +284,8 @@ class ETHFeed:
             return "SELL"
 
         return "HOLD"
+
+
+# Backward-compatible and semantic aliases
+BTCFeed = ETHFeed
+CryptoFeed = ETHFeed

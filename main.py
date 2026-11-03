@@ -16,7 +16,7 @@ def main() -> None:
         import webview
         import json
         from src.data.live_engine import LiveArenaEngine
-        app = ArenaDashboard(initial_cash=Decimal("500000.00"))
+        app = ArenaDashboard(initial_cash=Decimal("100000.00"))
         json.dumps(app.engine.get_ui_state(), allow_nan=False)
         print("SELF_TEST_OK")
         return
@@ -31,8 +31,8 @@ def main() -> None:
                 generations = 3
 
         print(f"=== TradeBot0 CLI Time Machine & Style-B Evolution Arena (Generations: {generations}) ===")
-        bars = ETHFeed.fetch_historical_bars(ticker="ETH-USD", period="1mo", interval="15m")
-        arena = TimeMachineArena(symbol="ETH/USD", initial_cash=Decimal("500000.00"))
+        bars = ETHFeed.fetch_historical_bars(ticker="BTC-USD", period="1mo", interval="15m")
+        arena = TimeMachineArena(symbol="BTC/USD", initial_cash=Decimal("100000.00"))
 
         if generations > 1:
             rankings = arena.run_evolution_tournament(bars, generations=generations)
@@ -47,7 +47,7 @@ def main() -> None:
                 f"Sharpe={r.sharpe_ratio:.2f} | Sortino={r.sortino_ratio:.2f} | Fitness={r.fitness_score:+.2f}"
             )
     else:
-        app = ArenaDashboard(initial_cash=Decimal("500000.00"))
+        app = ArenaDashboard(initial_cash=Decimal("100000.00"))
         app.run()
 
 

@@ -61,6 +61,16 @@ class GeneticEvolver:
             blend(parent1.risk_per_trade_pct, parent2.risk_per_trade_pct, 0.12), "0.008", "0.030", "0.001"
         )
 
+        # Strategy-Specific Leverage Evolution
+        if parent1.leverage_enabled or parent2.leverage_enabled:
+            new_lev_enabled = rng.random() > 0.15
+            lev1 = parent1.leverage if parent1.leverage_enabled else Decimal("1.5")
+            lev2 = parent2.leverage if parent2.leverage_enabled else Decimal("1.5")
+            new_lev = cls._clamp_decimal(blend(lev1, lev2, 0.15), "1.0", "5.0", "0.1")
+        else:
+            new_lev_enabled = rng.random() < 0.15
+            new_lev = cls._clamp_decimal(blend(parent1.leverage, parent2.leverage, 0.10), "1.0", "3.0", "0.1")
+
         return CompetitorGenome(
             position_ratio=new_pos,
             risk_per_trade_pct=new_risk_pct,
@@ -72,7 +82,9 @@ class GeneticEvolver:
             trailing_trigger_pct=new_trail_trig,
             trailing_distance_pct=new_trail_dist,
             cooldown_bars=max(parent1.cooldown_bars, parent2.cooldown_bars),
-            generation=next_gen
+            generation=next_gen,
+            leverage_enabled=new_lev_enabled,
+            leverage=new_lev
         )
 
     @classmethod

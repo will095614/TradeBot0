@@ -31,8 +31,8 @@ class TimeMachineArena:
     """
     def __init__(
         self,
-        symbol: str = "ETH/USD",
-        initial_cash: Decimal = Decimal("500000.00")
+        symbol: str = "BTC/USD",
+        initial_cash: Decimal = Decimal("100000.00")
     ):
         self.symbol = symbol
         self.initial_cash = initial_cash
@@ -55,7 +55,7 @@ class TimeMachineArena:
 
     def run_simulation(self, bars: List[CandleBar]) -> List[CompetitorStats]:
         gen = max(c.genome.generation for c in self.competitors)
-        print(f"[*] Starting Time Machine Arena [Generation {gen}] on {len(bars)} ETH/USD candle bars...")
+        print(f"[*] Starting Time Machine Arena [Generation {gen}] on {len(bars)} {self.symbol} candle bars...")
         prev_bar: Optional[CandleBar] = None
         cum_vol = Decimal("0")
         cum_pv = Decimal("0")

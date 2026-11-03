@@ -86,9 +86,9 @@ class ArenaDashboard:
     Powered by Edge WebView2 DirectX 11 Compositor + LiveArenaEngine.
     """
 
-    def __init__(self, initial_cash: Decimal = Decimal("500000.00")) -> None:
+    def __init__(self, initial_cash: Decimal = Decimal("100000.00")) -> None:
         self.initial_cash = initial_cash
-        self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=initial_cash)
+        self.engine = LiveArenaEngine(symbol="BTC/USD", initial_cash=initial_cash)
         self.window = None
         self._bridge = _ArenaBridgeApi(self)
 
@@ -96,7 +96,7 @@ class ArenaDashboard:
         old_interval = self.engine.auto_evolve_interval_sec
         old_enabled = self.engine.auto_evolve_enabled
         self.engine.stop()
-        self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=self.initial_cash)
+        self.engine = LiveArenaEngine(symbol="BTC/USD", initial_cash=self.initial_cash)
         self.engine.auto_evolve_interval_sec = old_interval
         self.engine.auto_evolve_enabled = old_enabled
         self.engine.start_live_loop(interval_sec=1.5)
@@ -104,11 +104,11 @@ class ArenaDashboard:
     def run(self) -> None:
         import webview
 
-        # Start real-time live ETH/USD streaming & multi-strategy execution immediately
+        # Start real-time live BTC/USD streaming & multi-strategy execution immediately
         self.engine.start_live_loop(interval_sec=1.5)
 
         window = webview.create_window(
-            title="TradeBot0 — ETH/USD Multi-Strategy Quant Arena (Obsidian High-Contrast · Style B Evolution)",
+            title="TradeBot0 — BTC/USD Multi-Strategy Quant Arena (Obsidian High-Contrast · Style B Evolution)",
             html=HTML_TEMPLATE,
             js_api=self._bridge,
             width=1540,

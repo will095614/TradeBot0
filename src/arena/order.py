@@ -27,6 +27,8 @@ class OrderStatus(str, Enum):
 
 class ExecutionReason(str, Enum):
     SIGNAL = "SIGNAL"
+    SIGNAL_ENTRY = "SIGNAL_ENTRY"
+    SIGNAL_EXIT = "SIGNAL_EXIT"
     STOP_LOSS = "STOP_LOSS"
     TAKE_PROFIT = "TAKE_PROFIT"
     TRAILING_STOP = "TRAILING_STOP"

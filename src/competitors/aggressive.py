@@ -9,20 +9,22 @@ from src.competitors.base import BaseCompetitor, CompetitorGenome
 class AggressiveCompetitor(BaseCompetitor):
     """
     Profile A: Aggressive Momentum Breakout
-    - Default Genome: 70% Position / 3.5% Wide Stop-Loss / Uncapped Run (Ride trends until reversal)
+    - Default Genome: 70% Position / 3.0x Leverage Active / 3.5% Wide Stop-Loss / Uncapped Run
     - Supports cross-generation genetic evolution via CompetitorGenome
     """
-    def __init__(self, portfolio_id: str = "comp_agg", initial_cash: Decimal = Decimal("500000.00")):
+    def __init__(self, portfolio_id: str = "comp_agg", initial_cash: Decimal = Decimal("100000.00")):
         default_genome = CompetitorGenome(
             position_ratio=Decimal("0.70"),
             risk_per_trade_pct=Decimal("0.025"),
             stop_loss_pct=Decimal("0.035"),
             take_profit_pct=None,
-            generation=1
+            generation=1,
+            leverage_enabled=True,
+            leverage=Decimal("3.0")
         )
         super().__init__(
             portfolio_id=portfolio_id,
-            name="Aggressive (70% Size / 3.5% SL)",
+            name="Aggressive (3x Lev / 70% Size / 3.5% SL)",
             max_position_ratio=default_genome.position_ratio,
             initial_cash=initial_cash,
             genome=default_genome
@@ -49,6 +51,7 @@ class AggressiveCompetitor(BaseCompetitor):
             qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
             if qty <= Decimal("0"):
                 return None
+
             return OrderTicket(
                 portfolio_id=self.portfolio_id,
                 symbol=broker.symbol,
@@ -57,19 +60,18 @@ class AggressiveCompetitor(BaseCompetitor):
                 qty=qty,
                 stop_loss=stop_price,
                 take_profit=target_price,
-                reason=ExecutionReason.SIGNAL,
+                reason=ExecutionReason.SIGNAL_ENTRY,
                 timestamp=timestamp
             )
 
         elif signal == "SELL" and self.portfolio.position_qty > Decimal("0"):
-            self.last_exit_ts = timestamp
             return OrderTicket(
                 portfolio_id=self.portfolio_id,
                 symbol=broker.symbol,
                 side=OrderSide.SELL,
                 order_type=OrderType.MARKET,
                 qty=self.portfolio.position_qty,
-                reason=ExecutionReason.SIGNAL,
+                reason=ExecutionReason.SIGNAL_EXIT,
                 timestamp=timestamp
             )
 

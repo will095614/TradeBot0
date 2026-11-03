@@ -11,6 +11,7 @@ class RiskGuard:
     """
     ECC AgentShield & trader-risk Safety Guard for Arena Trading.
     Enforces risk invariants before simulated orders reach the matching engine.
+    Supports strategy-specific leverage caps and margin validation.
     Crucial rule from trader-risk: Closing/reducing an open position (SELL) is NEVER
     blocked by a circuit breaker or drawdown limit.
     """
@@ -51,18 +52,20 @@ class RiskGuard:
             effective_buy_price = base_price
 
         order_val = (ticket.qty * effective_buy_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        eff_lev = portfolio.leverage if portfolio.leverage_enabled and portfolio.leverage > Decimal("0") else Decimal("1.0")
 
-        # Check maximum single position cap relative to total equity (with 0.5% tolerance for rounding/slippage)
-        max_allowed_val = (portfolio.total_equity * max_position_ratio * Decimal("1.005")).quantize(
+        # Check maximum single position cap relative to total equity with leverage
+        max_allowed_val = (portfolio.total_equity * max_position_ratio * eff_lev * Decimal("1.005")).quantize(
             PRECISION_CASH, rounding=ROUND_HALF_UP
         )
         current_pos_val = (portfolio.position_qty * market_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         if (current_pos_val + order_val) > max_allowed_val:
-            return False, f"Order exceeds max position cap ({max_position_ratio * Decimal('100')}%)"
+            return False, f"Order exceeds max position cap ({max_position_ratio * eff_lev * Decimal('100')}%)"
 
-        # Check cash sufficiency including fee buffer
+        # Check cash margin sufficiency including fee buffer
+        required_margin = (order_val / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         estimated_fee = (order_val * portfolio.fee_rate).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-        if (order_val + estimated_fee) > portfolio.cash:
-            return False, f"Insufficient cash: requires {order_val + estimated_fee}, available {portfolio.cash}"
+        if (required_margin + estimated_fee) > portfolio.cash:
+            return False, f"Insufficient margin: requires {required_margin + estimated_fee}, available cash {portfolio.cash}"
 
         return True, "PASS"

@@ -13,7 +13,7 @@
   let hasFirstTableRendered = false;
 
   const splashSteps = [
-    { threshold: 15, text: "Initializing 6 Strategy Ledgers ($500,000 U x 6)..." },
+    { threshold: 15, text: "Initializing 6 Strategy Ledgers ($100,000 U x 6)..." },
     { threshold: 35, text: "Connecting to Real-Time Multi-Exchange Orderflow..." },
     { threshold: 55, text: "Replaying 120m Intraday Historical Simulation..." },
     { threshold: 75, text: "Computing Wilder RSI, ATR, VWAP & Strategy Rankings..." },
@@ -180,7 +180,7 @@ let latestState = null;
           <span class="toast-close" onclick="this.closest('.chart-toast').remove()" title="Close notification">×</span>
         </div>
         <div class="toast-main-row num">
-          <span class="toast-qty">BUY <strong>${qty.toFixed(4)}</strong> ETH</span>
+          <span class="toast-qty">BUY <strong>${qty.toFixed(4)}</strong> BTC</span>
           <span style="color:var(--text-muted);margin:0 2px;">|</span>
           <span class="toast-entry">Entry <strong>$${entryP.toFixed(2)}</strong></span>
         </div>
@@ -488,7 +488,7 @@ let latestState = null;
     }
 
     document.getElementById('sourceSubtitle').textContent =
-      `Feed: ${q.source || 'Live'} (${q.timestamp || ''}) | Baseline: $500,000.00 USDT / Strategy ($3,000,000 Total)`;
+      `Feed: ${q.source || 'Live'} (${q.timestamp || ''}) | Baseline: $100,000.00 USDT / Strategy ($600,000 Total)`;
 
     const badge = document.getElementById('liveBadge');
     const statusText = document.getElementById('liveStatusText');
@@ -607,8 +607,12 @@ let latestState = null;
         `;
       }
 
+      const levBadge = s.leverage_enabled
+        ? `<span class="lev-pill lev-active" title="Active Leverage">${s.leverage ? s.leverage.toFixed(1) : '2.0'}x Lev</span>`
+        : `<span class="lev-pill lev-spot" title="Spot Only">Spot 1x</span>`;
+
       const posPill = s.in_position
-        ? `<span class="pos-badge in-pos">Long ${s.qty.toFixed(4)} ETH</span>`
+        ? `<span class="pos-badge in-pos">Long ${s.qty.toFixed(4)} BTC</span>`
         : `<span class="pos-badge flat">Idle</span>`;
 
       const pnlLabel = s.in_position ? 'Unrealized PnL' : 'Cash Balance';
@@ -624,6 +628,7 @@ let latestState = null;
             <span class="strat-pill num">Gen #${s.generation} · ${s.genome}</span>
           </div>
           <div class="strat-right num">
+            ${levBadge}
             ${posPill}
           </div>
         </div>
@@ -758,7 +763,7 @@ let latestState = null;
     const cashPct = totCap > 0 ? ((totCash / totCap) * 100).toFixed(1) : '100.0';
 
     const expQtyEl = document.getElementById('hudExposureQty');
-    if (expQtyEl) expQtyEl.textContent = `${totQty.toFixed(4)} ETH`;
+    if (expQtyEl) expQtyEl.textContent = `${totQty.toFixed(4)} BTC`;
     const expValEl = document.getElementById('hudExposureVal');
     if (expValEl) expValEl.textContent = `${fmtUsd(expVal, 2)} · Cash ${cashPct}%`;
 

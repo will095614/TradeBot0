@@ -12,14 +12,16 @@ class Portfolio:
     """
     Precision Portfolio Ledger for Paper Trading Arena.
     Strictly uses Decimal arithmetic to eliminate IEEE 754 floating-point drift.
-    Tracks exact round-trip realized PnL, intra-bar peak-to-trough drawdown, and deduplicated equity curves.
+    Tracks exact round-trip realized PnL, intra-bar peak-to-trough drawdown, leverage margin, and deduplicated equity curves.
     """
     def __init__(
         self,
         portfolio_id: str,
         name: str,
-        initial_cash: Decimal = Decimal("3000.00"),
+        initial_cash: Decimal = Decimal("100000.00"),
         maker_taker_fee_rate: Decimal = Decimal("0.0005"),  # 0.05% standard fee
+        leverage: Decimal = Decimal("1.0"),
+        leverage_enabled: bool = False
     ):
         self.portfolio_id: str = portfolio_id
         self.name: str = name
@@ -28,6 +30,9 @@ class Portfolio:
         self.position_qty: Decimal = Decimal("0.0000")
         self.avg_entry_price: Decimal = Decimal("0.00")
         self.open_position_entry_fee: Decimal = Decimal("0.00")
+        self.leverage: Decimal = leverage
+        self.leverage_enabled: bool = leverage_enabled
+        self.margin_locked: Decimal = Decimal("0.00")
 
         self.realized_pnl: Decimal = Decimal("0.00")
         self.total_fees_paid: Decimal = Decimal("0.00")
@@ -55,7 +60,9 @@ class Portfolio:
 
     @property
     def total_equity(self) -> Decimal:
-        return (self.cash + (self.position_qty * self.current_market_price)).quantize(
+        if self.position_qty <= Decimal("0") or self.current_market_price <= Decimal("0"):
+            return self.cash
+        return (self.cash + self.margin_locked + self.unrealized_pnl).quantize(
             PRECISION_CASH, rounding=ROUND_HALF_UP
         )
 
@@ -89,11 +96,13 @@ class Portfolio:
         # Evaluate intra-bar peak & trough if holding a long position
         if self.position_qty > Decimal("0"):
             if high_price is not None:
-                high_eq = (self.cash + (self.position_qty * high_price)).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                high_upnl = ((high_price - self.avg_entry_price) * self.position_qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                high_eq = (self.cash + self.margin_locked + high_upnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 if high_eq > self.peak_equity:
                     self.peak_equity = high_eq
             if low_price is not None and self.peak_equity > Decimal("0"):
-                low_eq = (self.cash + (self.position_qty * low_price)).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                low_upnl = ((low_price - self.avg_entry_price) * self.position_qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                low_eq = (self.cash + self.margin_locked + low_upnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 intra_dd = ((self.peak_equity - low_eq) / self.peak_equity) * Decimal("100")
                 if intra_dd > self.max_drawdown_pct:
                     self.max_drawdown_pct = intra_dd.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -126,9 +135,11 @@ class Portfolio:
         enriched_fill = fill
 
         if fill.side == OrderSide.BUY:
-            total_cost = (trade_val + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-            if total_cost > self.cash:
-                raise ValueError(f"Insufficient cash in {self.portfolio_id}: need {total_cost}, have {self.cash}")
+            eff_lev = self.leverage if self.leverage_enabled and self.leverage > Decimal("0") else Decimal("1.0")
+            required_margin = (trade_val / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            total_initial_cost = (required_margin + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            if total_initial_cost > self.cash:
+                raise ValueError(f"Insufficient cash in {self.portfolio_id}: need {total_initial_cost}, have {self.cash}")
 
             new_qty = (self.position_qty + fill.qty).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
             if new_qty > Decimal("0"):
@@ -137,13 +148,13 @@ class Portfolio:
 
             self.position_qty = new_qty
             self.open_position_entry_fee = (self.open_position_entry_fee + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-            self.cash = (self.cash - total_cost).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            self.margin_locked = (self.margin_locked + required_margin).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            self.cash = (self.cash - total_initial_cost).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
 
         elif fill.side == OrderSide.SELL:
             if fill.qty > self.position_qty:
                 raise ValueError(f"Overselling in {self.portfolio_id}: selling {fill.qty}, hold {self.position_qty}")
 
-            # Proportion of entry fee attributable to this closing fill
             entry_fee_share = (
                 (self.open_position_entry_fee * (fill.qty / self.position_qty)).quantize(
                     PRECISION_CASH, rounding=ROUND_HALF_UP
@@ -154,7 +165,6 @@ class Portfolio:
 
             closing_entry_price = self.avg_entry_price
 
-            # Net realized PnL accounts for both entry and exit trading commissions
             pnl = (((fill.price - self.avg_entry_price) * fill.qty) - fee_q - entry_fee_share).quantize(
                 PRECISION_CASH, rounding=ROUND_HALF_UP
             )
@@ -168,8 +178,21 @@ class Portfolio:
                 self.loss_count += 1
                 self.gross_loss = (self.gross_loss + abs(pnl)).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
 
+            eff_lev = self.leverage if self.leverage_enabled and self.leverage > Decimal("0") else Decimal("1.0")
+            cost_basis = (fill.qty * self.avg_entry_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            margin_release = (cost_basis / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            if fill.qty >= self.position_qty:
+                margin_release = self.margin_locked
+                self.margin_locked = Decimal("0.00")
+            else:
+                self.margin_locked = max(Decimal("0.00"), (self.margin_locked - margin_release).quantize(PRECISION_CASH))
+
             self.position_qty = (self.position_qty - fill.qty).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
-            self.cash = (self.cash + trade_val - fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            # Cash settlement: restore released margin, add gross price change, subtract exit fee
+            # (Note: entry fee was already deducted from cash upon buy fill)
+            gross_gain = ((fill.price - closing_entry_price) * fill.qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            cash_settlement = (margin_release + gross_gain - fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            self.cash = (self.cash + cash_settlement).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
             self.open_position_entry_fee = max(
                 Decimal("0.00"),
                 (self.open_position_entry_fee - entry_fee_share).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
@@ -178,6 +201,7 @@ class Portfolio:
             if self.position_qty == Decimal("0"):
                 self.avg_entry_price = Decimal("0.00")
                 self.open_position_entry_fee = Decimal("0.00")
+                self.margin_locked = Decimal("0.00")
 
         self.trade_history.append(enriched_fill)
         self.update_market_price(fill.price, fill.timestamp)

@@ -89,7 +89,7 @@ def test_style_b_genetic_evolution_elitism_and_mutation():
     # Test clean reset mode when preserve_portfolio=False
     GeneticEvolver.evolve_generation(competitors, rankings, preserve_portfolio=False)
     for c in competitors:
-        assert c.portfolio.total_equity == Decimal("500000.00")
+        assert c.portfolio.total_equity == Decimal("100000.00")
     assert os.path.exists(os.path.join("memory", "arena_history.json"))
 
 

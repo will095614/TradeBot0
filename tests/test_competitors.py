@@ -23,8 +23,8 @@ def test_all_four_competitors_initialization_and_first_buy():
     competitors = [comp_a, comp_b, comp_c, comp_d, comp_e, comp_f]
     for c in competitors:
         broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
-        assert c.portfolio.cash == Decimal("500000.00")
-        assert c.portfolio.total_equity == Decimal("500000.00")
+        assert c.portfolio.cash == Decimal("100000.00")
+        assert c.portfolio.total_equity == Decimal("100000.00")
         
     market_price = Decimal("2500.00")
     broker.on_tick(market_price, timestamp=100.0)
@@ -49,19 +49,19 @@ def test_all_four_competitors_initialization_and_first_buy():
         fill = broker.submit_order(ticket)
         assert fill is not None
         
-    # Check that positions reflect their specific risk budgets
-    # A (Aggressive ~70% of 500,000 = $350,000 / 2500 = 140 ETH)
-    assert comp_a.portfolio.position_qty == Decimal("140.0000")
-    # B (Conservative ~25% of 500,000 = $125,000 / 2500 = 50 ETH)
-    assert comp_b.portfolio.position_qty == Decimal("50.0000")
-    # C (ATR Dynamic)
+    # Check that positions reflect their specific risk budgets and leverage
+    # A (Aggressive 3x Lev ~70% of 100,000 * 3 = $210,000 / 2500 = 84 BTC)
+    assert comp_a.portfolio.position_qty == Decimal("84.0000")
+    # B (Conservative Spot 1x ~25% of 100,000 = $25,000 / 2500 = 10 BTC)
+    assert comp_b.portfolio.position_qty == Decimal("10.0000")
+    # C (ATR Dynamic 2x Lev)
     assert comp_c.portfolio.position_qty > Decimal("0")
-    # D (Trailing Guard ~40% of 500,000 = $200,000 / 2500 = 80 ETH)
-    assert comp_d.portfolio.position_qty == Decimal("80.0000")
-    # E (ORB Breakout ~45% of 500,000 = $225,000 / 2500 = 90 ETH)
-    assert comp_e.portfolio.position_qty == Decimal("90.0000")
-    # F (VWAP Pullback ~50% of 500,000 = $250,000 / 2500 = 100 ETH)
-    assert comp_f.portfolio.position_qty == Decimal("100.0000")
+    # D (Trailing Guard 2x Lev ~40% of 100,000 * 2 = $80,000 / 2500 = 32 BTC)
+    assert comp_d.portfolio.position_qty == Decimal("32.0000")
+    # E (ORB Breakout 2.5x Lev ~45% of 100,000 * 2.5 = $112,500 / 2500 = 45 BTC)
+    assert comp_e.portfolio.position_qty == Decimal("45.0000")
+    # F (VWAP Pullback Spot 1x ~50% of 100,000 = $50,000 / 2500 = 20 BTC)
+    assert comp_f.portfolio.position_qty == Decimal("20.0000")
     
     # Check Leaderboard generation
     rankings = Leaderboard.get_rankings(broker.portfolios)
@@ -75,7 +75,7 @@ def test_orb_competitor_box_breakout_and_r_multiple():
     broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
     comp = ORBCompetitor()
     broker.register_portfolio(comp.portfolio, max_position_ratio=comp.max_position_ratio)
-    assert comp.portfolio.cash == Decimal("500000.00")
+    assert comp.portfolio.cash == Decimal("100000.00")
 
     # 1. Price below ORB high: should NOT trigger breakout
     market_price = Decimal("2450.00")
@@ -112,7 +112,7 @@ def test_vwap_competitor_pullback_and_r_multiple():
     broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
     comp = VWAPPullbackCompetitor()
     broker.register_portfolio(comp.portfolio, max_position_ratio=comp.max_position_ratio)
-    assert comp.portfolio.cash == Decimal("500000.00")
+    assert comp.portfolio.cash == Decimal("100000.00")
 
     vwap = Decimal("2500.00")
     atr = Decimal("20.00")

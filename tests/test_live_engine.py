@@ -280,4 +280,48 @@ def test_lifecycle_sequence_warmup_before_live_orders():
     assert engine.get_ui_state()["live_orders_enabled"] is True
 
 
+def test_live_engine_btc_and_leverage_configuration():
+    engine = LiveArenaEngine()
+    assert engine.symbol == "BTC/USD"
+    assert engine.initial_cash == Decimal("100000.00")
+    for c in engine.competitors:
+        assert c.portfolio.cash == Decimal("100000.00")
+        assert c.portfolio.total_equity == Decimal("100000.00")
+
+    # Verify per-competitor leverage policies
+    assert engine.comp_a.genome.leverage_enabled is True
+    assert engine.comp_a.genome.leverage == Decimal("3.0")
+
+    assert engine.comp_b.genome.leverage_enabled is False
+    assert engine.comp_b.genome.leverage == Decimal("1.0")
+
+    assert engine.comp_c.genome.leverage_enabled is True
+    assert engine.comp_c.genome.leverage == Decimal("2.0")
+
+    assert engine.comp_d.genome.leverage_enabled is True
+    assert engine.comp_d.genome.leverage == Decimal("2.0")
+
+    assert engine.comp_e.genome.leverage_enabled is True
+    assert engine.comp_e.genome.leverage == Decimal("2.5")
+
+    assert engine.comp_f.genome.leverage_enabled is False
+    assert engine.comp_f.genome.leverage == Decimal("1.0")
+
+    # Verify view model exposes leverage attributes
+    state = engine.get_ui_state()
+    for strat in state["strategies"]:
+        assert "leverage" in strat
+        assert "leverage_enabled" in strat
+        assert "leverage_label" in strat
+        assert "margin_locked" in strat
+        if strat["id"] == "comp_agg":
+            assert strat["leverage_enabled"] is True
+            assert strat["leverage"] == 3.0
+            assert "3.0x Lev" in strat["leverage_label"]
+        elif strat["id"] == "comp_cons":
+            assert strat["leverage_enabled"] is False
+            assert "Spot 1x" in strat["leverage_label"]
+
+
+
 

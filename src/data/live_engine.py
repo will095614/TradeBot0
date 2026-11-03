@@ -40,13 +40,13 @@ class LiveQuote:
 
 class LiveArenaEngine:
     """
-    Real-Time Live Multi-Strategy Paper Trading Engine for ETH/USD.
+    Real-Time Live Multi-Strategy Paper Trading Engine for BTC/USD.
     - Streams real-time live spot quotes from Coinbase / Binance / Kraken public REST APIs every 1.5s.
-    - Bootstraps with the most recent 60 minutes of 1-minute live ETH/USD bars so indicators and
+    - Bootstraps with the most recent 120 minutes of 1-minute live BTC/USD bars so indicators and
       active strategy positions are immediately hot on startup.
     - Operates 6 distinct real-time strategies simultaneously on every live tick.
     """
-    def __init__(self, initial_cash: Decimal = Decimal("500000.00"), symbol: str = "ETH/USD"):
+    def __init__(self, initial_cash: Decimal = Decimal("100000.00"), symbol: str = "BTC/USD"):
         self.symbol = symbol
         self.initial_cash = initial_cash
         self.lock = threading.RLock()
@@ -84,7 +84,7 @@ class LiveArenaEngine:
         self.live_logs: List[Dict[str, str]] = []
         self.latest_quote: Optional[LiveQuote] = None
         self.tick_count: int = 0
-        self.live_atr: Decimal = Decimal("4.50")
+        self.live_atr: Decimal = Decimal("85.00")
         self.live_rsi: Decimal = Decimal("50.00")
         self.live_ema_fast: Decimal = Decimal("0.00")
         self.live_ema_slow: Decimal = Decimal("0.00")
@@ -136,7 +136,7 @@ class LiveArenaEngine:
                 self._audit_cursor = 0
 
     def _init_broker(self) -> None:
-        self.broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0001"))
+        self.broker = BrokerSim(symbol=self.symbol, slippage_pct=Decimal("0.0001"))
         self._audit_cursor = 0
         for c in self.competitors:
             self.broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
@@ -152,12 +152,12 @@ class LiveArenaEngine:
     @staticmethod
     def _get_strategy_label(pid: str) -> str:
         labels = {
-            "comp_agg": "Momentum Breakout (70% Cap)",
-            "comp_cons": "Mean-Reversion Scalper (25% Cap)",
-            "comp_atr": "ATR Volatility Adaptive (Dynamic)",
-            "comp_trail": "Trailing Ratchet Guard (40% Cap)",
-            "comp_orb": "Opening Range Breakout (45% Cap)",
-            "comp_vwap": "Institutional VWAP Pullback (50% Cap)",
+            "comp_agg": "Momentum Breakout (3x Lev / 70% Cap)",
+            "comp_cons": "Mean-Reversion Scalper (Spot 1x / 25% Cap)",
+            "comp_atr": "ATR Volatility Adaptive (2x Lev Dynamic)",
+            "comp_trail": "Trailing Ratchet Guard (2x Lev / 40% Cap)",
+            "comp_orb": "Opening Range Breakout (2.5x Lev / 45% Cap)",
+            "comp_vwap": "Institutional VWAP Pullback (Spot 1x / 50% Cap)",
         }
         return labels.get(pid, pid)
 
@@ -180,14 +180,14 @@ class LiveArenaEngine:
             if len(self.live_logs) > 120:
                 self.live_logs.pop()
 
-    def fetch_realtime_eth_quote(self) -> LiveQuote:
+    def fetch_realtime_crypto_quote(self) -> LiveQuote:
         """
-        Fetches real-time live ETH/USD spot quote with sub-second latency across
-        Coinbase Exchange -> Binance -> Kraken public endpoints.
+        Fetches real-time live BTC/USD spot quote with sub-second latency across
+        Binance -> Kraken -> Coinbase public REST endpoints.
         """
         # 1. Binance 24hr Live Ticker (Ultra-fast ~120ms sub-second latency)
         try:
-            r_bin = self.session.get("https://api.binance.com/api/v3/ticker/24hr?symbol=ETHUSDT", timeout=1.8)
+            r_bin = self.session.get("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", timeout=1.8)
             if r_bin.status_code == 200:
                 b = r_bin.json()
                 return LiveQuote(
@@ -207,7 +207,7 @@ class LiveArenaEngine:
 
         # 2. Kraken Live Ticker Fallback
         try:
-            r_krk = self.session.get("https://api.kraken.com/0/public/Ticker?pair=ETHUSD", timeout=2.0)
+            r_krk = self.session.get("https://api.kraken.com/0/public/Ticker?pair=XBTUSD", timeout=2.0)
             if r_krk.status_code == 200:
                 k_res = r_krk.json().get("result", {})
                 if k_res:
@@ -233,8 +233,8 @@ class LiveArenaEngine:
 
         # 3. Coinbase Exchange Live Ticker Fallback
         try:
-            r_tick = self.session.get("https://api.exchange.coinbase.com/products/ETH-USD/ticker", timeout=1.8)
-            r_stats = self.session.get("https://api.exchange.coinbase.com/products/ETH-USD/stats", timeout=1.8)
+            r_tick = self.session.get("https://api.exchange.coinbase.com/products/BTC-USD/ticker", timeout=1.8)
+            r_stats = self.session.get("https://api.exchange.coinbase.com/products/BTC-USD/stats", timeout=1.8)
             if r_tick.status_code == 200:
                 t_data = r_tick.json()
                 price = Decimal(str(t_data["price"])).quantize(Decimal("0.01"))
@@ -295,6 +295,8 @@ class LiveArenaEngine:
             is_offline=True
         )
 
+    fetch_realtime_eth_quote = fetch_realtime_crypto_quote
+
     @staticmethod
     def _generate_fallback_bars(anchor_price: Decimal, count: int = 120) -> List[CandleBar]:
         """
@@ -310,7 +312,7 @@ class LiveArenaEngine:
         for i in range(count):
             ts = start_ts + (i * 60)
             drift = (float(anchor_price) - curr) / max(1, count - i)
-            volatility = float(anchor_price) * 0.0008
+            volatility = float(anchor_price) * 0.0006
             change = drift + random.gauss(0, volatility)
             open_p = curr
             close_p = open_p + change
@@ -323,31 +325,31 @@ class LiveArenaEngine:
                 high=Decimal(f"{high_p:.2f}"),
                 low=Decimal(f"{low_p:.2f}"),
                 close=Decimal(f"{close_p:.2f}"),
-                volume=Decimal(f"{random.uniform(25.0, 110.0):.2f}"),
+                volume=Decimal(f"{random.uniform(2.5, 30.0):.2f}"),
                 ema_fast=Decimal(f"{close_p:.2f}"),
                 ema_slow=Decimal(f"{close_p:.2f}"),
                 rsi=Decimal("50.00"),
-                atr=Decimal("3.50")
+                atr=Decimal("80.00")
             ))
         return bars
 
     def bootstrap_intraday_session(self) -> None:
         """
-        Loads the last 120 minutes of real 1-minute ETH/USD candles to warm up live indicators
+        Loads the last 120 minutes of real 1-minute BTC/USD candles to warm up live indicators
         and immediately deploy the 6 strategies into the current live market session.
         If external feeds fail or timeout, safely falls back to synthetic realistic continuous bars
         anchored to spot price so the K-line arena is never empty.
         """
         recent_bars = []
         try:
-            bars = ETHFeed.fetch_historical_bars(ticker="ETH-USD", period="1d", interval="1m")
+            bars = ETHFeed.fetch_historical_bars(ticker="BTC-USD", period="1d", interval="1m")
             recent_bars = bars[-120:] if len(bars) > 120 else bars
         except Exception as e:
             logger.debug("Intraday bars fetch failed: %s", e)
 
         # Fallback guarantee: if external feed timed out or failed, generate realistic 120m bars
         if not recent_bars:
-            anchor = self.latest_quote.price if (self.latest_quote and self.latest_quote.price > Decimal("0")) else Decimal("2280.00")
+            anchor = self.latest_quote.price if (self.latest_quote and self.latest_quote.price > Decimal("0")) else Decimal("77500.00")
             recent_bars = self._generate_fallback_bars(anchor, count=120)
 
         with self.lock:
@@ -355,7 +357,7 @@ class LiveArenaEngine:
                 self.live_ema_fast = bar.ema_fast or bar.close
                 self.live_ema_slow = bar.ema_slow or bar.close
                 self.live_rsi = bar.rsi or Decimal("50.00")
-                self.live_atr = max(Decimal("1.50"), bar.atr or Decimal("3.50"))
+                self.live_atr = max(Decimal("30.00"), bar.atr or Decimal("85.00"))
 
                 fills = self.broker.on_tick(
                     price=bar.close,
@@ -371,7 +373,7 @@ class LiveArenaEngine:
                     pnl_str = f" | PnL: ${f.realized_pnl:+.2f}" if f.side == OrderSide.SELL else ""
                     self.log_event(
                         f.reason.value,
-                        f"{f.portfolio_id.upper()} {f.side.value} {f.qty} ETH @ ${f.price:,.2f}{pnl_str}",
+                        f"{f.portfolio_id.upper()} {f.side.value} {f.qty} BTC @ ${f.price:,.2f}{pnl_str}",
                         "profit" if f.realized_pnl >= Decimal("0") else "loss"
                     )
 
@@ -440,19 +442,19 @@ class LiveArenaEngine:
             return False
 
         fill = self.broker.submit_order(OrderTicket(
-            portfolio_id=pid, symbol="ETH/USD", side=OrderSide.BUY,
+            portfolio_id=pid, symbol=self.symbol, side=OrderSide.BUY,
             order_type=OrderType.MARKET, qty=qty, stop_loss=sl, take_profit=tp, timestamp=ts
         ))
         if fill:
             self.position_entry_ts[pid] = ts
             tp_str = f" | TP ${tp:,.2f}" if tp else ""
-            self.log_event(event_label, f"{competitor.base_name.split(' ')[0]} entered {fill.qty} ETH @ ${fill.price:,.2f} (SL ${sl:,.2f}{tp_str} | EV {mc_odds.expected_r:+.2f}R)", "buy")
+            self.log_event(event_label, f"{competitor.base_name.split(' ')[0]} entered {fill.qty} BTC @ ${fill.price:,.2f} (SL ${sl:,.2f}{tp_str} | EV {mc_odds.expected_r:+.2f}R)", "buy")
             return True
         return False
 
     def _evaluate_live_strategies(self, price: Decimal, prev_price: Decimal, ts: float) -> None:
         """
-        Executes differentiated real-time decision logic for each of the 4 strategies on every live tick/bar.
+        Executes differentiated real-time decision logic for each of the 6 strategies on every live tick/bar.
         Incorporates anti-churn cooldowns, channel stagnation exits, and dynamic volatility adaptation.
         """
         vel = price - prev_price
@@ -468,7 +470,7 @@ class LiveArenaEngine:
                 gain_pct = ((price - p.avg_entry_price) / p.avg_entry_price) * Decimal("100")
                 if hold_sec >= 2400.0 and abs(gain_pct) < Decimal("0.10"):
                     fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id=pid, symbol="ETH/USD", side=OrderSide.SELL,
+                        portfolio_id=pid, symbol=self.symbol, side=OrderSide.SELL,
                         order_type=OrderType.MARKET, qty=p.position_qty,
                         reason=ExecutionReason.SIGNAL, timestamp=ts
                     ))
@@ -494,25 +496,25 @@ class LiveArenaEngine:
                 gain_usd = price - entry_p
                 gain_pct = (gain_usd / entry_p) * Decimal("100")
                 # Momentum micro-take-profit or trend stall exit
-                if gain_pct >= Decimal("0.25") or (self.live_ema_fast < self.live_ema_slow and self.live_rsi < Decimal("48") and gain_usd >= Decimal("1.20")):
+                if gain_pct >= Decimal("0.25") or (self.live_ema_fast < self.live_ema_slow and self.live_rsi < Decimal("48") and gain_usd >= (self.live_atr * Decimal("0.5"))):
                     fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_agg", symbol="ETH/USD", side=OrderSide.SELL,
+                        portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.SELL,
                         order_type=OrderType.MARKET, qty=p_agg.position_qty,
                         reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
                     ))
                     if fill:
                         self.strategy_cooldown["comp_agg"] = ts + 60.0
                         self.position_entry_ts.pop("comp_agg", None)
-                        self.log_event("MOMENTUM_TP", f"Aggressive locked profit {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                        self.log_event("MOMENTUM_TP", f"Aggressive locked profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
                 elif self.live_rsi > Decimal("74") and vel < Decimal("0"):
                     fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_agg", symbol="ETH/USD", side=OrderSide.SELL,
+                        portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.SELL,
                         order_type=OrderType.MARKET, qty=p_agg.position_qty, timestamp=ts
                     ))
                     if fill:
                         self.strategy_cooldown["comp_agg"] = ts + 60.0
                         self.position_entry_ts.pop("comp_agg", None)
-                        self.log_event("MOMENTUM_EXIT", f"Aggressive closed {fill.qty} ETH @ ${fill.price:,.2f} (PnL ${fill.realized_pnl:+.2f})", "profit" if fill.realized_pnl >= 0 else "loss")
+                        self.log_event("MOMENTUM_EXIT", f"Aggressive closed {fill.qty} BTC @ ${fill.price:,.2f} (PnL ${fill.realized_pnl:+.2f})", "profit" if fill.realized_pnl >= 0 else "loss")
 
         # --- 2. Conservative Mean-Reversion Scalper (comp_cons) ---
         p_cons = self.comp_b.portfolio
@@ -530,16 +532,16 @@ class LiveArenaEngine:
             if entry_p > Decimal("0"):
                 gain_usd = price - entry_p
                 gain_pct = (gain_usd / entry_p) * Decimal("100")
-                if gain_pct >= Decimal("0.15") or (price >= self.live_ema_fast and gain_usd >= Decimal("1.50")):
+                if gain_pct >= Decimal("0.15") or (price >= self.live_ema_fast and gain_usd >= (self.live_atr * Decimal("0.5"))):
                     fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_cons", symbol="ETH/USD", side=OrderSide.SELL,
+                        portfolio_id="comp_cons", symbol=self.symbol, side=OrderSide.SELL,
                         order_type=OrderType.MARKET, qty=p_cons.position_qty,
                         reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
                     ))
                     if fill:
                         self.strategy_cooldown["comp_cons"] = ts + 60.0
                         self.position_entry_ts.pop("comp_cons", None)
-                        self.log_event("SCALP_TP", f"Conservative locked profit {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                        self.log_event("SCALP_TP", f"Conservative locked profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
         # --- 3. ATR Volatility Adaptive (comp_atr) ---
         p_atr = self.comp_c.portfolio
@@ -547,8 +549,8 @@ class LiveArenaEngine:
         if p_atr.position_qty == Decimal("0"):
             can_enter = ts >= self.strategy_cooldown.get("comp_atr", 0.0)
             if can_enter and ((price >= self.live_ema_fast and vel > Decimal("0")) or self.live_rsi < Decimal("42")):
-                stop_dist = max(Decimal("1.80"), (self.live_atr * g_atr.atr_stop_mult).quantize(Decimal("0.01")))
-                target_dist = max(Decimal("2.60"), (self.live_atr * g_atr.atr_target_mult).quantize(Decimal("0.01")))
+                stop_dist = max(Decimal("50.00"), (self.live_atr * g_atr.atr_stop_mult).quantize(Decimal("0.01")))
+                target_dist = max(Decimal("100.00"), (self.live_atr * g_atr.atr_target_mult).quantize(Decimal("0.01")))
                 sl = (price - stop_dist).quantize(Decimal("0.01"))
                 tp = (price + target_dist).quantize(Decimal("0.01"))
                 risk_budget = p_atr.total_equity * g_atr.atr_risk_pct
@@ -557,17 +559,17 @@ class LiveArenaEngine:
             entry_p = p_atr.avg_entry_price
             if entry_p > Decimal("0"):
                 gain_usd = price - entry_p
-                target_threshold = max(Decimal("2.20"), self.live_atr * Decimal("1.4"))
+                target_threshold = max(Decimal("80.00"), self.live_atr * Decimal("1.4"))
                 if gain_usd >= target_threshold:
                     fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_atr", symbol="ETH/USD", side=OrderSide.SELL,
+                        portfolio_id="comp_atr", symbol=self.symbol, side=OrderSide.SELL,
                         order_type=OrderType.MARKET, qty=p_atr.position_qty,
                         reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
                     ))
                     if fill:
                         self.strategy_cooldown["comp_atr"] = ts + 60.0
                         self.position_entry_ts.pop("comp_atr", None)
-                        self.log_event("ATR_TP", f"ATR Dynamic locked target {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                        self.log_event("ATR_TP", f"ATR Dynamic locked target {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
         # --- 4. Trailing Profit Ratchet Guard (comp_trail) ---
         p_trail = self.comp_d.portfolio
@@ -585,7 +587,7 @@ class LiveArenaEngine:
                     curr_stop = self.broker.active_stops.get("comp_trail")
                     if curr_stop and (curr_stop.price is None or new_sl > curr_stop.price):
                         self.broker.active_stops["comp_trail"] = OrderTicket(
-                            portfolio_id="comp_trail", symbol="ETH/USD", side=OrderSide.SELL,
+                            portfolio_id="comp_trail", symbol=self.symbol, side=OrderSide.SELL,
                             order_type=OrderType.STOP_MARKET, qty=p_trail.position_qty,
                             price=new_sl, reason=ExecutionReason.TRAILING_STOP, timestamp=ts
                         )
@@ -609,7 +611,7 @@ class LiveArenaEngine:
             can_enter = ts >= self.strategy_cooldown.get("comp_orb", 0.0)
             is_breakout = (price >= orb_high and vel >= Decimal("0")) or (price > orb_mid and is_uptrend and vel > self.live_atr * Decimal("0.2"))
             if can_enter and is_breakout and self.live_rsi < Decimal("72"):
-                sl = max(orb_mid, (price - max(Decimal("2.50"), self.live_atr * Decimal("1.2"))).quantize(Decimal("0.01")))
+                sl = max(orb_mid, (price - max(Decimal("50.00"), self.live_atr * Decimal("1.2"))).quantize(Decimal("0.01")))
                 if sl >= price:
                     sl = (price * Decimal("0.992")).quantize(Decimal("0.01"))
                 r_dist = price - sl
@@ -622,16 +624,16 @@ class LiveArenaEngine:
             if entry_p > Decimal("0"):
                 gain_usd = price - entry_p
                 gain_pct = (gain_usd / entry_p) * Decimal("100")
-                if gain_pct >= Decimal("0.35") or (price < orb_mid and gain_usd >= Decimal("1.50")):
+                if gain_pct >= Decimal("0.35") or (price < orb_mid and gain_usd >= (self.live_atr * Decimal("0.5"))):
                     fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_orb", symbol="ETH/USD", side=OrderSide.SELL,
+                        portfolio_id="comp_orb", symbol=self.symbol, side=OrderSide.SELL,
                         order_type=OrderType.MARKET, qty=p_orb.position_qty,
                         reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
                     ))
                     if fill:
                         self.strategy_cooldown["comp_orb"] = ts + 60.0
                         self.position_entry_ts.pop("comp_orb", None)
-                        self.log_event("ORB_TP", f"ORB locked target {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                        self.log_event("ORB_TP", f"ORB locked target {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
         # --- 6. Institutional VWAP Pullback (comp_vwap) ---
         p_vwap = self.comp_f.portfolio
@@ -643,7 +645,7 @@ class LiveArenaEngine:
             near_vwap = abs(price - vwap_ref) <= (self.live_atr * Decimal("0.85"))
             is_rebound = vel >= Decimal("0") and self.live_rsi >= Decimal("42")
             if can_enter and near_vwap and is_rebound:
-                sl = (vwap_ref - max(Decimal("1.80"), self.live_atr * Decimal("0.6"))).quantize(Decimal("0.01"))
+                sl = (vwap_ref - max(Decimal("50.00"), self.live_atr * Decimal("0.6"))).quantize(Decimal("0.01"))
                 if sl >= price:
                     sl = (price * Decimal("0.993")).quantize(Decimal("0.01"))
                 r_dist = price - sl
@@ -656,16 +658,16 @@ class LiveArenaEngine:
             if entry_p > Decimal("0"):
                 gain_usd = price - entry_p
                 gain_pct = (gain_usd / entry_p) * Decimal("100")
-                if gain_pct >= Decimal("0.30") or (price >= (vwap_ref + self.live_atr * Decimal("1.5")) and gain_usd >= Decimal("1.80")):
+                if gain_pct >= Decimal("0.30") or (price >= (vwap_ref + self.live_atr * Decimal("1.5")) and gain_usd >= (self.live_atr * Decimal("0.6"))):
                     fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_vwap", symbol="ETH/USD", side=OrderSide.SELL,
+                        portfolio_id="comp_vwap", symbol=self.symbol, side=OrderSide.SELL,
                         order_type=OrderType.MARKET, qty=p_vwap.position_qty,
                         reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
                     ))
                     if fill:
                         self.strategy_cooldown["comp_vwap"] = ts + 60.0
                         self.position_entry_ts.pop("comp_vwap", None)
-                        self.log_event("VWAP_TP", f"VWAP locked profit {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                        self.log_event("VWAP_TP", f"VWAP locked profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
         self._update_telemetry_snapshot(price)
 
@@ -691,8 +693,8 @@ class LiveArenaEngine:
 
         # 3. ATR Dynamic
         if self.comp_c.portfolio.position_qty == Decimal("0"):
-            stop_dist = max(Decimal("1.80"), (self.live_atr * self.comp_c.genome.atr_stop_mult).quantize(Decimal("0.01")))
-            target_dist = max(Decimal("2.60"), (self.live_atr * self.comp_c.genome.atr_target_mult).quantize(Decimal("0.01")))
+            stop_dist = max(Decimal("50.00"), (self.live_atr * self.comp_c.genome.atr_stop_mult).quantize(Decimal("0.01")))
+            target_dist = max(Decimal("100.00"), (self.live_atr * self.comp_c.genome.atr_target_mult).quantize(Decimal("0.01")))
             sl = (price - stop_dist).quantize(Decimal("0.01"))
             tp = (price + target_dist).quantize(Decimal("0.01"))
             risk_budget = self.comp_c.portfolio.total_equity * self.comp_c.genome.atr_risk_pct
@@ -736,18 +738,18 @@ class LiveArenaEngine:
                 upnl = p.unrealized_pnl
                 upnl_pct = ((price - p.avg_entry_price) / p.avg_entry_price * Decimal("100")) if p.avg_entry_price > 0 else Decimal("0")
                 if pid == "comp_agg":
-                    intent = f"LONG {p.position_qty} ETH @ ${p.avg_entry_price:,.2f} | Uncapped Trend Run ({upnl_pct:+.2f}%)"
+                    intent = f"LONG {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | Uncapped Trend Run ({upnl_pct:+.2f}%)"
                 elif pid == "comp_cons":
-                    intent = f"SCALP LONG {p.position_qty} ETH @ ${p.avg_entry_price:,.2f} | Target ${tp_p:,.2f}" if tp_p else f"LONG {p.position_qty} ETH"
+                    intent = f"SCALP LONG {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | Target ${tp_p:,.2f}" if tp_p else f"LONG {p.position_qty} BTC"
                 elif pid == "comp_atr":
-                    intent = f"ATR-SCALED {p.position_qty} ETH @ ${p.avg_entry_price:,.2f} | 1.5x/2.5x ATR Bracket"
+                    intent = f"ATR-SCALED {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | 1.5x/2.5x ATR Bracket"
                 elif pid == "comp_orb":
-                    intent = f"ORB BREAKOUT {p.position_qty} ETH @ ${p.avg_entry_price:,.2f} | 2.0R Target ${tp_p:,.2f}" if tp_p else f"LONG {p.position_qty} ETH"
+                    intent = f"ORB BREAKOUT {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | 2.0R Target ${tp_p:,.2f}" if tp_p else f"LONG {p.position_qty} BTC"
                 elif pid == "comp_vwap":
-                    intent = f"VWAP PULLBACK {p.position_qty} ETH @ ${p.avg_entry_price:,.2f} | 2.2R Target ${tp_p:,.2f}" if tp_p else f"LONG {p.position_qty} ETH"
+                    intent = f"VWAP PULLBACK {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | 2.2R Target ${tp_p:,.2f}" if tp_p else f"LONG {p.position_qty} BTC"
                 else:
                     peak = self.comp_d.highest_price_since_entry
-                    intent = f"TRAILING {p.position_qty} ETH | Peak ${peak:,.2f} | Ratchet SL ${sl_p:,.2f}" if sl_p else f"LONG {p.position_qty} ETH"
+                    intent = f"TRAILING {p.position_qty} BTC | Peak ${peak:,.2f} | Ratchet SL ${sl_p:,.2f}" if sl_p else f"LONG {p.position_qty} BTC"
             else:
                 intent = prev_tel.get("intent") or f"SCANNING LIVE BOOK (Cash: ${p.cash:,.2f})"
 
@@ -864,7 +866,7 @@ class LiveArenaEngine:
         self.stop_live_loop()
 
     def _live_loop(self) -> None:
-        self.log_event("BOOT", "Connecting to real-time ETH/USD orderflow & warming 1m indicators...", "info")
+        self.log_event("BOOT", "Connecting to real-time BTC/USD orderflow & warming 1m indicators...", "info")
         self.bootstrap_intraday_session()
         with self.lock:
             self.live_start_ts = time.time()
@@ -927,7 +929,7 @@ class LiveArenaEngine:
                             pnl_str = f" (PnL: ${f.realized_pnl:+.2f})" if f.side == OrderSide.SELL else ""
                             self.log_event(
                                 f.reason.value,
-                                f"{f.portfolio_id.upper()} {f.side.value} {f.qty} ETH @ ${f.price:,.2f}{pnl_str}",
+                                f"{f.portfolio_id.upper()} {f.side.value} {f.qty} BTC @ ${f.price:,.2f}{pnl_str}",
                                 "profit" if f.realized_pnl >= Decimal("0") else "loss"
                             )
 
@@ -1059,6 +1061,8 @@ class LiveArenaEngine:
     }
     REASON_DISPLAY: Dict[str, str] = {
         "SIGNAL": "Strategy Signal",
+        "SIGNAL_ENTRY": "Strategy Signal",
+        "SIGNAL_EXIT": "Strategy Signal",
         "STOP_LOSS": "Stop Loss",
         "TAKE_PROFIT": "Take Profit",
         "TRAILING_STOP": "Trailing Stop",
@@ -1108,9 +1112,13 @@ class LiveArenaEngine:
                 "name": self.STRATEGY_DISPLAY.get(pid, c.base_name),
                 "color": self.STRATEGY_COLORS.get(pid, "#ECF2F8"),
                 "generation": g.generation,
-                "genome": f"Size {float(g.position_ratio) * 100:.0f}% | SL {float(g.stop_loss_pct) * 100:.2f}% | TP {tp_txt}",
+                "leverage": fz(g.leverage),
+                "leverage_enabled": bool(g.leverage_enabled),
+                "leverage_label": f"{float(g.leverage):.1f}x Lev" if g.leverage_enabled else "Spot 1x",
+                "genome": f"{'Lev ' + str(round(float(g.leverage), 1)) + 'x' if g.leverage_enabled else 'Spot 1x'} | Size {float(g.position_ratio) * 100:.0f}% | SL {float(g.stop_loss_pct) * 100:.2f}% | TP {tp_txt}",
                 "equity": fz(r.equity),
                 "cash": fz(p.cash),
+                "margin_locked": fz(p.margin_locked),
                 "roi_pct": fz(r.roi_pct),
                 "unrealized_pnl": fz(p.unrealized_pnl),
                 "unrealized_pct": fz(upnl_pct),
@@ -1203,7 +1211,7 @@ class LiveArenaEngine:
             if f.portfolio_id == champ_id:
                 tv_payloads.append({
                     "time": time.strftime("%H:%M:%S", time.localtime(f.timestamp)),
-                    "ticker": "ETHUSD",
+                    "ticker": "BTCUSD",
                     "action": f.side.value,
                     "qty": fz(f.qty),
                     "price": fz(f.price),

@@ -9,20 +9,22 @@ from src.competitors.base import BaseCompetitor, CompetitorGenome
 class ConservativeCompetitor(BaseCompetitor):
     """
     Profile B: Conservative Scalper / Mean Reversion
-    - Default Genome: 25% Position / 1.0% Tight Stop-Loss / 1.8% Take-Profit
+    - Default Genome: 25% Position / Spot 1x (Leverage Disabled) / 1.0% Tight Stop-Loss / 1.8% Take-Profit
     - Supports cross-generation genetic evolution via CompetitorGenome
     """
-    def __init__(self, portfolio_id: str = "comp_cons", initial_cash: Decimal = Decimal("500000.00")):
+    def __init__(self, portfolio_id: str = "comp_cons", initial_cash: Decimal = Decimal("100000.00")):
         default_genome = CompetitorGenome(
             position_ratio=Decimal("0.25"),
             risk_per_trade_pct=Decimal("0.010"),
             stop_loss_pct=Decimal("0.010"),
             take_profit_pct=Decimal("0.018"),
-            generation=1
+            generation=1,
+            leverage_enabled=False,
+            leverage=Decimal("1.0")
         )
         super().__init__(
             portfolio_id=portfolio_id,
-            name="Conservative (25% Size / 1.0% SL / 1.8% TP)",
+            name="Conservative (Spot 1x / 25% Size / 1.0% SL / 1.8% TP)",
             max_position_ratio=default_genome.position_ratio,
             initial_cash=initial_cash,
             genome=default_genome
@@ -56,19 +58,18 @@ class ConservativeCompetitor(BaseCompetitor):
                 qty=qty,
                 stop_loss=stop_price,
                 take_profit=target_price,
-                reason=ExecutionReason.SIGNAL,
+                reason=ExecutionReason.SIGNAL_ENTRY,
                 timestamp=timestamp
             )
 
         elif signal == "SELL" and self.portfolio.position_qty > Decimal("0"):
-            self.last_exit_ts = timestamp
             return OrderTicket(
                 portfolio_id=self.portfolio_id,
                 symbol=broker.symbol,
                 side=OrderSide.SELL,
                 order_type=OrderType.MARKET,
                 qty=self.portfolio.position_qty,
-                reason=ExecutionReason.SIGNAL,
+                reason=ExecutionReason.SIGNAL_EXIT,
                 timestamp=timestamp
             )
 

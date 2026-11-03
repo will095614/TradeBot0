@@ -11,7 +11,7 @@ from src.arena.broker_sim import BrokerSim
 @dataclass(frozen=True)
 class CompetitorGenome:
     """
-    Evolvable Risk & Exit Parameter Genome (Style B: Homogeneous Strategy, Heterogeneous Genes).
+    Evolvable Risk, Exit & Leverage Parameter Genome (Style B: Homogeneous Strategy, Heterogeneous Genes).
     """
     position_ratio: Decimal = Decimal("0.40")
     risk_per_trade_pct: Decimal = Decimal("0.015")
@@ -24,12 +24,14 @@ class CompetitorGenome:
     trailing_distance_pct: Decimal = Decimal("0.006")
     cooldown_bars: int = 0
     generation: int = 1
+    leverage_enabled: bool = False
+    leverage: Decimal = Decimal("1.0")
 
 
 class BaseCompetitor(ABC):
     """
     Abstract Base Class for Arena Competitors.
-    All competitors share the identical market signal input but differ in risk & exit genes.
+    All competitors share the identical market signal input but differ in risk, exit, and leverage genes.
     Supports genetic evolution across generations.
     """
     def __init__(
@@ -37,7 +39,7 @@ class BaseCompetitor(ABC):
         portfolio_id: str,
         name: str,
         max_position_ratio: Decimal,
-        initial_cash: Decimal = Decimal("500000.00"),
+        initial_cash: Decimal = Decimal("100000.00"),
         genome: Optional[CompetitorGenome] = None
     ):
         self.portfolio_id: str = portfolio_id
@@ -49,7 +51,9 @@ class BaseCompetitor(ABC):
         self.portfolio: Portfolio = Portfolio(
             portfolio_id=portfolio_id,
             name=name,
-            initial_cash=initial_cash
+            initial_cash=initial_cash,
+            leverage=self.genome.leverage if self.genome.leverage_enabled else Decimal("1.0"),
+            leverage_enabled=self.genome.leverage_enabled
         )
         self.last_exit_ts: float = 0.0
 
@@ -58,15 +62,20 @@ class BaseCompetitor(ABC):
         self.max_position_ratio = new_genome.position_ratio
         gen_tag = f" [G{new_genome.generation}]" if new_genome.generation > 1 else ""
         self.name = f"{self.base_name}{gen_tag}"
+        eff_lev = new_genome.leverage if new_genome.leverage_enabled else Decimal("1.0")
         if not preserve_portfolio:
             self.portfolio = Portfolio(
                 portfolio_id=self.portfolio_id,
                 name=self.name,
-                initial_cash=self.initial_cash
+                initial_cash=self.initial_cash,
+                leverage=eff_lev,
+                leverage_enabled=new_genome.leverage_enabled
             )
             self.last_exit_ts = 0.0
         else:
             self.portfolio.name = self.name
+            self.portfolio.leverage = eff_lev
+            self.portfolio.leverage_enabled = new_genome.leverage_enabled
 
     def compute_safe_buy_qty(
         self,
@@ -76,14 +85,15 @@ class BaseCompetitor(ABC):
     ) -> Decimal:
         """
         Computes whole-precision crypto quantity that fits within both target_val
-        and available cash after slippage and exchange fee buffers.
+        and available margin/cash after slippage and exchange fee buffers.
         """
         if market_price <= Decimal("0"):
             return Decimal("0")
         raw_qty = (target_val / market_price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
-        # Ensure we never exceed available cash after slippage + fee
         cost_mult = (Decimal("1") + broker.slippage_pct) * (Decimal("1") + self.portfolio.fee_rate)
-        max_affordable_qty = (self.portfolio.cash / (market_price * cost_mult)).quantize(
+        eff_lev = self.genome.leverage if self.genome.leverage_enabled and self.genome.leverage > Decimal("0") else Decimal("1.0")
+        max_purchasing_power = self.portfolio.cash * eff_lev
+        max_affordable_qty = (max_purchasing_power / (market_price * cost_mult)).quantize(
             Decimal("0.0001"), rounding=ROUND_DOWN
         )
         return min(raw_qty, max_affordable_qty)
@@ -98,18 +108,20 @@ class BaseCompetitor(ABC):
         """
         Dynamic R-Multiple Volatility & Stop-Distance Adjusted Sizing (day-trader-skill Budget Manager).
         Sizes position so max loss if stopped out <= risk_budget (equity * risk_per_trade_pct).
-        Strictly bounded by genome.position_ratio and broker available cash after fee & slippage.
+        Strictly bounded by genome.position_ratio (scaled with leverage) and broker available margin.
         """
         if entry_price <= Decimal("0"):
             return Decimal("0")
-        stop_dist = max(Decimal("1.00"), abs(entry_price - stop_price))
+        # For BTC ($70k+), minimum stop distance is $10.00
+        stop_dist = max(Decimal("10.00"), abs(entry_price - stop_price))
+        eff_lev = self.genome.leverage if self.genome.leverage_enabled and self.genome.leverage > Decimal("0") else Decimal("1.0")
         budget = (
             risk_budget
             if risk_budget is not None
-            else (self.portfolio.total_equity * self.genome.risk_per_trade_pct)
+            else (self.portfolio.total_equity * self.genome.risk_per_trade_pct * eff_lev)
         )
         risk_qty = (budget / stop_dist).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
-        max_cap_val = self.portfolio.total_equity * self.genome.position_ratio
+        max_cap_val = self.portfolio.total_equity * self.genome.position_ratio * eff_lev
         safe_cap_qty = self.compute_safe_buy_qty(max_cap_val, entry_price, broker)
         return min(risk_qty, safe_cap_qty)
 

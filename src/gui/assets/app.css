@@ -786,6 +786,29 @@
     border: 1px solid rgba(255, 255, 255, 0.08);
   }
 
+  .lev-pill {
+    font-size: 8px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    letter-spacing: 0.03em;
+    display: inline-block;
+    margin-right: 4px;
+  }
+
+  .lev-pill.lev-active {
+    background: rgba(255, 184, 0, 0.15);
+    color: #FFB800;
+    border: 1px solid rgba(255, 184, 0, 0.4);
+    box-shadow: 0 0 6px rgba(255, 184, 0, 0.2);
+  }
+
+  .lev-pill.lev-spot {
+    background: rgba(56, 189, 248, 0.1);
+    color: #38BDF8;
+    border: 1px solid rgba(56, 189, 248, 0.3);
+  }
+
   .strat-card-mini .bracket-bar-wrap {
     display: flex;
     flex-direction: column;
