@@ -952,6 +952,10 @@ let latestState = null;
   let animCandles = []; // Array of { o, h, l, c, t }
   let targetCandles = [];
 
+  // Smooth Horizontal Kinetic Slide Offset when new bars arrive
+  let candleSlideOffset = 0;
+  let lastNewestCandleTime = 0;
+
   function drawPriceChart(state) {
     if (!state) return;
     latestState = state;
@@ -969,6 +973,38 @@ let latestState = null;
     // Dynamic high-density candle count: ~9.5px to 11.5px per candle so wide monitors remain dense
     const optimalCount = Math.max(45, Math.min(rawCandles.length, Math.floor(plotW / 9.5)));
     targetCandles = rawCandles.slice(-optimalCount);
+
+    // Detect new candle arrival and trigger smooth horizontal kinetic slide to the left
+    if (useCandles && targetCandles.length > 0) {
+      const n = targetCandles.length;
+      const maxStep = 13.0, minStep = 5.5;
+      const naturalStep = plotW / Math.max(1, n);
+      const step = Math.min(maxStep, Math.max(minStep, naturalStep));
+
+      const newest = targetCandles[targetCandles.length - 1];
+      const newestTime = Number(newest.t || 0);
+
+      if (lastNewestCandleTime === 0) {
+        lastNewestCandleTime = newestTime;
+      } else if (newestTime > lastNewestCandleTime) {
+        lastNewestCandleTime = newestTime;
+        // Slide smoothly from +step to 0 (shifting all existing bars to the left)
+        candleSlideOffset = Math.min(step * 2.5, candleSlideOffset + step);
+
+        // Map existing candles by timestamp so heights morph smoothly without index jump
+        if (animCandles.length > 0) {
+          const oldMap = new Map();
+          animCandles.forEach(c => oldMap.set(c.t, c));
+          animCandles = targetCandles.map(tc => {
+            const existing = oldMap.get(tc.t);
+            if (existing) {
+              return existing;
+            }
+            return { o: tc.o, h: tc.o, l: tc.o, c: tc.o, t: tc.t };
+          });
+        }
+      }
+    }
 
     let minP = Infinity, maxP = -Infinity;
     if (useCandles && targetCandles.length > 0) {
@@ -1034,6 +1070,14 @@ let latestState = null;
 
     const ease = 0.22; // Responsive 60 FPS damping
     let needsMore = false;
+
+    // Smooth Horizontal Kinetic Slide Offset Decay (Silky Leftward Glide)
+    if (Math.abs(candleSlideOffset) > 0.05) {
+      candleSlideOffset += (0 - candleSlideOffset) * 0.16;
+      needsMore = true;
+    } else {
+      candleSlideOffset = 0;
+    }
 
     // 1. Lerp Spot Price (Smooth Glide)
     const dSpot = targetSpot - animSpot;
@@ -1165,6 +1209,13 @@ let latestState = null;
       const totalCandleW = n * step;
       const startX = totalCandleW < plotW ? (padLeft + plotW - totalCandleW) : padLeft;
 
+      // Viewport Clipping for Clean Horizontal Sliding Boundary
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(padLeft, padTop - 6, plotW, plotH + 12);
+      ctx.clip();
+
+      const shiftX = candleSlideOffset;
       let maxC = visibleCandles[0], minC = visibleCandles[0];
       let maxIdx = 0, minIdx = 0;
 
@@ -1172,7 +1223,7 @@ let latestState = null;
         if (c.h > maxC.h) { maxC = c; maxIdx = i; }
         if (c.l < minC.l) { minC = c; minIdx = i; }
 
-        const cx = startX + (i + 0.5) * step;
+        const cx = startX + (i + 0.5) * step + shiftX;
         const isUp = c.c >= c.o;
         const bodyColor = isUp ? '#00E676' : '#FF334B';
         const wickColor = isUp ? '#00FF88' : '#FF5E73';
@@ -1209,7 +1260,7 @@ let latestState = null;
         const pts = [];
         for (let i = 0; i < sliceEma.length; i++) {
           pts.push({
-            x: startX + (offset + i + 0.5) * step,
+            x: startX + (offset + i + 0.5) * step + shiftX,
             y: toY(sliceEma[i])
           });
         }
@@ -1223,11 +1274,13 @@ let latestState = null;
       ctx.save();
       ctx.font = '9px "Cascadia Mono", Consolas, monospace';
       ctx.fillStyle = '#CBD5E1';
-      const maxCx = startX + (maxIdx + 0.5) * step;
-      const minCx = startX + (minIdx + 0.5) * step;
+      const maxCx = startX + (maxIdx + 0.5) * step + shiftX;
+      const minCx = startX + (minIdx + 0.5) * step + shiftX;
       ctx.fillText(`H $${maxC.h.toFixed(1)}`, Math.max(padLeft, Math.min(padLeft + plotW - 30, maxCx - 18)), toY(maxC.h) - 4);
       ctx.fillText(`L $${minC.l.toFixed(1)}`, Math.max(padLeft, Math.min(padLeft + plotW - 30, minCx - 18)), toY(minC.l) + 12);
       ctx.restore();
+
+      ctx.restore(); // Restore Viewport Clipping
 
     } else if (rawPrices.length >= 2) {
       const n = Math.min(80, rawPrices.length);
@@ -1689,7 +1742,8 @@ let latestState = null;
         const step = Math.min(maxStep, Math.max(minStep, naturalStep));
         const totalCandleW = n * step;
         const startX = totalCandleW < plotW ? (padLeft + plotW - totalCandleW) : padLeft;
-        const idx = Math.floor((mouseX - startX) / step);
+        const shiftX = candleSlideOffset;
+        const idx = Math.floor((mouseX - startX - shiftX) / step);
         if (idx >= 0 && idx < n) {
           const c = candles[idx];
           const isUp = c.c >= c.o;
