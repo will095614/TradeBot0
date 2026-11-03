@@ -1,19 +1,24 @@
 
   // ==========================================================================
-  // Splash Screen Initialization Controller (True Data & Canvas Sync)
+  // Splash Screen Initialization Controller (Strict Sequential Lifecycle)
+  // 1. Replay & simulate 120m historical orderflow
+  // 2. Pre-render Left K-Line Chart and Right Strategy/Leaderboard Tables
+  // 3. Verify ALL elements rendered -> 100% -> Reveal Arena
+  // 4. Activate Live Order Dispatch
   // ==========================================================================
   let splashProgress = 0;
   let targetSplashProgress = 15;
   let splashCompleted = false;
   let hasFirstChartDrawn = false;
+  let hasFirstTableRendered = false;
 
   const splashSteps = [
     { threshold: 15, text: "Initializing 6 Strategy Ledgers ($500,000 U x 6)..." },
-    { threshold: 40, text: "Connecting to Real-Time Multi-Exchange Orderflow..." },
-    { threshold: 65, text: "Loading 120m Intraday Candle History & Indicators..." },
-    { threshold: 85, text: "Calculating Wilder RSI(14), ATR(14), VWAP & Bands..." },
-    { threshold: 95, text: "Rendering Candlesticks onto High-Precision Canvas..." },
-    { threshold: 100, text: "Arena Ready. Launching Tactical Battleground..." }
+    { threshold: 35, text: "Connecting to Real-Time Multi-Exchange Orderflow..." },
+    { threshold: 55, text: "Replaying 120m Intraday Historical Simulation..." },
+    { threshold: 75, text: "Computing Wilder RSI, ATR, VWAP & Strategy Rankings..." },
+    { threshold: 90, text: "Pre-rendering Left K-Line Chart & Right Tactical Tables..." },
+    { threshold: 100, text: "Arena Fully Loaded. Launching Live Arena..." }
   ];
 
   function setSplashTarget(percent) {
@@ -51,8 +56,8 @@
     }
     if (sLbl) sLbl.textContent = activeStep;
 
-    // Strict exit condition: 100% reached AND first chart has been painted!
-    if (splashProgress >= 99.5 && targetSplashProgress >= 100 && hasFirstChartDrawn) {
+    // Strict exit condition: 100% reached AND left chart drawn AND right tables rendered!
+    if (splashProgress >= 99.5 && targetSplashProgress >= 100 && hasFirstChartDrawn && hasFirstTableRendered) {
       splashProgress = 100;
       if (pLbl) pLbl.textContent = '100%';
       if (sLbl) sLbl.textContent = splashSteps[splashSteps.length - 1].text;
@@ -63,18 +68,25 @@
         if (overlay) {
           overlay.classList.add('fade-out');
         }
-      }, 350);
+        // ONLY AFTER overlay starts fading and UI is revealed -> activate live orders!
+        setTimeout(() => {
+          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.start_live_trading === 'function') {
+            window.pywebview.api.start_live_trading().catch(e => console.warn('start_live_trading err:', e));
+          }
+        }, 150);
+      }, 400);
     }
   }, 25);
 
-  // Safety fallback: ensure splash screen never hangs longer than 12 seconds even if offline
+  // Safety fallback: ensure splash screen never hangs longer than 14 seconds even if offline
   setTimeout(() => {
     if (!splashCompleted) {
       hasFirstChartDrawn = true;
+      hasFirstTableRendered = true;
       setSplashTarget(100);
       splashProgress = 100;
     }
-  }, 12000);
+  }, 14000);
 
 let latestState = null;
   let isPolling = false;
@@ -273,15 +285,18 @@ let latestState = null;
       const isBootstrapped = Boolean(state.is_bootstrapped);
 
       if (hasQuote) {
-        setSplashTarget(40);
+        setSplashTarget(35);
       }
-      if (candleCount >= 15 || isBootstrapped) {
-        setSplashTarget(65);
+      if (isBootstrapped) {
+        setSplashTarget(55);
       }
       if (isBootstrapped && candleCount >= 30) {
-        setSplashTarget(85);
+        setSplashTarget(75);
       }
-      if (hasFirstChartDrawn && isBootstrapped && candleCount >= 30) {
+      if (isBootstrapped && candleCount >= 30 && hasFirstTableRendered) {
+        setSplashTarget(90);
+      }
+      if (isBootstrapped && candleCount >= 30 && hasFirstChartDrawn && hasFirstTableRendered) {
         setSplashTarget(100);
       }
     }
@@ -406,6 +421,13 @@ let latestState = null;
     renderLeaderboard(state);
     renderFills(state);
     drawPriceChart(state);
+
+    // Verify right-side tables are mounted and populated with data
+    const lbBody = document.getElementById('leaderboardBody');
+    const stratGrid = document.getElementById('tabCardsView') || document.getElementById('strategiesGrid');
+    if (lbBody && lbBody.children.length >= 6 && stratGrid && stratGrid.children.length >= 6) {
+      hasFirstTableRendered = true;
+    }
   }
 
   let lastSpotPrice = 0;

@@ -52,6 +52,8 @@ class LiveArenaEngine:
         self.lock = threading.RLock()
         self.market_online: bool = False
         self.is_bootstrapped: bool = False
+        self.live_orders_enabled: bool = False
+        self.live_trading_active: bool = False
         self.running = False
         self.paused = False
         self.interval_sec: float = 1.5
@@ -393,17 +395,26 @@ class LiveArenaEngine:
             if cum_vol > Decimal("0"):
                 self.live_vwap = (cum_pv / cum_vol).quantize(Decimal("0.01"))
 
-            # Ensure all 6 distinct strategies have active or primed live setups right now
+            # Ensure all 6 distinct strategies are primed with historical simulation
             if recent_bars:
                 last_b = recent_bars[-1]
-                self._ensure_active_live_positions(last_b.close, time.time())
                 self.log_event(
-                    "LIVE_SYNC",
-                    f"Synced 1m intraday orderflow ({len(recent_bars)} bars). Live ETH/USD @ ${last_b.close:,.2f}",
+                    "WARMUP_SYNC",
+                    f"Replayed 120m intraday history ({len(recent_bars)} bars). Indicators & rankings primed. Waiting for UI reveal.",
                     "info"
                 )
 
             self.is_bootstrapped = True
+
+    def start_live_trading(self) -> None:
+        """
+        Activated only after the frontend verifies that the left K-line chart and right
+        tactical tables are completely rendered and the initialization screen has faded out.
+        """
+        with self.lock:
+            if not self.live_orders_enabled:
+                self.live_orders_enabled = True
+                self.log_event("ARENA_REVEALED", "Arena initialization verified. Live order placement activated.", "info")
 
     def _try_enter_bracket(
         self,
@@ -893,32 +904,41 @@ class LiveArenaEngine:
                         self.live_ema_fast = ((quote.price * alpha_f) + (self.live_ema_fast * (Decimal("1") - alpha_f))).quantize(Decimal("0.01"))
                         self.live_ema_slow = ((quote.price * alpha_s) + (self.live_ema_slow * (Decimal("1") - alpha_s))).quantize(Decimal("0.01"))
 
-                    fills = self.broker.on_tick(
-                        price=quote.price,
-                        high=max(quote.price, quote.ask),
-                        low=min(quote.price, quote.bid),
-                        timestamp=quote.timestamp,
-                        open_price=prev_p
-                    )
-                    for f in fills:
-                        if f.side == OrderSide.SELL:
-                            self.strategy_cooldown[f.portfolio_id] = quote.timestamp + 60.0
-                            self.position_entry_ts.pop(f.portfolio_id, None)
-                        pnl_str = f" (PnL: ${f.realized_pnl:+.2f})" if f.side == OrderSide.SELL else ""
-                        self.log_event(
-                            f.reason.value,
-                            f"{f.portfolio_id.upper()} {f.side.value} {f.qty} ETH @ ${f.price:,.2f}{pnl_str}",
-                            "profit" if f.realized_pnl >= Decimal("0") else "loss"
+                    # Live orders & simulated matching activate ONLY after UI initialization is fully complete
+                    if self.live_orders_enabled:
+                        if not self.live_trading_active:
+                            self.live_trading_active = True
+                            self.live_start_ts = time.time()
+                            self.last_evolve_ts = time.time()
+                            self._ensure_active_live_positions(quote.price, quote.timestamp)
+                            self.log_event("LIVE_START", f"Arena revealed. Live order dispatch active @ ${quote.price:,.2f}", "buy")
+
+                        fills = self.broker.on_tick(
+                            price=quote.price,
+                            high=max(quote.price, quote.ask),
+                            low=min(quote.price, quote.bid),
+                            timestamp=quote.timestamp,
+                            open_price=prev_p
                         )
+                        for f in fills:
+                            if f.side == OrderSide.SELL:
+                                self.strategy_cooldown[f.portfolio_id] = quote.timestamp + 60.0
+                                self.position_entry_ts.pop(f.portfolio_id, None)
+                            pnl_str = f" (PnL: ${f.realized_pnl:+.2f})" if f.side == OrderSide.SELL else ""
+                            self.log_event(
+                                f.reason.value,
+                                f"{f.portfolio_id.upper()} {f.side.value} {f.qty} ETH @ ${f.price:,.2f}{pnl_str}",
+                                "profit" if f.realized_pnl >= Decimal("0") else "loss"
+                            )
 
-                    # Ensure active initial positions if bootstrap was empty and all strategies are flat
-                    if not self.position_entry_ts and all(c.portfolio.position_qty == Decimal("0") for c in self.competitors):
-                        self._ensure_active_live_positions(quote.price, quote.timestamp)
+                        if not self.position_entry_ts and all(c.portfolio.position_qty == Decimal("0") for c in self.competitors):
+                            self._ensure_active_live_positions(quote.price, quote.timestamp)
 
-                    self._evaluate_live_strategies(quote.price, prev_p, quote.timestamp)
+                        self._evaluate_live_strategies(quote.price, prev_p, quote.timestamp)
+
                     self._record_series_point(quote.price, quote.timestamp)
 
-                if self._auto_evolve_due():
+                if self.live_orders_enabled and self._auto_evolve_due():
                     self.evolve_now(trigger="auto")
 
             except Exception as e:
@@ -1237,6 +1257,7 @@ class LiveArenaEngine:
                 "running": self.running,
                 "market_online": self.market_online,
                 "is_bootstrapped": self.is_bootstrapped,
+                "live_orders_enabled": self.live_orders_enabled,
                 "candle_count": len(self.candles),
                 "quote": {
                     "price": float(q.price) if q else 0.0,

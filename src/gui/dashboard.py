@@ -69,6 +69,10 @@ class _ArenaBridgeApi:
         self._dashboard.reset_engine()
         return self._dashboard.engine.get_ui_state()
 
+    def start_live_trading(self) -> Dict[str, Any]:
+        self._dashboard.engine.start_live_trading()
+        return self._dashboard.engine.get_ui_state()
+
     def toggle_fullscreen(self) -> bool:
         if self._dashboard.window:
             self._dashboard.window.toggle_fullscreen()

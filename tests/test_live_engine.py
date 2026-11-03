@@ -257,3 +257,27 @@ def test_offline_feed_safety_blocks_mock_fills():
     assert state["quote"]["is_offline"] is True
 
 
+def test_lifecycle_sequence_warmup_before_live_orders():
+    engine = LiveArenaEngine(initial_cash=Decimal("500000.00"), symbol="ETH/USD")
+    assert engine.is_bootstrapped is False
+    assert engine.live_orders_enabled is False
+
+    # Simulate historical warmup
+    engine.bootstrap_intraday_session()
+    assert engine.is_bootstrapped is True
+    assert len(engine.candles) >= 30
+    # During warmup, live order placement is suppressed
+    assert engine.live_orders_enabled is False
+
+    state = engine.get_ui_state()
+    assert state["is_bootstrapped"] is True
+    assert state["live_orders_enabled"] is False
+    assert state["candle_count"] >= 30
+
+    # Frontend verifies render -> triggers start_live_trading
+    engine.start_live_trading()
+    assert engine.live_orders_enabled is True
+    assert engine.get_ui_state()["live_orders_enabled"] is True
+
+
+
