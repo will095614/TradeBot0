@@ -35,14 +35,16 @@ class Leaderboard:
     """
     @staticmethod
     def _estimate_periods_per_year(equity_history: List[tuple[float, Decimal]]) -> float:
+        # Standardize crypto intraday frequency (15-min bars: 365 * 24 * 4 = 35,040 periods/year)
+        # Prevents high-frequency sub-second tick noise from blowing up annualization factor
         if len(equity_history) < 2:
             return 35040.0  # Default 15-min bars in a 365-day 24/7 crypto year
         dt_total = equity_history[-1][0] - equity_history[0][0]
         avg_dt = dt_total / max(1, len(equity_history) - 1)
-        if avg_dt <= 1.0:
+        if avg_dt < 60.0:
             return 35040.0
         seconds_per_year = 365.25 * 86400.0
-        return max(252.0, min(525600.0, seconds_per_year / avg_dt))
+        return max(252.0, min(35040.0, seconds_per_year / avg_dt))
 
     @classmethod
     def calculate_sharpe_and_sortino(

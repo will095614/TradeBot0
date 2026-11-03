@@ -44,7 +44,11 @@ def test_live_engine_ui_state_is_json_safe_and_complete():
     assert {s["id"] for s in state["strategies"]} == {"comp_agg", "comp_cons", "comp_atr", "comp_trail", "comp_orb", "comp_vwap"}
     assert any(s["in_position"] for s in state["strategies"])
     assert len(state["price_history"]) == 4
-    assert all(len(v) == 4 for v in state["equity_curves"].values())
+    # Dead payloads eliminated to preserve 97% network/serialization bandwidth
+    assert "equity_curves" not in state
+    assert "series" not in state
+    assert "competitors" not in state
+    assert len(json.dumps(state)) < 25000
     assert any(f["side"] == "BUY" for f in state["fills"])
 
     assert "tv_hub" in state
@@ -201,6 +205,31 @@ def test_ui_template_integrity_and_cleanliness():
     state = engine.get_ui_state()
     for f in state["fills"]:
         assert "(Cost $" not in f["reason"]
+
+
+def test_startup_ev_gate_enforcement():
+    from unittest.mock import patch
+    from src.data.timemachine import MonteCarloBracketOdds
+
+    engine = LiveArenaEngine(initial_cash=Decimal("500000.00"), symbol="ETH/USD")
+    failing_odds = MonteCarloBracketOdds(
+        passed=False,
+        target_prob=0.10,
+        stop_prob=0.80,
+        neither_prob=0.10,
+        decided_win_rate=0.11,
+        expected_r=-0.75,
+        r_multiple=2.0,
+        breakeven_prob=0.33,
+        verdict="Blocked by EV Gate (EV -0.75R | Win 11%)"
+    )
+    with patch.object(engine.mc_evaluator, "evaluate_bracket", return_value=failing_odds):
+        engine._ensure_active_live_positions(Decimal("3500.00"), time.time())
+
+    for c in engine.competitors:
+        assert c.portfolio.position_qty == Decimal("0.0000")
+        assert "EV Gate Blocked" in engine.strategy_telemetry[c.portfolio_id]["intent"]
+
 
 
 

@@ -687,11 +687,16 @@ class LiveArenaEngine:
             tp = (price * (Decimal("1") + self.comp_a.genome.take_profit_pct)).quantize(Decimal("0.01")) if self.comp_a.genome.take_profit_pct else None
             mc_odds = self.mc_evaluator.evaluate_bracket(price, sl, tp, atr=self.live_atr, recent_candles=self.candles)
             self.strategy_telemetry["comp_agg"]["mc_stats"] = mc_odds.to_dict()
-            qty = self.comp_a.compute_r_multiple_qty(price, sl, self.broker)
-            if qty > Decimal("0"):
-                fill = self.broker.submit_order(OrderTicket("comp_agg", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
-                if fill:
-                    self.position_entry_ts["comp_agg"] = ts
+            if not mc_odds.passed:
+                self.strategy_cooldown["comp_agg"] = ts + 20.0
+                self.strategy_telemetry["comp_agg"]["intent"] = f"EV Gate Blocked: Win {mc_odds.target_prob*100:.0f}% (EV {mc_odds.expected_r:+.2f}R)"
+                self.log_event("EV_GATE_BLOCK", f"Aggressive blocked on startup by TimeMachine EV Gate: {mc_odds.verdict}", "info")
+            else:
+                qty = self.comp_a.compute_r_multiple_qty(price, sl, self.broker)
+                if qty > Decimal("0"):
+                    fill = self.broker.submit_order(OrderTicket("comp_agg", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
+                    if fill:
+                        self.position_entry_ts["comp_agg"] = ts
 
         # 2. Conservative
         if self.comp_b.portfolio.position_qty == Decimal("0"):
@@ -699,11 +704,16 @@ class LiveArenaEngine:
             tp = (price * Decimal("1.009")).quantize(Decimal("0.01"))
             mc_odds = self.mc_evaluator.evaluate_bracket(price, sl, tp, atr=self.live_atr, recent_candles=self.candles)
             self.strategy_telemetry["comp_cons"]["mc_stats"] = mc_odds.to_dict()
-            qty = self.comp_b.compute_r_multiple_qty(price, sl, self.broker)
-            if qty > Decimal("0"):
-                fill = self.broker.submit_order(OrderTicket("comp_cons", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
-                if fill:
-                    self.position_entry_ts["comp_cons"] = ts
+            if not mc_odds.passed:
+                self.strategy_cooldown["comp_cons"] = ts + 20.0
+                self.strategy_telemetry["comp_cons"]["intent"] = f"EV Gate Blocked: Win {mc_odds.target_prob*100:.0f}% (EV {mc_odds.expected_r:+.2f}R)"
+                self.log_event("EV_GATE_BLOCK", f"Conservative blocked on startup by TimeMachine EV Gate: {mc_odds.verdict}", "info")
+            else:
+                qty = self.comp_b.compute_r_multiple_qty(price, sl, self.broker)
+                if qty > Decimal("0"):
+                    fill = self.broker.submit_order(OrderTicket("comp_cons", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
+                    if fill:
+                        self.position_entry_ts["comp_cons"] = ts
 
         # 3. ATR Dynamic
         if self.comp_c.portfolio.position_qty == Decimal("0"):
@@ -713,24 +723,34 @@ class LiveArenaEngine:
             tp = (price + target_dist).quantize(Decimal("0.01"))
             mc_odds = self.mc_evaluator.evaluate_bracket(price, sl, tp, atr=self.live_atr, recent_candles=self.candles)
             self.strategy_telemetry["comp_atr"]["mc_stats"] = mc_odds.to_dict()
-            risk_budget = self.comp_c.portfolio.total_equity * self.comp_c.genome.atr_risk_pct
-            qty = self.comp_c.compute_r_multiple_qty(price, sl, self.broker, risk_budget=risk_budget)
-            if qty > Decimal("0"):
-                fill = self.broker.submit_order(OrderTicket("comp_atr", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
-                if fill:
-                    self.position_entry_ts["comp_atr"] = ts
+            if not mc_odds.passed:
+                self.strategy_cooldown["comp_atr"] = ts + 20.0
+                self.strategy_telemetry["comp_atr"]["intent"] = f"EV Gate Blocked: Win {mc_odds.target_prob*100:.0f}% (EV {mc_odds.expected_r:+.2f}R)"
+                self.log_event("EV_GATE_BLOCK", f"ATR Dynamic blocked on startup by TimeMachine EV Gate: {mc_odds.verdict}", "info")
+            else:
+                risk_budget = self.comp_c.portfolio.total_equity * self.comp_c.genome.atr_risk_pct
+                qty = self.comp_c.compute_r_multiple_qty(price, sl, self.broker, risk_budget=risk_budget)
+                if qty > Decimal("0"):
+                    fill = self.broker.submit_order(OrderTicket("comp_atr", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
+                    if fill:
+                        self.position_entry_ts["comp_atr"] = ts
 
         # 4. Trailing Guard
         if self.comp_d.portfolio.position_qty == Decimal("0"):
             sl = (price * Decimal("0.991")).quantize(Decimal("0.01"))
             mc_odds = self.mc_evaluator.evaluate_bracket(price, sl, None, atr=self.live_atr, recent_candles=self.candles)
             self.strategy_telemetry["comp_trail"]["mc_stats"] = mc_odds.to_dict()
-            qty = self.comp_d.compute_r_multiple_qty(price, sl, self.broker)
-            if qty > Decimal("0"):
-                self.comp_d.highest_price_since_entry = price
-                fill = self.broker.submit_order(OrderTicket("comp_trail", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=None, timestamp=ts))
-                if fill:
-                    self.position_entry_ts["comp_trail"] = ts
+            if not mc_odds.passed:
+                self.strategy_cooldown["comp_trail"] = ts + 20.0
+                self.strategy_telemetry["comp_trail"]["intent"] = f"EV Gate Blocked: Win {mc_odds.target_prob*100:.0f}% (EV {mc_odds.expected_r:+.2f}R)"
+                self.log_event("EV_GATE_BLOCK", f"Trailing Guard blocked on startup by TimeMachine EV Gate: {mc_odds.verdict}", "info")
+            else:
+                qty = self.comp_d.compute_r_multiple_qty(price, sl, self.broker)
+                if qty > Decimal("0"):
+                    self.comp_d.highest_price_since_entry = price
+                    fill = self.broker.submit_order(OrderTicket("comp_trail", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=None, timestamp=ts))
+                    if fill:
+                        self.position_entry_ts["comp_trail"] = ts
 
         # 5. ORB Breakout
         if self.comp_e.portfolio.position_qty == Decimal("0"):
@@ -738,11 +758,16 @@ class LiveArenaEngine:
             tp = (price + (price - sl) * Decimal("2.0")).quantize(Decimal("0.01"))
             mc_odds = self.mc_evaluator.evaluate_bracket(price, sl, tp, atr=self.live_atr, recent_candles=self.candles)
             self.strategy_telemetry["comp_orb"]["mc_stats"] = mc_odds.to_dict()
-            qty = self.comp_e.compute_r_multiple_qty(price, sl, self.broker)
-            if qty > Decimal("0"):
-                fill = self.broker.submit_order(OrderTicket("comp_orb", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
-                if fill:
-                    self.position_entry_ts["comp_orb"] = ts
+            if not mc_odds.passed:
+                self.strategy_cooldown["comp_orb"] = ts + 20.0
+                self.strategy_telemetry["comp_orb"]["intent"] = f"EV Gate Blocked: Win {mc_odds.target_prob*100:.0f}% (EV {mc_odds.expected_r:+.2f}R)"
+                self.log_event("EV_GATE_BLOCK", f"ORB Breakout blocked on startup by TimeMachine EV Gate: {mc_odds.verdict}", "info")
+            else:
+                qty = self.comp_e.compute_r_multiple_qty(price, sl, self.broker)
+                if qty > Decimal("0"):
+                    fill = self.broker.submit_order(OrderTicket("comp_orb", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
+                    if fill:
+                        self.position_entry_ts["comp_orb"] = ts
 
         # 6. VWAP Pullback
         if self.comp_f.portfolio.position_qty == Decimal("0"):
@@ -750,11 +775,16 @@ class LiveArenaEngine:
             tp = (price + (price - sl) * Decimal("2.2")).quantize(Decimal("0.01"))
             mc_odds = self.mc_evaluator.evaluate_bracket(price, sl, tp, atr=self.live_atr, recent_candles=self.candles)
             self.strategy_telemetry["comp_vwap"]["mc_stats"] = mc_odds.to_dict()
-            qty = self.comp_f.compute_r_multiple_qty(price, sl, self.broker)
-            if qty > Decimal("0"):
-                fill = self.broker.submit_order(OrderTicket("comp_vwap", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
-                if fill:
-                    self.position_entry_ts["comp_vwap"] = ts
+            if not mc_odds.passed:
+                self.strategy_cooldown["comp_vwap"] = ts + 20.0
+                self.strategy_telemetry["comp_vwap"]["intent"] = f"EV Gate Blocked: Win {mc_odds.target_prob*100:.0f}% (EV {mc_odds.expected_r:+.2f}R)"
+                self.log_event("EV_GATE_BLOCK", f"VWAP Pullback blocked on startup by TimeMachine EV Gate: {mc_odds.verdict}", "info")
+            else:
+                qty = self.comp_f.compute_r_multiple_qty(price, sl, self.broker)
+                if qty > Decimal("0"):
+                    fill = self.broker.submit_order(OrderTicket("comp_vwap", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty, stop_loss=sl, take_profit=tp, timestamp=ts))
+                    if fill:
+                        self.position_entry_ts["comp_vwap"] = ts
 
         self._update_telemetry_snapshot(price)
 
@@ -903,6 +933,9 @@ class LiveArenaEngine:
 
     def stop_live_loop(self) -> None:
         self.running = False
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=3.0)
+        self.worker_thread = None
 
     def stop(self) -> None:
         self.stop_live_loop()
@@ -1272,7 +1305,6 @@ class LiveArenaEngine:
             "price_history": [fz(v) for v in self.eth_price_series],
             "ema_fast_history": [fz(v) for v in self.ema_fast_series],
             "ema_slow_history": [fz(v) for v in self.ema_slow_series],
-            "equity_curves": {k: [fz(v) for v in vals] for k, vals in self.equity_series.items()},
         }
 
     def get_ui_state(self) -> Dict[str, Any]:
@@ -1281,48 +1313,6 @@ class LiveArenaEngine:
             rankings = Leaderboard.get_rankings(self.broker.portfolios)
             q = self.latest_quote
             gen = max(c.genome.generation for c in self.competitors)
-
-            competitor_cards = []
-            for r in rankings:
-                c = next(comp for comp in self.competitors if comp.portfolio_id == r.portfolio_id)
-                p = c.portfolio
-                g = c.genome
-                tel = self.strategy_telemetry.get(r.portfolio_id, {})
-                competitor_cards.append({
-                    "rank": r.rank,
-                    "id": r.portfolio_id,
-                    "name": c.base_name.split("(")[0].strip(),
-                    "strategy_type": tel.get("strategy_type", ""),
-                    "generation": g.generation,
-                    "equity": float(r.equity),
-                    "cash": float(r.cash),
-                    "position_qty": float(p.position_qty),
-                    "avg_entry": float(p.avg_entry_price),
-                    "unrealized_pnl": float(p.unrealized_pnl),
-                    "realized_pnl": float(p.realized_pnl),
-                    "roi_pct": float(r.roi_pct),
-                    "max_dd_pct": float(r.max_drawdown_pct),
-                    "win_rate_pct": float(r.win_rate_pct),
-                    "closed_trades": r.closed_trades,
-                    "sharpe": self._finite(r.sharpe_ratio),
-                    "sortino": self._finite(r.sortino_ratio),
-                    "fitness": self._finite(r.fitness_score),
-                    "status": r.status,
-                    "intent": tel.get("intent", ""),
-                    "entry_rule": tel.get("entry_rule", ""),
-                    "stop_price": tel.get("stop_price"),
-                    "target_price": tel.get("target_price"),
-                    "mc_verdict": tel.get("mc_stats", {}).get("verdict", "EV Gate Active"),
-                    "expected_r": tel.get("mc_stats", {}).get("expected_r", 0.0),
-                    "target_prob": tel.get("mc_stats", {}).get("target_prob", 0.50),
-                    "genome": {
-                        "pos_pct": round(float(g.position_ratio) * 100, 0),
-                        "sl_pct": round(float(g.stop_loss_pct) * 100, 2),
-                        "tp_pct": round(float(g.take_profit_pct) * 100, 2) if g.take_profit_pct else None,
-                        "trail_trig": float(g.trailing_trigger_pct),
-                        "trail_dist": round(float(g.trailing_distance_pct) * 100, 2),
-                    }
-                })
 
             state = {
                 "generation": gen,
@@ -1352,15 +1342,6 @@ class LiveArenaEngine:
                     "remaining_pct": self.omniroute.metrics.quota_remaining_pct,
                     "saved_tokens": self.omniroute.metrics.tokens_saved,
                 },
-                "series": {
-                    "timestamps": self.tick_timestamps,
-                    "eth_price": self.eth_price_series,
-                    "ema_fast": self.ema_fast_series,
-                    "ema_slow": self.ema_slow_series,
-                    "equity": self.equity_series,
-                },
-                "competitors": competitor_cards,
-                "logs": self.live_logs[:50],
             }
             state.update(self._build_view_model(rankings, gen))
             return state

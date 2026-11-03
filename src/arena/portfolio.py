@@ -164,7 +164,7 @@ class Portfolio:
             if pnl > Decimal("0"):
                 self.win_count += 1
                 self.gross_profit = (self.gross_profit + pnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-            else:
+            elif pnl < Decimal("0"):
                 self.loss_count += 1
                 self.gross_loss = (self.gross_loss + abs(pnl)).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
 

@@ -89,3 +89,17 @@ def test_portfolio_overselling():
     with pytest.raises(ValueError, match="Overselling"):
         p.apply_fill(fill)
 
+
+def test_portfolio_breakeven_trade_does_not_count_as_loss():
+    # 0% fee scenario to test exact 0.00 PnL
+    p = Portfolio(portfolio_id="test_p", name="Test Portfolio", initial_cash=Decimal("1000.00"), maker_taker_fee_rate=Decimal("0.0"))
+    buy_fill = FillEvent("b1", "test_p", "ETH/USD", OrderSide.BUY, Decimal("1.0"), Decimal("500.00"), Decimal("0.0"), 100.0)
+    p.apply_fill(buy_fill)
+    sell_fill = FillEvent("s1", "test_p", "ETH/USD", OrderSide.SELL, Decimal("1.0"), Decimal("500.00"), Decimal("0.0"), 101.0)
+    enriched = p.apply_fill(sell_fill)
+
+    assert enriched.realized_pnl == Decimal("0.00")
+    assert p.win_count == 0
+    assert p.loss_count == 0
+
+
