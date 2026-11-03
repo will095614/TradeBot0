@@ -8,7 +8,11 @@ if (Test-Path "C:\ProgramData\anaconda3\Library\bin") {
 
 # Stop any running instances to release file locks on dist folder
 Get-Process -Name "TradeBot0_Arena*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 300
+Get-Process | Where-Object { $_.Path -like "*TradeBot0_Arena*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+if (Test-Path "dist\TradeBot0_Arena.exe") {
+    Remove-Item -Force "dist\TradeBot0_Arena.exe" -ErrorAction SilentlyContinue
+}
 
 Write-Host "[*] Packaging Single Standalone TradeBot0_Arena.exe via PyInstaller (--onefile)..." -ForegroundColor Cyan
 .\.venv\Scripts\pyinstaller.exe --noconfirm --onefile --windowed --name "TradeBot0_Arena" `
