@@ -198,6 +198,24 @@ class BrokerSim:
         # 2. Update end-of-bar valuation & check 15% drawdown circuit breaker
         for p_id, p in self.portfolios.items():
             p.update_market_price(price, ts, low_price=low_price, high_price=high_price)
+            # Leverage maintenance margin liquidation (protects against negative balance)
+            if p.leverage_enabled and p.position_qty > Decimal("0") and p.margin_locked > Decimal("0"):
+                if p.total_equity <= (p.margin_locked * Decimal("0.10")):
+                    p.is_circuit_breaker_tripped = True
+                    liq_fill = self.submit_order(OrderTicket(
+                        portfolio_id=p_id,
+                        symbol=self.symbol,
+                        side=OrderSide.SELL,
+                        order_type=OrderType.MARKET,
+                        qty=p.position_qty,
+                        price=price,
+                        reason=ExecutionReason.LIQUIDATION,
+                        timestamp=ts
+                    ))
+                    if liq_fill:
+                        fills.append(liq_fill)
+                    continue
+
             if not p.is_circuit_breaker_tripped and p.max_drawdown_pct >= MAX_DRAWDOWN_LIMIT_PCT:
                 p.is_circuit_breaker_tripped = True
                 if p.position_qty > Decimal("0"):

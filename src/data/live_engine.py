@@ -63,6 +63,8 @@ class LiveArenaEngine:
         self._audit_cursor: int = 0
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "TradeBot0-LiveArena/2.0"})
+        self.preferred_quote_provider: str = "binance"
+        self._quote_provider_cooldown: Dict[str, float] = {}
 
         self.comp_a = AggressiveCompetitor(initial_cash=initial_cash)
         self.comp_b = ConservativeCompetitor(initial_cash=initial_cash)
@@ -180,14 +182,9 @@ class LiveArenaEngine:
             if len(self.live_logs) > 120:
                 self.live_logs.pop()
 
-    def fetch_realtime_crypto_quote(self) -> LiveQuote:
-        """
-        Fetches real-time live BTC/USD spot quote with sub-second latency across
-        Binance -> Kraken -> Coinbase public REST endpoints.
-        """
-        # 1. Binance 24hr Live Ticker (Ultra-fast ~120ms sub-second latency)
+    def _fetch_binance_quote(self) -> Optional[LiveQuote]:
         try:
-            r_bin = self.session.get("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", timeout=1.8)
+            r_bin = self.session.get("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", timeout=1.2)
             if r_bin.status_code == 200:
                 b = r_bin.json()
                 return LiveQuote(
@@ -203,11 +200,12 @@ class LiveArenaEngine:
                     is_offline=False
                 )
         except Exception as e:
-            logger.debug("Binance quote feed unavailable: %s", e)
+            logger.debug("Binance quote feed error: %s", e)
+        return None
 
-        # 2. Kraken Live Ticker Fallback
+    def _fetch_kraken_quote(self) -> Optional[LiveQuote]:
         try:
-            r_krk = self.session.get("https://api.kraken.com/0/public/Ticker?pair=XBTUSD", timeout=2.0)
+            r_krk = self.session.get("https://api.kraken.com/0/public/Ticker?pair=XBTUSD", timeout=1.5)
             if r_krk.status_code == 200:
                 k_res = r_krk.json().get("result", {})
                 if k_res:
@@ -229,12 +227,13 @@ class LiveArenaEngine:
                         is_offline=False
                     )
         except Exception as e:
-            logger.debug("Kraken quote feed unavailable: %s", e)
+            logger.debug("Kraken quote feed error: %s", e)
+        return None
 
-        # 3. Coinbase Exchange Live Ticker Fallback
+    def _fetch_coinbase_quote(self) -> Optional[LiveQuote]:
         try:
-            r_tick = self.session.get("https://api.exchange.coinbase.com/products/BTC-USD/ticker", timeout=1.8)
-            r_stats = self.session.get("https://api.exchange.coinbase.com/products/BTC-USD/stats", timeout=1.8)
+            r_tick = self.session.get("https://api.exchange.coinbase.com/products/BTC-USD/ticker", timeout=1.2)
+            r_stats = self.session.get("https://api.exchange.coinbase.com/products/BTC-USD/stats", timeout=1.2)
             if r_tick.status_code == 200:
                 t_data = r_tick.json()
                 price = Decimal(str(t_data["price"])).quantize(Decimal("0.01"))
@@ -264,9 +263,41 @@ class LiveArenaEngine:
                     is_offline=False
                 )
         except Exception as e:
-            logger.debug("Coinbase quote feed unavailable: %s", e)
+            logger.debug("Coinbase quote feed error: %s", e)
+        return None
 
-        # 4. In-Memory Resilient Cache Fallback (survives transient network disconnects)
+    def fetch_realtime_crypto_quote(self) -> LiveQuote:
+        """
+        Fetches real-time live BTC/USD spot quote with sub-second latency across
+        Binance -> Kraken -> Coinbase with adaptive provider ranking & circuit breaking.
+        """
+        now = time.time()
+        providers = ["binance", "kraken", "coinbase"]
+        if self.preferred_quote_provider in providers:
+            providers.remove(self.preferred_quote_provider)
+            providers.insert(0, self.preferred_quote_provider)
+
+        active_providers = [p for p in providers if self._quote_provider_cooldown.get(p, 0.0) <= now]
+        candidate_providers = active_providers if active_providers else providers
+
+        fetchers = {
+            "binance": self._fetch_binance_quote,
+            "kraken": self._fetch_kraken_quote,
+            "coinbase": self._fetch_coinbase_quote,
+        }
+
+        for name in candidate_providers:
+            fetcher = fetchers.get(name)
+            if not fetcher:
+                continue
+            quote = fetcher()
+            if quote is not None:
+                self.preferred_quote_provider = name
+                self._quote_provider_cooldown.pop(name, None)
+                return quote
+            self._quote_provider_cooldown[name] = now + 15.0
+
+        # In-Memory Resilient Cache Fallback (survives transient network disconnects)
         if self.latest_quote is not None and not self.latest_quote.is_offline and self.latest_quote.price > Decimal("0.00"):
             return LiveQuote(
                 price=self.latest_quote.price,
@@ -281,7 +312,7 @@ class LiveArenaEngine:
                 is_offline=False
             )
 
-        # 5. Cold-boot default baseline if completely offline on first start: marked offline to safely block mock fills
+        # Cold-boot default baseline if completely offline on first start: marked offline to safely block mock fills
         return LiveQuote(
             price=Decimal("0.00"),
             bid=Decimal("0.00"),
@@ -1067,6 +1098,7 @@ class LiveArenaEngine:
         "TAKE_PROFIT": "Take Profit",
         "TRAILING_STOP": "Trailing Stop",
         "CIRCUIT_BREAKER": "Circuit Breaker",
+        "LIQUIDATION": "Margin Liquidation",
     }
 
     @staticmethod

@@ -33,6 +33,7 @@ class ExecutionReason(str, Enum):
     TAKE_PROFIT = "TAKE_PROFIT"
     TRAILING_STOP = "TRAILING_STOP"
     CIRCUIT_BREAKER = "CIRCUIT_BREAKER"
+    LIQUIDATION = "LIQUIDATION"
 
 
 @dataclass(frozen=True)

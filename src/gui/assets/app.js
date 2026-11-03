@@ -219,13 +219,13 @@ let latestState = null;
     if (strategies.length === 0) return;
     const inPosStrat = strategies.find(s => s.in_position);
     const chosen = inPosStrat || strategies[Math.floor(Math.random() * strategies.length)];
-    const spot = Number((latestState.quote && latestState.quote.price) || 2249.5);
+    const spot = Number((latestState.quote && latestState.quote.price) || 77500.0);
     const mock = {
       ...chosen,
       entry_price: spot,
-      take_profit: Number((spot + (chosen.id === 'comp_cons' ? 4.5 : 8.0)).toFixed(2)),
-      stop_loss: Number((spot - (chosen.id === 'comp_cons' ? 3.0 : 5.5)).toFixed(2)),
-      qty: chosen.qty > 0 ? chosen.qty : 0.6655,
+      take_profit: Number((spot + (chosen.id === 'comp_cons' ? 250.0 : 600.0)).toFixed(2)),
+      stop_loss: Number((spot - (chosen.id === 'comp_cons' ? 180.0 : 400.0)).toFixed(2)),
+      qty: chosen.qty > 0 ? chosen.qty : 0.1500,
       in_position: true
     };
     showPositionToast(mock);
@@ -1031,8 +1031,8 @@ let latestState = null;
     }
 
     if (!isFinite(minP) || !isFinite(maxP) || minP <= 0) {
-      minP = targetSpot > 0 ? targetSpot - 4 : 2240;
-      maxP = targetSpot > 0 ? targetSpot + 4 : 2260;
+      minP = targetSpot > 0 ? targetSpot - 250 : 77000;
+      maxP = targetSpot > 0 ? targetSpot + 250 : 78000;
     }
 
     if (scaleMode === 'full') {
@@ -1048,7 +1048,7 @@ let latestState = null;
       });
     }
 
-    const span = Math.max(2.5, maxP - minP);
+    const span = Math.max(25.0, maxP - minP);
     targetMinP = minP - span * 0.16;
     targetMaxP = maxP + span * 0.16;
 

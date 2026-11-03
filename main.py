@@ -1,8 +1,16 @@
+import logging
 import sys
 from decimal import Decimal
 from src.gui.dashboard import ArenaDashboard
 from src.data.timemachine import TimeMachineArena
 from src.data.eth_feed import ETHFeed
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("TradeBot0")
 
 
 def main() -> None:

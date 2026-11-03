@@ -1,6 +1,6 @@
-# TradeBot0: Multi-Agent Paper Trading & Genetic Evolution Arena (ETH/USD)
+# TradeBot0: Multi-Agent Paper Trading & Genetic Evolution Arena (BTC/USD)
 
-Industrial-grade quantitative multi-strategy paper trading and genetic evolution desk for ETH/USD. Features precision intra-bar order matching, cross-generation parameter evolution, zero-drift Decimal portfolio accounting, resilient multi-exchange ticker ingestion, and an obsidian high-contrast desktop GUI powered by DirectX 11 WebView2.
+Industrial-grade quantitative multi-strategy paper trading and genetic evolution desk for BTC/USD. Features precision intra-bar order matching, cross-generation parameter evolution, strategy-specific active leverage, maintenance margin liquidation protection, zero-drift Decimal portfolio accounting, resilient multi-exchange ticker ingestion, and an obsidian high-contrast desktop GUI powered by DirectX 11 WebView2.
 
 ---
 
@@ -8,16 +8,17 @@ Industrial-grade quantitative multi-strategy paper trading and genetic evolution
 
 1. **Intra-Bar Matching & Precision Accounting (`BrokerSim` & `Portfolio`)**:
    - **True Price-Trigger Execution**: Replaces naive bar-close assumptions with realistic intra-bar tick matching. Stop-loss triggers at touch (`low <= stop_loss`) with adverse slippage, while take-profit orders fill via limit mechanics (`high >= take_profit`) without adverse execution drag.
+   - **Strategy-Specific Leverage & Margin Accounting**: Supports autonomous strategy leverage (up to 3.0x), margin reservation, margin release on close, and automated maintenance margin liquidation protection if equity drops below 10% of margin locked.
    - **Intra-Bar Peak-to-Trough Drawdown**: Real-time tracking of extreme wick excursions throughout open position lifecycles.
    - **Annualized Risk Metrics**: Real-time Sharpe, Sortino (downside volatility only), and Profit Factor computed on true traded intervals without flat-cash distortion.
 
 2. **Style B: Genetic Parameter Tournament (`GeneticEvolver` & `CompetitorGenome`)**:
-   - Four distinct \$3,000 baseline portfolios compete simultaneously: Aggressive Momentum, Conservative Scalper, ATR Volatility Adaptive, and Trailing Profit Guard.
-   - **Elitism + Crossover & Mutation**: After each competition cycle, a unified Fitness Score selects the top 2 elite genomes to survive, while the bottom 2 undergo crossover and bounded Gaussian mutation (`G1 -> G2 -> G3`), logged into `memory/arena_history.json`.
+   - Six distinct \$100,000 baseline portfolios compete simultaneously: Aggressive Momentum (3x Lev), Conservative Scalper (Spot 1x), ATR Volatility Adaptive (2x Lev), Trailing Profit Guard (2x Lev), ORB Breakout (2.5x Lev), and Institutional VWAP (Spot 1x).
+   - **Elitism + Crossover & Mutation**: After each competition cycle, a unified Fitness Score selects the top 2 elite genomes to survive, while the lower ranks undergo crossover and bounded Gaussian mutation (`G1 -> G2 -> G3`), logged into `memory/arena_history.json`.
 
-3. **Multi-Exchange Live Ingestion & Resilient Fallback (`LiveArenaEngine`)**:
-   - Primary real-time stream from Coinbase Exchange API with automatic sub-second failover to Binance 24hr ticker and Kraken public market data.
-   - Memory-cached fallback ensures seamless zero-interruption execution even during transient network disconnects.
+3. **Multi-Exchange Live Ingestion & Adaptive Fast Failover (`LiveArenaEngine`)**:
+   - High-speed real-time quotes across Binance (`BTCUSDT`), Kraken (`XBTUSD`), and Coinbase Exchange (`BTC-USD`) with adaptive provider circuit-breaking and preferred ranking.
+   - Resilient in-memory caching ensures zero interruption during transient network hiccups.
 
 4. **Deterministic Pure-Math Quant Core & Monte Carlo EV Gating**:
    - Zero external AI socket or token quota dependencies; 100% offline-capable mathematical core.
@@ -25,7 +26,7 @@ Industrial-grade quantitative multi-strategy paper trading and genetic evolution
 
 5. **Obsidian High-Contrast Quant Terminal (`Edge WebView2 DirectX 11`)**:
    - Native GPU-accelerated desktop workstation adhering to professional dark quant terminal aesthetics (`#08090C` background, high-contrast palette).
-   - Interactive 1-minute Candlestick and Trend Line vector chart with strategy bracket limits, radar pings, and real-time execution tape.
+   - Interactive 1-minute Candlestick with kinetic smooth slide and Trend Line vector chart with strategy bracket limits, radar beacons, and real-time execution tape.
 
 ---
 
@@ -36,6 +37,7 @@ Run the standalone pre-packaged Windows binary directly:
 ```powershell
 dist\TradeBot0_Arena.exe
 ```
+> **Note on Windows SmartScreen**: Because `dist\TradeBot0_Arena.exe` is a self-packaged unsigned binary, Windows SmartScreen may show a one-time "Windows protected your PC" dialog on first launch. Click **More info** -> **Run anyway**.
 
 Or run via the Python virtual environment:
 ```powershell
@@ -48,10 +50,10 @@ Or run via the Python virtual environment:
 ```
 or with the packaged executable:
 ```powershell
-dist\TradeBot0_Arena\TradeBot0_Arena.exe --self-test
+dist\TradeBot0_Arena.exe --self-test
 ```
 
-### 3. Run Automated Unit Test Suite (20 Tests)
+### 3. Run Automated Unit Test Suite (32 Tests)
 ```powershell
 .venv\Scripts\pytest.exe -q tests
 ```

@@ -70,3 +70,34 @@ def test_broker_sim_position_cap_enforcement():
     assert rejected_fill is None # Successfully rejected by RiskGuard
     assert p.position_qty == Decimal("0.0000")
 
+
+def test_broker_sim_leverage_liquidation_protection():
+    from src.arena.order import ExecutionReason
+    broker = BrokerSim(symbol="BTC/USD", slippage_pct=Decimal("0.0"))
+    p = Portfolio(
+        "p_lev",
+        "LeveragedTrader",
+        initial_cash=Decimal("10000.00"),
+        leverage=Decimal("3.0"),
+        leverage_enabled=True
+    )
+    broker.register_portfolio(p, max_position_ratio=Decimal("0.90"))
+
+    # Buy 0.3 BTC at $80,000 (Position value = $24,000, margin locked = $8,000)
+    broker.on_tick(price=Decimal("80000.00"), timestamp=100.0)
+    ticket = OrderTicket("p_lev", "BTC/USD", OrderSide.BUY, OrderType.MARKET, qty=Decimal("0.3"), timestamp=100.0)
+    fill = broker.submit_order(ticket)
+    assert fill is not None
+    assert p.position_qty == Decimal("0.3000")
+    assert p.margin_locked == Decimal("8000.00")
+
+    # Severe flash crash: BTC drops to $48,000
+    # Unrealized loss = (48,000 - 80,000) * 0.3 = -$9,600
+    # Total equity = $10,000 - $9,600 - fee = ~$376 <= 10% of $8,000 ($800)
+    fills = broker.on_tick(price=Decimal("48000.00"), timestamp=101.0)
+    assert len(fills) == 1
+    assert fills[0].reason == ExecutionReason.LIQUIDATION
+    assert p.position_qty == Decimal("0.0000")
+    assert p.is_circuit_breaker_tripped is True
+
+

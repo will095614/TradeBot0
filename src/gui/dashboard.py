@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import pathlib
 import sys
 from decimal import Decimal
 from typing import Any, Dict
 
 from src.data.live_engine import LiveArenaEngine
+
+logger = logging.getLogger(__name__)
 
 
 def _get_assets_dir() -> pathlib.Path:
@@ -22,6 +25,7 @@ def _load_asset(filename: str) -> str:
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
+    logger.error("Asset file not found: %s", path)
     return ""
 
 
@@ -30,6 +34,7 @@ def _build_html_template() -> str:
     css = _load_asset("app.css")
     js = _load_asset("app.js")
     if not html:
+        logger.critical("Failed to load index.html from assets!")
         return "<html><body>Asset loading failed</body></html>"
     return html.replace("/* __APP_CSS__ */", css).replace("/* __APP_JS__ */", js)
 
@@ -104,9 +109,10 @@ class ArenaDashboard:
     def run(self) -> None:
         import webview
 
-        # Start real-time live BTC/USD streaming & multi-strategy execution immediately
+        logger.info("Starting TradeBot0 LiveArenaEngine (BTC/USD)...")
         self.engine.start_live_loop(interval_sec=1.5)
 
+        logger.info("Initializing pywebview GPU Window...")
         window = webview.create_window(
             title="TradeBot0 — BTC/USD Multi-Strategy Quant Arena (Obsidian High-Contrast · Style B Evolution)",
             html=HTML_TEMPLATE,
@@ -124,4 +130,5 @@ class ArenaDashboard:
         try:
             webview.start(debug=False)
         finally:
+            logger.info("Shutting down TradeBot0 engine and background workers...")
             self.engine.stop()
