@@ -12,3 +12,4 @@ def isolate_arena_memory(tmp_path, monkeypatch):
     test_mem.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ARENA_MEMORY_DIR", str(test_mem))
     yield
+
