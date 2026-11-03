@@ -68,12 +68,18 @@
         if (overlay) {
           overlay.classList.add('fade-out');
         }
-        // ONLY AFTER overlay starts fading and UI is revealed -> activate live orders!
+
+        // Automatic mouse location and immediate chart refresh upon entering arena
+        locateMouseAndRefreshChart();
+
+        // Second refresh and final live order activation after overlay transition
         setTimeout(() => {
+          if (overlay) overlay.style.display = 'none';
+          locateMouseAndRefreshChart();
           if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.start_live_trading === 'function') {
             window.pywebview.api.start_live_trading().catch(e => console.warn('start_live_trading err:', e));
           }
-        }, 150);
+        }, 400);
       }, 400);
     }
   }, 25);
@@ -1642,17 +1648,32 @@ let latestState = null;
     }
   }
 
-  // Interactive Hover Tooltip for Price Chart
-  function setupChartInteraction() {
+  // Global Mouse Coordinate Tracking for Instant Chart Positioning
+  let lastGlobalPointerX = -1;
+  let lastGlobalPointerY = -1;
+
+  window.addEventListener('pointermove', (e) => {
+    lastGlobalPointerX = e.clientX;
+    lastGlobalPointerY = e.clientY;
+  }, { passive: true });
+
+  window.addEventListener('mousemove', (e) => {
+    lastGlobalPointerX = e.clientX;
+    lastGlobalPointerY = e.clientY;
+  }, { passive: true });
+
+  function updateChartMouseHover(clientX, clientY) {
+    if (!latestState) return;
     const wrap = document.getElementById('priceCanvasWrap');
     const tip = document.getElementById('priceTooltip');
     if (!wrap || !tip) return;
 
-    wrap.addEventListener('mousemove', (e) => {
-      if (!latestState) return;
-      const rect = wrap.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
+    const rect = wrap.getBoundingClientRect();
+    const isInside = clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+
+    if (isInside) {
+      const mouseX = clientX - rect.left;
+      const mouseY = clientY - rect.top;
       priceHoverPos = { x: mouseX, y: mouseY };
 
       const candles = (animCandles && animCandles.length > 0) ? animCandles : (latestState.candles || []);
@@ -1688,7 +1709,56 @@ let latestState = null;
       } else {
         tip.style.display = 'none';
       }
+    } else {
+      priceHoverPos = null;
+      tip.style.display = 'none';
+    }
+    drawPriceChart(latestState);
+  }
+
+  function locateMouseAndRefreshChart() {
+    if (!latestState) return;
+    const wrap = document.getElementById('priceCanvasWrap');
+    if (!wrap) return;
+
+    // 1. Force layout resize & canvas buffer update
+    triggerSmoothResize();
+
+    // 2. Auto-locate mouse position and refresh crosshair/tooltip
+    const isHovered = document.querySelector('#priceCanvasWrap:hover') !== null;
+    if (isHovered && lastGlobalPointerX >= 0 && lastGlobalPointerY >= 0) {
+      updateChartMouseHover(lastGlobalPointerX, lastGlobalPointerY);
+    } else if (lastGlobalPointerX >= 0 && lastGlobalPointerY >= 0) {
+      const rect = wrap.getBoundingClientRect();
+      if (lastGlobalPointerX >= rect.left && lastGlobalPointerX <= rect.right &&
+          lastGlobalPointerY >= rect.top && lastGlobalPointerY <= rect.bottom) {
+        updateChartMouseHover(lastGlobalPointerX, lastGlobalPointerY);
+      } else {
+        priceHoverPos = null;
+        drawPriceChart(latestState);
+      }
+    } else {
+      priceHoverPos = null;
       drawPriceChart(latestState);
+    }
+  }
+
+  // Interactive Hover Tooltip for Price Chart
+  function setupChartInteraction() {
+    const wrap = document.getElementById('priceCanvasWrap');
+    const tip = document.getElementById('priceTooltip');
+    if (!wrap || !tip) return;
+
+    wrap.addEventListener('mousemove', (e) => {
+      lastGlobalPointerX = e.clientX;
+      lastGlobalPointerY = e.clientY;
+      updateChartMouseHover(e.clientX, e.clientY);
+    });
+
+    wrap.addEventListener('mouseenter', (e) => {
+      lastGlobalPointerX = e.clientX;
+      lastGlobalPointerY = e.clientY;
+      updateChartMouseHover(e.clientX, e.clientY);
     });
 
     wrap.addEventListener('mouseleave', () => {
