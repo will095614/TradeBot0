@@ -1,0 +1,184 @@
+from __future__ import annotations
+from decimal import Decimal, ROUND_HALF_UP
+from typing import List, Optional, Tuple
+import time
+from src.arena.order import FillEvent, OrderSide
+
+PRECISION_CASH = Decimal("0.01")
+PRECISION_CRYPTO = Decimal("0.0001")
+
+
+class Portfolio:
+    """
+    Precision Portfolio Ledger for Paper Trading Arena.
+    Strictly uses Decimal arithmetic to eliminate IEEE 754 floating-point drift.
+    Tracks exact round-trip realized PnL, intra-bar peak-to-trough drawdown, and deduplicated equity curves.
+    """
+    def __init__(
+        self,
+        portfolio_id: str,
+        name: str,
+        initial_cash: Decimal = Decimal("3000.00"),
+        maker_taker_fee_rate: Decimal = Decimal("0.0005"),  # 0.05% standard fee
+    ):
+        self.portfolio_id: str = portfolio_id
+        self.name: str = name
+        self.initial_cash: Decimal = initial_cash.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        self.cash: Decimal = self.initial_cash
+        self.position_qty: Decimal = Decimal("0.0000")
+        self.avg_entry_price: Decimal = Decimal("0.00")
+        self.open_position_entry_fee: Decimal = Decimal("0.00")
+
+        self.realized_pnl: Decimal = Decimal("0.00")
+        self.total_fees_paid: Decimal = Decimal("0.00")
+        self.gross_profit: Decimal = Decimal("0.00")
+        self.gross_loss: Decimal = Decimal("0.00")
+        self.win_count: int = 0
+        self.loss_count: int = 0
+        self.fee_rate: Decimal = maker_taker_fee_rate
+
+        self.current_market_price: Decimal = Decimal("0.00")
+        self.peak_equity: Decimal = self.initial_cash
+        self.max_drawdown_pct: Decimal = Decimal("0.00")
+
+        self.trade_history: List[FillEvent] = []
+        self.equity_history: List[Tuple[float, Decimal]] = []
+        self.is_circuit_breaker_tripped: bool = False
+
+    @property
+    def unrealized_pnl(self) -> Decimal:
+        if self.position_qty <= Decimal("0") or self.current_market_price <= Decimal("0"):
+            return Decimal("0.00")
+        return ((self.current_market_price - self.avg_entry_price) * self.position_qty).quantize(
+            PRECISION_CASH, rounding=ROUND_HALF_UP
+        )
+
+    @property
+    def total_equity(self) -> Decimal:
+        return (self.cash + (self.position_qty * self.current_market_price)).quantize(
+            PRECISION_CASH, rounding=ROUND_HALF_UP
+        )
+
+    @property
+    def roi_pct(self) -> Decimal:
+        if self.initial_cash <= Decimal("0"):
+            return Decimal("0.00")
+        return (((self.total_equity - self.initial_cash) / self.initial_cash) * Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+    @property
+    def closed_trades_count(self) -> int:
+        return self.win_count + self.loss_count
+
+    @property
+    def profit_factor(self) -> float:
+        if self.gross_loss <= Decimal("0"):
+            return float(self.gross_profit) if self.gross_profit > Decimal("0") else 0.0
+        return round(float(self.gross_profit / self.gross_loss), 2)
+
+    def update_market_price(
+        self,
+        price: Decimal,
+        timestamp: Optional[float] = None,
+        low_price: Optional[Decimal] = None,
+        high_price: Optional[Decimal] = None
+    ) -> None:
+        self.current_market_price = price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+
+        # Evaluate intra-bar peak & trough if holding a long position
+        if self.position_qty > Decimal("0"):
+            if high_price is not None:
+                high_eq = (self.cash + (self.position_qty * high_price)).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                if high_eq > self.peak_equity:
+                    self.peak_equity = high_eq
+            if low_price is not None and self.peak_equity > Decimal("0"):
+                low_eq = (self.cash + (self.position_qty * low_price)).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                intra_dd = ((self.peak_equity - low_eq) / self.peak_equity) * Decimal("100")
+                if intra_dd > self.max_drawdown_pct:
+                    self.max_drawdown_pct = intra_dd.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        current_eq = self.total_equity
+        if current_eq > self.peak_equity:
+            self.peak_equity = current_eq
+
+        if self.peak_equity > Decimal("0"):
+            dd = ((self.peak_equity - current_eq) / self.peak_equity) * Decimal("100")
+            if dd > self.max_drawdown_pct:
+                self.max_drawdown_pct = dd.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        ts = timestamp if timestamp is not None else time.time()
+        if self.equity_history and self.equity_history[-1][0] == ts:
+            self.equity_history[-1] = (ts, current_eq)
+        else:
+            self.equity_history.append((ts, current_eq))
+            if len(self.equity_history) > 2000:
+                self.equity_history = self.equity_history[-2000:]
+
+    def apply_fill(self, fill: FillEvent) -> FillEvent:
+        """
+        Applies a trade execution fill with exact Decimal accounting.
+        Returns the enriched FillEvent (with realized_pnl populated on SELL fills).
+        """
+        fee_q = fill.fee.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        self.total_fees_paid = (self.total_fees_paid + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        trade_val = (fill.qty * fill.price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        enriched_fill = fill
+
+        if fill.side == OrderSide.BUY:
+            total_cost = (trade_val + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            if total_cost > self.cash:
+                raise ValueError(f"Insufficient cash in {self.portfolio_id}: need {total_cost}, have {self.cash}")
+
+            new_qty = (self.position_qty + fill.qty).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
+            if new_qty > Decimal("0"):
+                new_avg = ((self.position_qty * self.avg_entry_price) + trade_val) / new_qty
+                self.avg_entry_price = new_avg.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+
+            self.position_qty = new_qty
+            self.open_position_entry_fee = (self.open_position_entry_fee + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            self.cash = (self.cash - total_cost).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+
+        elif fill.side == OrderSide.SELL:
+            if fill.qty > self.position_qty:
+                raise ValueError(f"Overselling in {self.portfolio_id}: selling {fill.qty}, hold {self.position_qty}")
+
+            # Proportion of entry fee attributable to this closing fill
+            entry_fee_share = (
+                (self.open_position_entry_fee * (fill.qty / self.position_qty)).quantize(
+                    PRECISION_CASH, rounding=ROUND_HALF_UP
+                )
+                if self.position_qty > Decimal("0")
+                else Decimal("0.00")
+            )
+
+            closing_entry_price = self.avg_entry_price
+
+            # Net realized PnL accounts for both entry and exit trading commissions
+            pnl = (((fill.price - self.avg_entry_price) * fill.qty) - fee_q - entry_fee_share).quantize(
+                PRECISION_CASH, rounding=ROUND_HALF_UP
+            )
+            self.realized_pnl = (self.realized_pnl + pnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            enriched_fill = fill.with_realized_pnl(pnl, entry_price=closing_entry_price)
+
+            if pnl > Decimal("0"):
+                self.win_count += 1
+                self.gross_profit = (self.gross_profit + pnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            else:
+                self.loss_count += 1
+                self.gross_loss = (self.gross_loss + abs(pnl)).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+
+            self.position_qty = (self.position_qty - fill.qty).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
+            self.cash = (self.cash + trade_val - fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            self.open_position_entry_fee = max(
+                Decimal("0.00"),
+                (self.open_position_entry_fee - entry_fee_share).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            )
+
+            if self.position_qty == Decimal("0"):
+                self.avg_entry_price = Decimal("0.00")
+                self.open_position_entry_fee = Decimal("0.00")
+
+        self.trade_history.append(enriched_fill)
+        self.update_market_price(fill.price, fill.timestamp)
+        return enriched_fill
