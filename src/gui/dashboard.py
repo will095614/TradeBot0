@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from src.data.live_engine import LiveArenaEngine
 

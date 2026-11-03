@@ -1,5 +1,5 @@
 from __future__ import annotations
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 from typing import Optional, Dict, Any
 from src.arena.order import OrderTicket, OrderSide, OrderType, ExecutionReason
 from src.arena.broker_sim import BrokerSim

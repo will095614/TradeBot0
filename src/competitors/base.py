@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Dict, Any
 from src.arena.order import OrderTicket

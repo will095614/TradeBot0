@@ -6,7 +6,6 @@ from src.arena.order import (
     OrderTicket,
     OrderSide,
     OrderType,
-    OrderStatus,
     ExecutionReason,
     FillEvent,
 )
