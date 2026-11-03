@@ -539,7 +539,10 @@ let latestState = null;
   }
   function showOmniInfo() { showEngineInfo(); }
 
-    function renderStrategies(state) {
+  const stratCardDomMap = new Map();
+  const prevRankRecord = new Map();
+
+  function renderStrategies(state) {
     const grid = document.getElementById('tabCardsView') || document.getElementById('strategiesGrid');
     if (!grid) return;
     const strategies = (state.strategies || []).slice().sort((a, b) => a.rank - b.rank);
