@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TradeBot0 - ETH/USD Multi-Strategy Quant Arena</title>
+<style>
+/* __APP_CSS__ */
+</style>
+</head>
+<body>
+  <!-- High-Tech Initialization Splash Screen -->
+  <div id="splashOverlay" class="splash-overlay">
+    <div class="splash-container">
+      <div class="splash-radar-beacon">
+        <div class="splash-radar-ring ring1"></div>
+        <div class="splash-radar-ring ring2"></div>
+        <div class="splash-radar-ring ring3"></div>
+        <div class="splash-icon">&#x26A1;</div>
+      </div>
+      <div class="splash-brand">
+        <div class="splash-title">TradeBot0 <span class="splash-highlight">Quant Arena</span></div>
+        <div class="splash-subtitle">ETH/USD Real-Time Multi-Strategy Battleground</div>
+      </div>
+      <div class="splash-progress-wrapper">
+        <div class="splash-progress-track">
+          <div id="splashProgressBar" class="splash-progress-bar">
+            <div class="splash-progress-glow"></div>
+          </div>
+        </div>
+        <div class="splash-progress-meta">
+          <span id="splashStepLabel" class="splash-step-lbl">Initializing Quantum Battleground...</span>
+          <span id="splashPercentLabel" class="splash-percent-lbl">0%</span>
+        </div>
+      </div>
+      <div class="splash-footer-note">
+        <span class="live-dot" style="margin-right:6px;"></span>
+        <span>Awaiting Live Exchange Orderflow &amp; Warmup...</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="app-shell">
+    <!-- Top Command & Live Quote Ribbon -->
+    <header class="top-ribbon">
+      <div class="brand-cluster">
+        <div id="liveBadge" class="brand-badge">
+          <span class="pulse-dot"></span>
+          <span id="liveStatusText">Live Feed</span>
+        </div>
+        <div class="title-group">
+          <h1>TradeBot0 <span style="font-size:10.5px;font-weight:600;color:var(--accent);background:var(--accent-dim);padding:2px 7px;border-radius:4px;border:1px solid var(--accent-border);letter-spacing:0.02em;">ETH/USD Quant Arena</span></h1>
+          <span class="title-sub" id="sourceSubtitle">Connecting | Baseline Capital: $500,000.00 / Strategy ($3,000,000 Total)</span>
+        </div>
+      </div>
+
+      <div class="ticker-strip">
+        <div class="stat-block">
+          <span class="stat-lbl">ETH Spot Price</span>
+          <span class="stat-val spot-hero num" id="spotPrice">$0.00</span>
+        </div>
+        <div class="stat-block">
+          <span class="stat-lbl">24h Change</span>
+          <span class="stat-val num" id="change24h">+0.00%</span>
+        </div>
+        <div class="stat-block">
+          <span class="stat-lbl">Bid / Ask</span>
+          <span class="stat-val num" id="bidAskSpread">$0.00 / $0.00</span>
+        </div>
+        <div class="stat-block">
+          <span class="stat-lbl">24h High / Low</span>
+          <span class="stat-val num" id="highLow24h">$0.00 / $0.00</span>
+        </div>
+        
+        <!-- Evolution Countdown & Interval Switcher Widget -->
+        <div class="auto-evolve-pill num">
+          <span><strong id="genLabel">Gen #1</strong></span>
+          <span style="color:var(--border-medium)">|</span>
+          <span style="color:var(--text-muted)">Cycle:</span>
+          <select class="interval-select" id="evolveIntervalSelect" onchange="changeEvolveInterval(this.value)" title="Change auto evolution cycle">
+            <option value="3600">1h</option>
+            <option value="7200">2h</option>
+            <option value="14400">4h</option>
+            <option value="21600" selected>6h (Default)</option>
+            <option value="43200">12h</option>
+            <option value="86400">24h</option>
+          </select>
+          <span style="color:var(--border-medium)">|</span>
+          <span style="color:var(--text-muted)">Next:</span>
+          <strong id="countdownLabel" style="color:var(--accent);">06:00:00</strong>
+          <button class="auto-evolve-btn" onclick="toggleAutoEvolve()" id="autoEvolveToggleBtn" title="Click to toggle auto evolution">
+            [Active]
+          </button>
+        </div>
+      </div>
+
+      <div class="action-cluster">
+        <button class="btn btn-primary" onclick="triggerEvolution()" title="Trigger tournament selection and crossover mutation now">
+          Evolve Gen
+        </button>
+        <button class="btn" id="pauseBtn" onclick="togglePause()">
+          Pause Feed
+        </button>
+        <button class="btn" onclick="resetArena()" title="Reset all competitor portfolios to $500,000.00 cash">
+          Reset Arena
+        </button>
+        <button class="btn" onclick="toggleFullscreen()" title="Toggle Fullscreen Mode (F11)">
+          Fullscreen [F11]
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Fluid Workspace -->
+    <main class="workspace-grid">
+      <!-- Left Column: Full-Height Rich ETH/USD Tactical Candlestick Chart -->
+      <section class="left-column">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="serif">ETH/USD Tactical Depth (1m Candles · High Precision)</span>
+            </div>
+            <div class="panel-tools">
+              <div class="seg-control">
+                <button class="seg-btn active" id="btnScaleAuto" onclick="setScaleMode('auto')" title="Focus on visible candle action">Focus Candles</button>
+                <button class="seg-btn" id="btnScaleFull" onclick="setScaleMode('full')" title="Include distant bracket orders">Full Range</button>
+              </div>
+              <div class="seg-control">
+                <button class="seg-btn active" id="btnModeCandles" onclick="setChartMode('candles')">1m Candles</button>
+                <button class="seg-btn" id="btnModeLine" onclick="setChartMode('line')">Trend Line</button>
+              </div>
+              <span class="legend-item"><i class="legend-swatch" style="background:var(--c-cons)"></i>EMA(9)</span>
+              <span class="legend-item"><i class="legend-swatch" style="background:var(--c-atr)"></i>EMA(21)</span>
+              <span class="legend-item"><i class="legend-swatch" style="background:var(--c-vwap)"></i>VWAP</span>
+              <span class="legend-item" title="Aggressive Momentum"><i class="legend-swatch" style="background:var(--c-agg)"></i>AGG</span>
+              <span class="legend-item" title="Conservative Scalper"><i class="legend-swatch" style="background:var(--c-cons)"></i>CONS</span>
+              <span class="legend-item" title="ATR Dynamic Adaptive"><i class="legend-swatch" style="background:var(--c-atr)"></i>ATR</span>
+              <span class="legend-item" title="Trailing Ratchet Guard"><i class="legend-swatch" style="background:var(--c-trail)"></i>TRAIL</span>
+              <span class="legend-item" title="Opening Range Breakout (15m)"><i class="legend-swatch" style="background:var(--c-orb)"></i>ORB</span>
+              <span class="legend-item" title="Institutional VWAP Pullback"><i class="legend-swatch" style="background:var(--c-vwap)"></i>VWAP</span>
+            </div>
+          </div>
+          <div class="canvas-wrap" id="priceCanvasWrap">
+            <canvas id="priceCanvas"></canvas>
+            <div id="chartNotificationContainer" class="chart-notification-container"></div>
+            <div id="priceTooltip" class="chart-tooltip num"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Column: Quant Arena Tactical Desk + Execution Tape -->
+      <section class="right-column">
+        <!-- Right Panel 1: Tactical HUD + Strategies Matrix + Full Leaderboard -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span>Quant Arena Tactical Hub</span>
+            </div>
+          </div>
+          <div class="top-right-body">
+            <!-- Tactical HUD: 4 Key Metric & Champion Cards -->
+            <div class="tactical-hud">
+              <div class="hud-card" style="border-top:2px solid var(--accent);">
+                <div class="hud-title" id="hudChampTitle">6H Arena Champion</div>
+                <div class="hud-value" id="hudChampName" style="color:var(--accent);">Evaluating...</div>
+                <div class="hud-sub" id="hudChampStats">ROI +0.00% | Next --:--</div>
+              </div>
+              <div class="hud-card" style="border-top:2px solid var(--c-agg);">
+                <div class="hud-title">Momentum / Volatility</div>
+                <div class="hud-value num" id="hudRsiVal">RSI 50.0</div>
+                <div class="hud-sub num" id="hudAtrVal">ATR $0.00 (0.00%)</div>
+              </div>
+              <div class="hud-card" style="border-top:2px solid var(--c-cons);">
+                <div class="hud-title">Gross Exposure</div>
+                <div class="hud-value num" id="hudExposureQty">0.0000 ETH</div>
+                <div class="hud-sub num" id="hudExposureVal">$0.00 | Cash 100%</div>
+              </div>
+              <div class="hud-card" style="border-top:2px solid var(--c-atr);">
+                <div class="hud-title">Genetic Engine</div>
+                <div class="hud-value num" id="hudGenVal" style="color:var(--c-atr);">Gen #1</div>
+                <div class="hud-sub num" id="hudGenSub">Style B Evolution</div>
+              </div>
+            </div>
+
+            <!-- View A: 4 Strategy Cards -->
+            <div id="tabCardsView" class="strategies-grid-compact"></div>
+
+            <!-- View B: Quantitative Leaderboard Table -->
+            <div id="tabLeaderboardWrap" class="leaderboard-wrap">
+              <div class="sub-section-header">
+                <span style="font-weight:700;color:var(--text-primary);font-size:11px;">Strategy Performance Leaderboard</span>
+                <span class="num" style="font-size:9.5px;color:var(--text-muted);">Baseline Capital: $500,000 / Strategy ($3,000,000 Total)</span>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Strategy</th>
+                      <th class="text-right">Total Equity</th>
+                      <th class="text-right">ROI</th>
+                      <th class="text-right">Unrealized PnL</th>
+                      <th class="text-right">Max Drawdown</th>
+                      <th class="text-right">Win Rate</th>
+                      <th class="text-right">Sharpe</th>
+                      <th class="text-right">Fitness</th>
+                    </tr>
+                  </thead>
+                  <tbody id="leaderboardBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Execution Tape & OmniRoute Bar -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span>Real-Time Execution & Order Tape</span>
+            </div>
+            <div class="panel-tools">
+              <span id="fillCountLabel">0 Records</span>
+            </div>
+          </div>
+          <div class="bottom-right-split">
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:36px;">#</th>
+                    <th>Time</th>
+                    <th>Strategy</th>
+                    <th>Action</th>
+                    <th class="text-right">Qty (ETH)</th>
+                    <th class="text-right">Fill Price</th>
+                    <th class="text-right">Realized PnL</th>
+                    <th>Trigger Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="fillsBody"></tbody>
+              </table>
+            </div>
+            <div class="omni-footer">
+              <div style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;">
+                <span style="color:var(--accent);font-weight:700;">[OmniRoute]</span>
+                <span id="omniSourceBadge" class="brand-badge" onclick="showOmniInfo()" style="font-size:10px;padding:2px 7px;cursor:pointer;" title="Click to view OmniRoute diagnostic telemetry">
+                  Source: Local Engine (0 Token Offline)
+                </span>
+                <span id="omniQuotaBadge" class="brand-badge" style="font-size:10px;padding:2px 7px;background:rgba(0,230,118,0.12);color:var(--up);border-color:rgba(0,230,118,0.3);">
+                  Quota: 100%
+                </span>
+              </div>
+              <span class="omni-text" id="omniSummary" style="margin-left:8px;">Synchronizing live orderflow...</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+<script>
+/* __APP_JS__ */
+</script>
+</body>
+</html>

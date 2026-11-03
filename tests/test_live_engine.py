@@ -199,7 +199,13 @@ def test_ui_template_integrity_and_cleanliness():
     assert "evolveIntervalSelect" in HTML_TEMPLATE
     assert "changeEvolveInterval" in HTML_TEMPLATE
 
-    # 3. Fills reason does not duplicate Cost string
+    # 3. High-Tech Splash Screen elements present
+    assert "splashOverlay" in HTML_TEMPLATE
+    assert "splashProgressBar" in HTML_TEMPLATE
+    assert "splashStepLabel" in HTML_TEMPLATE
+    assert "splashPercentLabel" in HTML_TEMPLATE
+
+    # 4. Fills reason does not duplicate Cost string
     engine = LiveArenaEngine(initial_cash=Decimal("3000.00"))
     _drive(engine, ["3500.00", "3510.00", "3490.00"])
     state = engine.get_ui_state()
