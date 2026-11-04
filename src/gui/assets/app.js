@@ -5,14 +5,18 @@
   // 2. Pre-render Left K-Line Chart and Right Strategy/Leaderboard Tables
   // 3. Verify ALL elements rendered -> 100% -> Reveal Arena
   // 4. Activate Live Order Dispatch
+  // Supports both initial application boot and on-demand Reset Arena re-entry
   // ==========================================================================
   let splashProgress = 0;
   let targetSplashProgress = 15;
   let splashCompleted = false;
   let hasFirstChartDrawn = false;
   let hasFirstTableRendered = false;
+  let splashLoop = null;
+  let splashSafetyTimer = null;
+  let currentSplashSteps = [];
 
-  const splashSteps = [
+  const initialSplashSteps = [
     { threshold: 15, text: "Initializing 6 Strategy Ledgers ($100,000 U x 6)..." },
     { threshold: 35, text: "Connecting to Real-Time Multi-Exchange Orderflow..." },
     { threshold: 55, text: "Replaying 120m Intraday Historical Simulation..." },
@@ -20,6 +24,116 @@
     { threshold: 90, text: "Pre-rendering Left K-Line Chart & Right Tactical Tables..." },
     { threshold: 100, text: "Arena Fully Loaded. Launching Live Arena..." }
   ];
+
+  const resetSplashSteps = [
+    { threshold: 15, text: "Resetting 6 Strategy Portfolios ($100,000 U x 6)..." },
+    { threshold: 35, text: "Purging Order Tape & Active Bracket Orders..." },
+    { threshold: 55, text: "Replaying 120m Intraday Historical Simulation..." },
+    { threshold: 75, text: "Re-computing Wilder RSI, ATR, VWAP & Rankings..." },
+    { threshold: 90, text: "Pre-rendering Fresh K-Line Depth & Tactical Tables..." },
+    { threshold: 100, text: "Arena Reset Complete. Launching Fresh Arena..." }
+  ];
+
+  function startSplashSequence(isReset = false) {
+    if (splashLoop) {
+      clearInterval(splashLoop);
+      splashLoop = null;
+    }
+    if (splashSafetyTimer) {
+      clearTimeout(splashSafetyTimer);
+      splashSafetyTimer = null;
+    }
+
+    splashProgress = 0;
+    targetSplashProgress = 15;
+    splashCompleted = false;
+    hasFirstChartDrawn = false;
+    hasFirstTableRendered = false;
+    currentSplashSteps = isReset ? resetSplashSteps : initialSplashSteps;
+
+    const overlay = document.getElementById('splashOverlay');
+    const bar = document.getElementById('splashProgressBar');
+    const pLbl = document.getElementById('splashPercentLabel');
+    const sLbl = document.getElementById('splashStepLabel');
+    const fNote = document.getElementById('splashFooterNoteText');
+
+    if (overlay) {
+      overlay.style.display = 'flex';
+      overlay.classList.remove('fade-out');
+    }
+    if (bar) bar.style.width = '0%';
+    if (pLbl) pLbl.textContent = '0%';
+    if (sLbl) sLbl.textContent = currentSplashSteps[0].text;
+    if (fNote) {
+      fNote.textContent = isReset
+        ? "Re-initializing Portfolios & Re-simulating 120m Orderflow..."
+        : "Simulating 120m Orderflow & Pre-Rendering Arena...";
+    }
+
+    // Smooth 60 FPS animation loop for progress bar
+    splashLoop = setInterval(() => {
+      if (splashCompleted) {
+        clearInterval(splashLoop);
+        splashLoop = null;
+        return;
+      }
+
+      if (splashProgress < targetSplashProgress) {
+        const step = Math.max(0.4, (targetSplashProgress - splashProgress) * 0.16);
+        splashProgress = Math.min(targetSplashProgress, splashProgress + step);
+      }
+
+      if (bar) bar.style.width = splashProgress + '%';
+      if (pLbl) pLbl.textContent = Math.round(splashProgress) + '%';
+
+      let activeStep = currentSplashSteps[0].text;
+      for (let i = 0; i < currentSplashSteps.length; i++) {
+        if (splashProgress >= currentSplashSteps[i].threshold) {
+          activeStep = currentSplashSteps[i].text;
+        }
+      }
+      if (sLbl) sLbl.textContent = activeStep;
+
+      // Strict exit condition: 100% reached AND left chart drawn AND right tables rendered!
+      if (splashProgress >= 99.5 && targetSplashProgress >= 100 && hasFirstChartDrawn && hasFirstTableRendered) {
+        splashProgress = 100;
+        if (pLbl) pLbl.textContent = '100%';
+        if (sLbl) sLbl.textContent = currentSplashSteps[currentSplashSteps.length - 1].text;
+        splashCompleted = true;
+        clearInterval(splashLoop);
+        splashLoop = null;
+
+        setTimeout(() => {
+          const overlayEl = document.getElementById('splashOverlay');
+          if (overlayEl) {
+            overlayEl.classList.add('fade-out');
+          }
+
+          // Automatic mouse location and immediate chart refresh upon entering arena
+          locateMouseAndRefreshChart();
+
+          // Second refresh and final live order activation after overlay transition
+          setTimeout(() => {
+            if (overlayEl) overlayEl.style.display = 'none';
+            locateMouseAndRefreshChart();
+            if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.start_live_trading === 'function') {
+              window.pywebview.api.start_live_trading().catch(e => console.warn('start_live_trading err:', e));
+            }
+          }, 400);
+        }, 400);
+      }
+    }, 25);
+
+    // Safety fallback: ensure splash screen never hangs longer than 14 seconds
+    splashSafetyTimer = setTimeout(() => {
+      if (!splashCompleted) {
+        hasFirstChartDrawn = true;
+        hasFirstTableRendered = true;
+        setSplashTarget(100);
+        splashProgress = 100;
+      }
+    }, 14000);
+  }
 
   function setSplashTarget(percent) {
     if (splashCompleted) return;
@@ -30,69 +144,8 @@
     setSplashTarget(percent);
   }
 
-  // Smooth 60 FPS animation loop for progress bar
-  let splashLoop = setInterval(() => {
-    if (splashCompleted) {
-      clearInterval(splashLoop);
-      return;
-    }
-
-    if (splashProgress < targetSplashProgress) {
-      const step = Math.max(0.4, (targetSplashProgress - splashProgress) * 0.16);
-      splashProgress = Math.min(targetSplashProgress, splashProgress + step);
-    }
-
-    const bar = document.getElementById('splashProgressBar');
-    const pLbl = document.getElementById('splashPercentLabel');
-    const sLbl = document.getElementById('splashStepLabel');
-    if (bar) bar.style.width = splashProgress + '%';
-    if (pLbl) pLbl.textContent = Math.round(splashProgress) + '%';
-
-    let activeStep = splashSteps[0].text;
-    for (let i = 0; i < splashSteps.length; i++) {
-      if (splashProgress >= splashSteps[i].threshold) {
-        activeStep = splashSteps[i].text;
-      }
-    }
-    if (sLbl) sLbl.textContent = activeStep;
-
-    // Strict exit condition: 100% reached AND left chart drawn AND right tables rendered!
-    if (splashProgress >= 99.5 && targetSplashProgress >= 100 && hasFirstChartDrawn && hasFirstTableRendered) {
-      splashProgress = 100;
-      if (pLbl) pLbl.textContent = '100%';
-      if (sLbl) sLbl.textContent = splashSteps[splashSteps.length - 1].text;
-      splashCompleted = true;
-      clearInterval(splashLoop);
-      setTimeout(() => {
-        const overlay = document.getElementById('splashOverlay');
-        if (overlay) {
-          overlay.classList.add('fade-out');
-        }
-
-        // Automatic mouse location and immediate chart refresh upon entering arena
-        locateMouseAndRefreshChart();
-
-        // Second refresh and final live order activation after overlay transition
-        setTimeout(() => {
-          if (overlay) overlay.style.display = 'none';
-          locateMouseAndRefreshChart();
-          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.start_live_trading === 'function') {
-            window.pywebview.api.start_live_trading().catch(e => console.warn('start_live_trading err:', e));
-          }
-        }, 400);
-      }, 400);
-    }
-  }, 25);
-
-  // Safety fallback: ensure splash screen never hangs longer than 14 seconds even if offline
-  setTimeout(() => {
-    if (!splashCompleted) {
-      hasFirstChartDrawn = true;
-      hasFirstTableRendered = true;
-      setSplashTarget(100);
-      splashProgress = 100;
-    }
-  }, 14000);
+  // Trigger initial splash sequence on application boot
+  startSplashSequence(false);
 
 let latestState = null;
   let isPolling = false;
@@ -363,7 +416,11 @@ let latestState = null;
   async function togglePause() {
     if (!window.pywebview || !window.pywebview.api) return;
     const state = await window.pywebview.api.toggle_pause();
-    if (state) { latestState = state; renderAll(state); }
+    if (state) {
+      latestState = state;
+      document.body.classList.toggle('arena-paused', Boolean(state.paused));
+      renderAll(state);
+    }
   }
 
   async function toggleAutoEvolve() {
@@ -380,13 +437,35 @@ let latestState = null;
     if (state) { latestState = state; renderAll(state); }
   }
 
+  let isResettingArena = false;
+
   async function resetArena() {
     if (!window.pywebview || !window.pywebview.api) return;
+    if (isResettingArena || !splashCompleted) return;
+    isResettingArena = true;
+
+    // Immediately start the reload progress overlay to hide the teardown/rebuild
+    startSplashSequence(true);
+
+    // Reset local tracking states
     knownStrategyPositions = {};
     hasInitializedPositions = false;
     chartBeacons = [];
-    const state = await window.pywebview.api.reset_arena();
-    if (state) { latestState = state; renderAll(state); }
+    latestState = null;
+
+    try {
+      const state = await window.pywebview.api.reset_arena();
+      if (state) {
+        latestState = state;
+        renderAll(state);
+      }
+    } catch (err) {
+      console.warn('reset_arena error:', err);
+    } finally {
+      setTimeout(() => {
+        isResettingArena = false;
+      }, 1000);
+    }
   }
 
   let rightTab = 'all'; // 'all', 'leaderboard', 'cards'
@@ -494,7 +573,9 @@ let latestState = null;
     const statusText = document.getElementById('liveStatusText');
     const pauseBtn = document.getElementById('pauseBtn');
     const isOffline = state.market_online === false || (q && q.is_offline);
-    if (state.paused) {
+    const isPaused = Boolean(state.paused);
+    document.body.classList.toggle('arena-paused', isPaused);
+    if (isPaused) {
       badge.style.background = 'rgba(217, 101, 101, 0.15)';
       badge.style.color = 'var(--down)';
       badge.style.borderColor = 'rgba(217, 101, 101, 0.35)';

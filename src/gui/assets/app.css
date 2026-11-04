@@ -212,6 +212,7 @@
     letter-spacing: -0.015em;
   }
 
+
   /* App Shell: Fluid 100vh Layout */
   .app-shell {
     display: grid;
@@ -220,6 +221,12 @@
     height: 100vh;
     gap: 8px;
     padding: 8px 10px;
+    transition: filter 0.4s ease-in-out;
+  }
+
+  /* Paused State: Grayscale Monochrome Screen */
+  body.arena-paused .app-shell {
+    filter: grayscale(100%) contrast(92%);
   }
 
   /* Top Command & Ticker Ribbon */
