@@ -157,9 +157,10 @@ class Leaderboard:
             )
             stats_list.append(stats)
 
-        # Sort by Active Status -> Fitness Score -> ROI % -> Lowest Max Drawdown
+        # Sort strictly by Total Equity (Descending) -> Active Status -> Fitness Score -> ROI %
         stats_list.sort(
             key=lambda s: (
+                s.equity,
                 s.status == "ACTIVE",
                 s.fitness_score,
                 float(s.roi_pct),

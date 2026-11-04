@@ -99,6 +99,11 @@ class LiveArenaEngine:
         self.max_candles: int = 200
         self.live_start_ts: Optional[float] = None
 
+        # Paced Candlestick Cadence Dispatcher (emits stable slices at 3s/5s heartbeat)
+        self.cadence_sec: float = 3.0
+        self.last_cadence_ts: float = 0.0
+        self.published_candles: List[Dict[str, float]] = []
+
         # Style-B automatic hourly evolution
         self.auto_evolve_enabled: bool = True
         self.auto_evolve_interval_sec: int = 21600  # Default 6 hours (21600s)
@@ -437,6 +442,8 @@ class LiveArenaEngine:
                     "info"
                 )
 
+            self.published_candles = [dict(c) for c in self.candles]
+            self.last_cadence_ts = time.time()
             self.is_bootstrapped = True
 
     def start_live_trading(self) -> None:
@@ -1107,6 +1114,12 @@ class LiveArenaEngine:
                     self._update_candle(quote.timestamp, quote.price)
                     self._recompute_candle_indicators()
 
+                    # Paced Cadence Dispatcher: Publish candle slices at stable 3s/5s heartbeat
+                    now_ts = time.time()
+                    if now_ts - self.last_cadence_ts >= self.cadence_sec or not self.published_candles:
+                        self.published_candles = [dict(c) for c in self.candles]
+                        self.last_cadence_ts = now_ts
+
                     # Update live exponential moving averages & micro-RSI on each real-time tick
                     alpha_f = Decimal("0.15")
                     alpha_s = Decimal("0.04")
@@ -1183,6 +1196,12 @@ class LiveArenaEngine:
             hrs_text = f"{hours:g}h" if hours >= 1 else f"{self.auto_evolve_interval_sec // 60}m"
             self.log_event("CONFIG", f"Auto Evolution Interval set to {hrs_text} ({self.auto_evolve_interval_sec}s)", "info")
             return self.auto_evolve_interval_sec
+
+    def set_cadence_interval(self, seconds: float) -> float:
+        with self.lock:
+            self.cadence_sec = max(1.0, min(10.0, float(seconds)))
+            self.log_event("CONFIG", f"Candlestick output cadence set to {self.cadence_sec:.1f}s", "info")
+            return self.cadence_sec
 
     def evolve_now(self, trigger: str = "manual") -> List[str]:
         records_to_save = None
@@ -1458,8 +1477,9 @@ class LiveArenaEngine:
                     "l": fz(c["l"]),
                     "c": fz(c["c"]),
                 }
-                for c in self.candles[-150:]
+                for c in (self.published_candles if self.published_candles else self.candles)[-150:]
             ],
+            "cadence_sec": self.cadence_sec,
             "tv_hub": {
                 "champion": active_tv_champ,
                 "next_rotation_sec": int(next_evolve_sec),

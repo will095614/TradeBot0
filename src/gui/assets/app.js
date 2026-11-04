@@ -632,7 +632,7 @@ let latestState = null;
   function renderStrategies(state) {
     const grid = document.getElementById('tabCardsView') || document.getElementById('strategiesGrid');
     if (!grid) return;
-    const strategies = (state.strategies || []).slice().sort((a, b) => a.rank - b.rank);
+    const strategies = (state.strategies || []).slice().sort((a, b) => (b.equity - a.equity) || (a.rank - b.rank));
     const spot = Number((state.quote && state.quote.price) || 0);
 
     // 1. Measure initial visual bounding box tops for FLIP animation
@@ -876,7 +876,7 @@ let latestState = null;
   function renderLeaderboard(state) {
     const tbody = document.getElementById('leaderboardBody');
     if (!tbody) return;
-    const strategies = (state.strategies || []).slice().sort((a, b) => a.rank - b.rank);
+    const strategies = (state.strategies || []).slice().sort((a, b) => (b.equity - a.equity) || (a.rank - b.rank));
 
     const firstTops = new Map();
     strategies.forEach(s => {
@@ -1186,12 +1186,12 @@ let latestState = null;
     chartAnimRaf = null;
     if (!latestState) return;
 
-    const ease = 0.22; // Responsive 60 FPS damping
+    const ease = 0.12; // Silky smooth 60 FPS damping matched to 3s cadence
     let needsMore = false;
 
     // Smooth Horizontal Kinetic Slide Offset Decay (Silky Leftward Glide)
     if (Math.abs(candleSlideOffset) > 0.05) {
-      candleSlideOffset += (0 - candleSlideOffset) * 0.16;
+      candleSlideOffset += (0 - candleSlideOffset) * 0.08;
       needsMore = true;
     } else {
       candleSlideOffset = 0;
