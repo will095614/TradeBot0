@@ -225,6 +225,7 @@ class MonteCarloBracketOdds:
     r_multiple: float
     breakeven_prob: float
     verdict: str
+    green_prob: float = 0.50
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -233,6 +234,7 @@ class MonteCarloBracketOdds:
             "stop_prob": round(self.stop_prob, 4),
             "neither_prob": round(self.neither_prob, 4),
             "decided_win_rate": round(self.decided_win_rate, 4),
+            "green_prob": round(self.green_prob, 4),
             "expected_r": round(self.expected_r, 3),
             "r_multiple": round(self.r_multiple, 2),
             "breakeven_prob": round(self.breakeven_prob, 4),
@@ -259,7 +261,7 @@ class MonteCarloOddsEvaluator:
         atr: Optional[Decimal | float] = None,
         recent_candles: Optional[List[Dict[str, Any]]] = None,
         n_sims: int = 500,
-        n_steps: int = 45,
+        n_steps: int = 120,
         min_ev_threshold: float = -0.05,
     ) -> MonteCarloBracketOdds:
         entry_f = float(entry_price)
@@ -275,6 +277,7 @@ class MonteCarloOddsEvaluator:
                 r_multiple=0.0,
                 breakeven_prob=1.0,
                 verdict="Rejected (Invalid SL/Entry)",
+                green_prob=0.0,
             )
 
         stop_dist = entry_f - sl_f
@@ -329,24 +332,47 @@ class MonteCarloOddsEvaluator:
             stop_prob = float(np.mean(stop_first))
             neither_prob = float(np.mean(neither))
             expected_r = float(np.mean(payoffs))
+
+            # trader-timemachine specification:
+            # Green paths: Target first, or finished in profit at simulation horizon (paths[:, -1] >= entry_f)
+            green_paths = target_first | (neither & (paths[:, -1] >= entry_f))
+            green_prob = float(np.mean(green_paths))
         else:
             # Fallback pure-python estimator
             target_prob = 0.35
             stop_prob = 0.45
             neither_prob = 0.20
+            green_prob = 0.48
             expected_r = (target_prob * r_mult) - stop_prob
 
         decided = target_prob + stop_prob
         decided_win_rate = (target_prob / decided) if decided > 0 else 0.50
 
-        # Decision Gate (day-trader-skill TimeMachine rule):
-        # Pass if Expected R is above threshold and decided win rate is reasonably close to breakeven
-        passed = (expected_r >= min_ev_threshold) and (decided_win_rate >= (breakeven_win_rate * 0.75))
+        # Target achievable check:
+        # If stop was hit by substantial paths (stop_prob >= 0.35) but target was NEVER reached (target_prob <= 0.002),
+        # the bracket is hostile/absurd (e.g. 40R target in 30 minutes).
+        target_achievable = not (stop_prob >= 0.35 and target_prob <= 0.002)
 
+        # Day-trader-skill Time Machine rule:
+        # When neither_prob > 0.40 (trade horizon extends past simulation window),
+        # evaluate win rate using green_prob (profitable paths), avoiding the small-sample
+        # distortion of premature barrier touches.
+        effective_win_rate = green_prob if neither_prob > 0.40 else decided_win_rate
+
+        # Decision Gate:
+        # Pass if Expected R is above threshold, effective win rate meets breakeven threshold,
+        # and target is achievable.
+        passed = (
+            target_achievable
+            and (expected_r >= min_ev_threshold)
+            and (effective_win_rate >= (breakeven_win_rate * 0.70))
+        )
+
+        display_win = effective_win_rate
         if passed:
-            verdict = f"Passed EV Gate (EV {expected_r:+.2f}R | Win {decided_win_rate*100:.0f}%)"
+            verdict = f"Passed EV Gate (EV {expected_r:+.2f}R | Win {display_win*100:.0f}%)"
         else:
-            verdict = f"Blocked by EV Gate (EV {expected_r:+.2f}R | Win {decided_win_rate*100:.0f}%)"
+            verdict = f"Blocked by EV Gate (EV {expected_r:+.2f}R | Win {display_win*100:.0f}%)"
 
         return MonteCarloBracketOdds(
             passed=passed,
@@ -358,4 +384,5 @@ class MonteCarloOddsEvaluator:
             r_multiple=r_mult,
             breakeven_prob=breakeven_win_rate,
             verdict=verdict,
+            green_prob=green_prob,
         )

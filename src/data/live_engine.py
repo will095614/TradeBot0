@@ -464,7 +464,8 @@ class LiveArenaEngine:
         self.strategy_telemetry[pid]["mc_stats"] = mc_odds.to_dict()
         if not mc_odds.passed:
             self.strategy_cooldown[pid] = ts + 20.0
-            self.strategy_telemetry[pid]["intent"] = f"EV Gate Blocked: Win {mc_odds.target_prob*100:.0f}% (EV {mc_odds.expected_r:+.2f}R)"
+            display_win = mc_odds.green_prob if mc_odds.neither_prob > 0.40 else mc_odds.decided_win_rate
+            self.strategy_telemetry[pid]["intent"] = f"EV Gate Blocked: Win {display_win*100:.0f}% (EV {mc_odds.expected_r:+.2f}R)"
             self.log_event("EV_GATE_BLOCK", f"{competitor.base_name.split(' ')[0]} blocked by TimeMachine EV Gate: {mc_odds.verdict}", "info")
             return False
 
