@@ -18,7 +18,7 @@ class MacroRegimeState:
     regime: str = "NORMAL"  # "BULLISH_SURGE", "BEARISH_PANIC", "HIGH_VOLATILITY_CHOP", "NORMAL"
     directional_bias: str = "BIDIRECTIONAL"  # "LONG_ONLY", "SHORT_ONLY", "BIDIRECTIONAL", "HOLD_CASH"
     risk_multiplier: float = 1.0  # 0.5 to 1.5
-    active_headline: str = "Market in balanced equilibrium. No macro veto active."
+    active_headline: str = "宏觀多空維持均衡結構，即時情報流同步運作中"
     confidence: float = 0.50
     last_synthesis_ts: float = 0.0
     veto_count_today: int = 0
@@ -67,7 +67,7 @@ class MacroCommander:
         self.current_state.regime = "NORMAL"
         self.current_state.directional_bias = "BIDIRECTIONAL"
         self.current_state.risk_multiplier = 1.0
-        self.current_state.active_headline = "Macro regime balanced. Multi-domain feeds synchronized."
+        self.current_state.active_headline = "宏觀多空維持均衡結構，即時情報流同步運作中"
         self.current_state.confidence = 0.85
         self.current_state.status = "ONLINE" if self.client.is_gateway_online else "STANDBY"
 
@@ -79,8 +79,8 @@ class MacroCommander:
                 "domain": "prediction",
                 "urgency": 9,
                 "sentiment": 0.88,
-                "headline": "US Presidential Election Odds Surge: Pro-crypto candidate leads with 68% probability on record $3.2B Polymarket volume",
-                "summary": "Polymarket betting volume hits all-time high of $3.2B with pro-crypto presidential candidate reaching 68% victory odds. Spot crypto buyers aggressively front-run anticipated regulatory clarity.",
+                "headline": "美國總統大選勝率飆升：親加密候選人以 68% 機率領先，Polymarket 交易量創 32 億美元新高",
+                "summary": "Polymarket 預測市場投注量突破 32 億美元歷史新高，親加密總統候選人勝率攀升至 68%。現貨買盤積極搶先佈局監管明朗化紅利，帶動全市場多頭情緒。",
                 "strategy_actions": [
                     {"strat_id": "comp_agg", "name": "Strategy 1 (AGG)", "action": "Opened LONG 0.50 BTC (Momentum Breakout)", "badge_cls": "buy", "time": t_str},
                     {"strat_id": "comp_cons", "name": "Strategy 2 (CONS)", "action": "SHORT Vetoed by Macro Commander (LONG_ONLY)", "badge_cls": "loss", "time": t_str},
@@ -94,8 +94,8 @@ class MacroCommander:
                 "domain": "crypto",
                 "urgency": 8,
                 "sentiment": 0.76,
-                "headline": "US Spot Bitcoin ETFs Record $1.18B Net Inflows in 48-Hour Accumulation Surge",
-                "summary": "BlackRock IBIT and Fidelity FBTC absorption reaches 14,200 BTC, far outpacing daily miner issuance. OTC desk inventory plummets to 2-year low.",
+                "headline": "美國比特幣現貨 ETF 48 小時內淨流入達 11.8 億美元，機構增持力道強勁",
+                "summary": "貝萊德 IBIT 與富達 FBTC 兩日內吸納逾 14,200 枚 BTC，大幅超越礦工每日產出量。場外 OTC 櫃檯流動性庫存創下兩年來新低。",
                 "strategy_actions": [
                     {"strat_id": "comp_trail", "name": "Strategy 4 (TRAIL)", "action": "Trailing Ratchet Tightened to Lock In Gains", "badge_cls": "profit", "time": t_str},
                     {"strat_id": "comp_orb", "name": "Strategy 5 (ORB)", "action": "15m Opening Range Breakout Triggered", "badge_cls": "buy", "time": t_str},
@@ -108,8 +108,8 @@ class MacroCommander:
                 "domain": "macro",
                 "urgency": 7,
                 "sentiment": 0.55,
-                "headline": "Federal Reserve Signals Rate Cut Continuity; Core PCE Trends Toward 2.1% Benchmark",
-                "summary": "FOMC minutes reiterate dovish stance with 50bps cumulative rate cuts projected into Q1. Global M2 liquidity expansion provides persistent tailwind for risk assets.",
+                "headline": "聯準會重申降息路徑未變：核心 PCE 通膨朝 2.1% 目標收斂，流動性偏多延續",
+                "summary": "FOMC 最新會議紀錄偏向鴿派立場，市場預期累計降息具備延續性。全球 M2 貨幣供應量擴張為風險資產提供充沛的跨週期流動性支撐。",
                 "strategy_actions": [
                     {"strat_id": "comp_vwap", "name": "Strategy 6 (VWAP)", "action": "Long Pullback Confirmed Above 20-Day VWAP", "badge_cls": "buy", "time": t_str},
                 ]
@@ -121,8 +121,8 @@ class MacroCommander:
                 "domain": "tech",
                 "urgency": 6,
                 "sentiment": 0.45,
-                "headline": "AI Accelerator Compute Demand Keeps High-Bandwidth Memory (HBM3e) Booked Through 2026",
-                "summary": "TSMC and packaging foundries report 94% advanced packaging utilization. Tech equities rally, lifting broader equity-crypto cross-asset correlation.",
+                "headline": "高頻寬記憶體 (HBM3e) 與先進算力晶片訂單滿載至 2026 年，科技類股引領外溢效應",
+                "summary": "台積電與先進封裝產能利用率高達 94%，AI 晶片需求持續白熱化。美股科技巨頭強勁財報推升跨市場風險偏好，連帶激勵數位資產流動性。",
                 "strategy_actions": []
             },
             {
@@ -132,8 +132,8 @@ class MacroCommander:
                 "domain": "geopolitics",
                 "urgency": 5,
                 "sentiment": -0.10,
-                "headline": "Red Sea Commercial Transit Security Stabilizes Following Coalition Naval Deployment",
-                "summary": "Maritime insurance premiums hold steady as trade corridors maintain alternate routing. Crude oil volatility subdues, lowering supply shock fears.",
+                "headline": "紅海商業航線國際護航機制發揮成效，海運咽喉要道通行條件持穩",
+                "summary": "全球航運改道及聯合巡航使海運保險費率逐步回穩，原油市場波動性顯著收斂，地緣能源衝擊警報暫告緩解。",
                 "strategy_actions": []
             }
         ]
@@ -180,8 +180,8 @@ class MacroCommander:
                 entities_tickers=["BTC", "ELECTION"],
                 urgency_score=9,
                 sentiment_score=0.88,
-                summary="US Presidential Election Odds Surge: Pro-crypto candidate leads with 68% probability on record $3.2B Polymarket volume.",
-                raw_title="US Presidential Election: Historic Crypto Surge with Record Polymarket Volume"
+                summary="美國總統大選勝率飆升：親加密候選人以 68% 機率領先，Polymarket 交易量突破 32 億美元，現貨買盤全面激勵。",
+                raw_title="美國總統大選：Polymarket 交易量創歷史新高，親加密候選人勝率衝上 68%"
             ),
             StructuredEvent(
                 timestamp=iso_now,
@@ -190,8 +190,8 @@ class MacroCommander:
                 entities_tickers=["BTC", "ETF"],
                 urgency_score=8,
                 sentiment_score=0.76,
-                summary="Institutional Bitcoin ETF Net Inflows exceed $1.2B in 48-hour window as OTC liquidity tightens.",
-                raw_title="Bitcoin Spot ETF Inflows Reach Historic Weekly High"
+                summary="美國比特幣現貨 ETF 48 小時內淨流入達 11.8 億美元，機構吸籌強勁，場外 OTC 現貨儲備跌至歷史低點。",
+                raw_title="機構現貨比特幣 ETF 資金加速流入：48 小時淨流入達 11.8 億美元"
             ),
             StructuredEvent(
                 timestamp=iso_now,
@@ -200,8 +200,8 @@ class MacroCommander:
                 entities_tickers=["FED", "RATES"],
                 urgency_score=7,
                 sentiment_score=0.55,
-                summary="Federal Reserve signals sustained rate cuts into next quarter as core inflation softens.",
-                raw_title="Federal Reserve Doves Reiterate Accommodative Monetary Stance"
+                summary="聯準會釋出利率溫和走降訊號，全球 M2 貨幣供應擴張為跨資產市場提供充裕流動性支撐。",
+                raw_title="聯準會鴿派論調延續：核心 PCE 朝 2.1% 目標收斂，貨幣寬鬆基調確定"
             ),
             StructuredEvent(
                 timestamp=iso_now,
@@ -210,8 +210,8 @@ class MacroCommander:
                 entities_tickers=["NVDA", "TSMC"],
                 urgency_score=6,
                 sentiment_score=0.45,
-                summary="Advanced AI compute semiconductor foundries reach 94% capacity utilization; tech correlations lift crypto assets.",
-                raw_title="Semiconductor AI Foundry Capacity Stays Booked Through 2026"
+                summary="先進 AI 算力半導體代工產能滿載至 2026 年，美股科技巨頭強勢動能向加密資產帶來跨市場外溢效應。",
+                raw_title="AI 算力加速晶片與 HBM3e 需求旺盛，晶圓代工先進封裝維持 94% 高利用率"
             ),
             StructuredEvent(
                 timestamp=iso_now,
@@ -220,8 +220,8 @@ class MacroCommander:
                 entities_tickers=["OIL", "SHIPPING"],
                 urgency_score=5,
                 sentiment_score=-0.10,
-                summary="Red Sea maritime trade lane security stabilized following coalition presence; energy shocks mitigated.",
-                raw_title="Maritime Chokepoint Transit Conditions Hold Stable"
+                summary="全球航運改道及聯合巡航使海運保險費率逐步回穩，原油市場波動性顯著收斂，地緣能源衝擊警報暫告緩解。",
+                raw_title="紅海商業航線國際護航機制發揮成效，海運咽喉要道通行條件持穩"
             ),
         ]
         return await self.synthesize_regime(fresh_events)
@@ -325,9 +325,10 @@ class MacroCommander:
                 '  "regime": "BULLISH_SURGE" | "BEARISH_PANIC" | "HIGH_VOLATILITY_CHOP" | "NORMAL",\n'
                 '  "directional_bias": "LONG_ONLY" | "SHORT_ONLY" | "BIDIRECTIONAL" | "HOLD_CASH",\n'
                 '  "risk_multiplier": float between 0.5 and 1.5,\n'
-                '  "active_headline": "Concise 10-word headline driving the decision",\n'
+                '  "active_headline": "繁體中文重點標題（約15字以內，精準描述主導市場之宏觀事件）",\n'
                 '  "confidence": float between 0.5 and 1.0\n'
-                "}"
+                "}\n"
+                "CRITICAL REQUIREMENT: The 'active_headline' MUST be strictly written in Traditional Chinese (繁體中文)."
             )
 
             user_prompt = f"Analyze this live intelligence digest and declare the macro regime:\n\n{intel_digest}"
@@ -382,6 +383,7 @@ class MacroCommander:
                     self.current_state.regime = "NORMAL"
                     self.current_state.directional_bias = "BIDIRECTIONAL"
                     self.current_state.risk_multiplier = 1.0
+                    self.current_state.active_headline = "宏觀多空維持均衡結構，即時情報流同步運作中"
 
                 self.current_state.status = "STANDBY" if not self.client.is_gateway_online else "ONLINE"
 

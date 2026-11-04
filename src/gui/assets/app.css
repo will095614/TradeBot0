@@ -22,14 +22,34 @@
     visibility: hidden;
     pointer-events: none;
   }
+
+  /* Hide the underlying arena workspace until the initialization splash has fully completed */
+  .app-header,
+  .macro-ribbon,
+  .workspace-grid,
+  .intel-hub-grid {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.45s ease-out;
+  }
+
+  body.arena-ready .app-header,
+  body.arena-ready .macro-ribbon,
+  body.arena-ready .workspace-grid,
+  body.arena-ready .intel-hub-grid {
+    opacity: 1;
+    pointer-events: auto;
+  }
   .splash-container {
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     text-align: center;
     max-width: 480px;
     width: 90%;
     padding: 32px;
+    margin: 0 auto;
   }
   .splash-radar-beacon {
     position: relative;
@@ -38,25 +58,42 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 24px;
+    margin: 0 auto 24px auto;
   }
   .splash-icon {
-    font-size: 32px;
+    font-size: 34px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    text-align: center;
     color: #00F5A0;
     text-shadow: 0 0 20px rgba(0, 245, 160, 0.6);
     z-index: 2;
     animation: markerPulse 2s infinite ease-in-out;
+    user-select: none;
   }
   .splash-radar-ring {
     position: absolute;
+    top: 50%;
+    left: 50%;
     border-radius: 50%;
     border: 1.5px solid rgba(0, 245, 160, 0.4);
     box-shadow: 0 0 15px rgba(0, 242, 254, 0.2);
-    animation: radarRipple 2.4s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+    animation: splashRadarRipple 2.4s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+    pointer-events: none;
   }
-  .splash-radar-ring.ring1 { width: 40px; height: 40px; animation-delay: 0s; }
-  .splash-radar-ring.ring2 { width: 65px; height: 65px; animation-delay: 0.8s; }
-  .splash-radar-ring.ring3 { width: 90px; height: 90px; animation-delay: 1.6s; }
+  .splash-radar-ring.ring1 { width: 44px; height: 44px; animation-delay: 0s; }
+  .splash-radar-ring.ring2 { width: 68px; height: 68px; animation-delay: 0.8s; }
+  .splash-radar-ring.ring3 { width: 92px; height: 92px; animation-delay: 1.6s; }
+
+  @keyframes splashRadarRipple {
+    0% { transform: translate(-50%, -50%) scale(0.4); opacity: 0.9; }
+    70% { transform: translate(-50%, -50%) scale(1.4); opacity: 0.15; }
+    100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
+  }
 
   .splash-brand {
     margin-bottom: 28px;
@@ -1512,6 +1549,12 @@
     color: var(--text-secondary);
     min-height: 27px;
     overflow: hidden;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .macro-ribbon:hover {
+    background: #101622;
+    border-bottom-color: rgba(0, 242, 254, 0.35);
   }
   .macro-badge {
     display: inline-flex;
@@ -1640,18 +1683,7 @@
     letter-spacing: 0.05em;
   }
 
-  .macro-hub-hint {
-    margin-left: auto;
-    font-size: 10px;
-    color: var(--accent);
-    opacity: 0.8;
-    padding-left: 10px;
-    white-space: nowrap;
-  }
-  .macro-ribbon:hover .macro-hub-hint {
-    opacity: 1;
-    text-decoration: underline;
-  }
+
 
   /* ==========================================================================
      Macro Intelligence Hub & OmniRoute Telemetry Dashboard View

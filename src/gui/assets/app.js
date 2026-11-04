@@ -44,12 +44,19 @@
       splashSafetyTimer = null;
     }
 
+    // Immediately hide the workspace underneath so inner charts never flash or show prematurely
+    if (document.body) {
+      document.body.classList.remove('arena-ready');
+    }
+
     splashProgress = 0;
     targetSplashProgress = 15;
     splashCompleted = false;
     hasFirstChartDrawn = false;
     hasFirstTableRendered = false;
     currentSplashSteps = isReset ? resetSplashSteps : initialSplashSteps;
+    const splashStartTime = performance.now();
+    const minSplashDurationMs = isReset ? 1600 : 1200;
 
     const overlay = document.getElementById('splashOverlay');
     const bar = document.getElementById('splashProgressBar');
@@ -59,6 +66,8 @@
 
     if (overlay) {
       overlay.style.display = 'flex';
+      overlay.style.opacity = '1';
+      overlay.style.visibility = 'visible';
       overlay.classList.remove('fade-out');
     }
     if (bar) bar.style.width = '0%';
@@ -70,7 +79,7 @@
         : "Simulating 120m Orderflow & Pre-Rendering Arena...";
     }
 
-    // Smooth 60 FPS animation loop for progress bar
+    // Smooth animation loop for progress bar
     splashLoop = setInterval(() => {
       if (splashCompleted) {
         clearInterval(splashLoop);
@@ -78,8 +87,13 @@
         return;
       }
 
+      const elapsedMs = performance.now() - splashStartTime;
+      const canComplete = elapsedMs >= minSplashDurationMs;
+
       if (splashProgress < targetSplashProgress) {
-        const step = Math.max(0.4, (targetSplashProgress - splashProgress) * 0.16);
+        const remaining = targetSplashProgress - splashProgress;
+        const maxStep = canComplete ? 2.0 : Math.min(1.2, remaining * 0.08);
+        const step = Math.min(maxStep, Math.max(0.35, remaining * 0.12));
         splashProgress = Math.min(targetSplashProgress, splashProgress + step);
       }
 
@@ -94,8 +108,8 @@
       }
       if (sLbl) sLbl.textContent = activeStep;
 
-      // Strict exit condition: 100% reached AND left chart drawn AND right tables rendered!
-      if (splashProgress >= 99.5 && targetSplashProgress >= 100 && hasFirstChartDrawn && hasFirstTableRendered) {
+      // Strict exit condition: 100% reached AND minimum duration met AND left chart drawn AND right tables rendered!
+      if (splashProgress >= 99.5 && targetSplashProgress >= 100 && canComplete && hasFirstChartDrawn && hasFirstTableRendered) {
         splashProgress = 100;
         if (pLbl) pLbl.textContent = '100%';
         if (sLbl) sLbl.textContent = currentSplashSteps[currentSplashSteps.length - 1].text;
@@ -104,6 +118,11 @@
         splashLoop = null;
 
         setTimeout(() => {
+          // Reveal the workspace smoothly once everything is 100% ready
+          if (document.body) {
+            document.body.classList.add('arena-ready');
+          }
+
           const overlayEl = document.getElementById('splashOverlay');
           if (overlayEl) {
             overlayEl.classList.add('fade-out');
@@ -119,8 +138,8 @@
             if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.start_live_trading === 'function') {
               window.pywebview.api.start_live_trading().catch(e => console.warn('start_live_trading err:', e));
             }
-          }, 400);
-        }, 400);
+          }, 450);
+        }, 300);
       }
     }, 25);
 

@@ -1173,11 +1173,6 @@ class LiveArenaEngine:
 
     def stop(self) -> None:
         self.stop_live_loop()
-        if hasattr(self, "omniroute_client") and self.omniroute_client:
-            try:
-                self.omniroute_client.close_sync()
-            except Exception:
-                pass
 
     def _live_loop(self) -> None:
         self.log_event("BOOT", "Connecting to real-time BTC/USD orderflow & warming 1m indicators...", "info")

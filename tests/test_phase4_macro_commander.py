@@ -117,6 +117,5 @@ def test_live_engine_enforces_macro_commander_veto():
     # Check that veto logs were created
     veto_logs = [l for l in engine.live_logs if l["tag"] == "VETO_MACRO"]
     assert len(veto_logs) == 6
-    engine.stop()
     assert engine.macro_commander.current_state.veto_count_today == 6
 
