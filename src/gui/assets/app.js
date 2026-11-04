@@ -1083,16 +1083,20 @@ let latestState = null;
 
     const canvas = document.getElementById('priceCanvas');
     const canvasW = canvas ? (canvas.clientWidth || 800) : 800;
-    const plotW = Math.max(50, canvasW - 10 - 72);
+    const padLeft = 10;
+    const padRight = 96; // generous price scale axis for 6-digit BTC badges
+    const plotW = Math.max(50, canvasW - padLeft - padRight);
+    const candleRightOffset = 80; // dedicated breathing space between newest candle and price axis
+    const candlePlotW = Math.max(50, plotW - candleRightOffset);
     // Dynamic high-density candle count: ~9.5px to 11.5px per candle so wide monitors remain dense
-    const optimalCount = Math.max(45, Math.min(rawCandles.length, Math.floor(plotW / 9.5)));
+    const optimalCount = Math.max(45, Math.min(rawCandles.length, Math.floor(candlePlotW / 9.5)));
     targetCandles = rawCandles.slice(-optimalCount);
 
     // Detect new candle arrival and trigger smooth horizontal kinetic slide to the left
     if (useCandles && targetCandles.length > 0) {
       const n = targetCandles.length;
       const maxStep = 13.0, minStep = 5.5;
-      const naturalStep = plotW / Math.max(1, n);
+      const naturalStep = candlePlotW / Math.max(1, n);
       const step = Math.min(maxStep, Math.max(minStep, naturalStep));
 
       const newest = targetCandles[targetCandles.length - 1];
@@ -1268,18 +1272,20 @@ let latestState = null;
     const useCandles = chartMode === 'candles' && visibleCandles.length >= 2;
 
     const padLeft = 10;
-    const padRight = 72; // comfortable width for strategy badges
+    const padRight = 96; // generous price scale axis for 6-digit BTC badges
     const padTop = 16;
     const padBottom = 22;
     const plotW = Math.max(50, w - padLeft - padRight);
     const plotH = Math.max(40, h - padTop - padBottom);
+    const candleRightOffset = 80; // dedicated breathing corridor between newest candle and price scale
+    const candlePlotW = Math.max(50, plotW - candleRightOffset);
 
     const toY = (v) => padTop + (1 - (v - minP) / (maxP - minP)) * plotH;
 
     // Horizontal Grid Lines with Price Labels (Ultra-Crisp Minimalist Lines)
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
     ctx.lineWidth = 1;
-    ctx.font = '10px "Cascadia Mono", Consolas, monospace';
+    ctx.font = '9.5px "Cascadia Mono", Consolas, monospace';
     ctx.fillStyle = '#8391A7';
     const gridCount = plotH > 380 ? 6 : 4;
     for (let g = 0; g <= gridCount; g++) {
@@ -1289,7 +1295,7 @@ let latestState = null;
       ctx.moveTo(padLeft, gy);
       ctx.lineTo(padLeft + plotW, gy);
       ctx.stroke();
-      ctx.fillText('$' + gv.toFixed(1), padLeft + plotW + 6, gy + 3.5);
+      ctx.fillText('$' + gv.toFixed(0), padLeft + plotW + 6, gy + 3.5);
     }
 
     const tagMap = {
@@ -1315,18 +1321,18 @@ let latestState = null;
       // Caps maximum center-to-center distance to avoid wide horizontal gaps on fullscreen or sparse data
       const maxStep = 13.0;
       const minStep = 5.5;
-      const naturalStep = plotW / Math.max(1, n);
+      const naturalStep = candlePlotW / Math.max(1, n);
       const step = Math.min(maxStep, Math.max(minStep, naturalStep));
       const bodyW = Math.max(3.5, Math.min(10, Math.round(step * 0.72))); // 72% body, 28% crisp gap
 
-      // If candles do not fill the whole width (e.g. startup or sparse data), right-align next to price scale
+      // If candles do not fill the whole width (e.g. startup or sparse data), right-align at the candlePlotW boundary
       const totalCandleW = n * step;
-      const startX = totalCandleW < plotW ? (padLeft + plotW - totalCandleW) : padLeft;
+      const startX = totalCandleW < candlePlotW ? (padLeft + candlePlotW - totalCandleW) : padLeft;
 
       // Viewport Clipping for Clean Horizontal Sliding Boundary
       ctx.save();
       ctx.beginPath();
-      ctx.rect(padLeft, padTop - 6, plotW, plotH + 12);
+      ctx.rect(padLeft, padTop - 6, candlePlotW + 4, plotH + 12);
       ctx.clip();
 
       const shiftX = candleSlideOffset;
@@ -1390,8 +1396,8 @@ let latestState = null;
       ctx.fillStyle = '#CBD5E1';
       const maxCx = startX + (maxIdx + 0.5) * step + shiftX;
       const minCx = startX + (minIdx + 0.5) * step + shiftX;
-      ctx.fillText(`H $${maxC.h.toFixed(1)}`, Math.max(padLeft, Math.min(padLeft + plotW - 30, maxCx - 18)), toY(maxC.h) - 4);
-      ctx.fillText(`L $${minC.l.toFixed(1)}`, Math.max(padLeft, Math.min(padLeft + plotW - 30, minCx - 18)), toY(minC.l) + 12);
+      ctx.fillText(`H $${maxC.h.toFixed(1)}`, Math.max(padLeft, Math.min(padLeft + candlePlotW - 35, maxCx - 18)), toY(maxC.h) - 4);
+      ctx.fillText(`L $${minC.l.toFixed(1)}`, Math.max(padLeft, Math.min(padLeft + candlePlotW - 35, minCx - 18)), toY(minC.l) + 12);
       ctx.restore();
 
       ctx.restore(); // Restore Viewport Clipping
@@ -1399,7 +1405,7 @@ let latestState = null;
     } else if (rawPrices.length >= 2) {
       const n = Math.min(80, rawPrices.length);
       const visiblePrices = rawPrices.slice(-n);
-      const toX = (i) => padLeft + (i / (n - 1)) * plotW;
+      const toX = (i) => padLeft + (i / (n - 1)) * candlePlotW;
 
       // Pure High-Contrast Bézier Spline Lines
       const drawLine = (arr, color, width, lineDash = []) => {
@@ -1450,8 +1456,9 @@ let latestState = null;
           rightBadges.push({
             rawY: yTP,
             price: s.take_profit,
-            label: `TP $${s.take_profit.toFixed(1)}`,
             stratTag: sTag,
+            subTag: 'TP',
+            label: `$${s.take_profit.toFixed(0)}`,
             color: '#00E676',
             stratColor: sColor,
             type: 'tp'
@@ -1482,8 +1489,9 @@ let latestState = null;
           rightBadges.push({
             rawY: yEntry,
             price: s.entry_price,
-            label: `ENTRY $${s.entry_price.toFixed(1)}`,
             stratTag: sTag,
+            subTag: 'IN',
+            label: `$${s.entry_price.toFixed(0)}`,
             color: '#FFFFFF',
             stratColor: sColor,
             type: 'entry'
@@ -1508,8 +1516,9 @@ let latestState = null;
           rightBadges.push({
             rawY: ySL,
             price: s.stop_loss,
-            label: `SL $${s.stop_loss.toFixed(1)}`,
             stratTag: sTag,
+            subTag: 'SL',
+            label: `$${s.stop_loss.toFixed(0)}`,
             color: '#FF334B',
             stratColor: sColor,
             type: 'sl'
@@ -1529,7 +1538,8 @@ let latestState = null;
         const bracketTop = Math.min(...validYs);
         const bracketBot = Math.max(...validYs);
         if (bracketBot > bracketTop + 2) {
-          const bx = padLeft + plotW - 5 - (idx * 8);
+          // Positioned neatly in the open corridor between newest candle and right badges
+          const bx = padLeft + candlePlotW + 12 + (idx * 10);
           ctx.save();
           ctx.strokeStyle = sColor;
           ctx.lineWidth = 1.6;
@@ -1568,8 +1578,9 @@ let latestState = null;
       rightBadges.push({
         rawY: vy,
         price: vwapVal,
-        label: `VWAP $${vwapVal.toFixed(1)}`,
         stratTag: 'VWAP',
+        subTag: '',
+        label: `$${vwapVal.toFixed(0)}`,
         color: '#14F195',
         stratColor: '#14F195',
         type: 'vwap'
@@ -1593,8 +1604,9 @@ let latestState = null;
       rightBadges.push({
         rawY: ohy,
         price: orbHigh,
-        label: `ORB-H $${orbHigh.toFixed(1)}`,
         stratTag: 'ORB',
+        subTag: 'H',
+        label: `$${orbHigh.toFixed(0)}`,
         color: '#A855F7',
         stratColor: '#A855F7',
         type: 'orb'
@@ -1615,8 +1627,9 @@ let latestState = null;
       rightBadges.push({
         rawY: oly,
         price: orbLow,
-        label: `ORB-L $${orbLow.toFixed(1)}`,
         stratTag: 'ORB',
+        subTag: 'L',
+        label: `$${orbLow.toFixed(0)}`,
         color: '#A855F7',
         stratColor: '#A855F7',
         type: 'orb'
@@ -1639,8 +1652,9 @@ let latestState = null;
       rightBadges.push({
         rawY: sy,
         price: spot,
+        stratTag: 'SPOT',
+        subTag: '',
         label: '$' + spot.toFixed(1),
-        stratTag: null,
         color: '#FFFFFF',
         stratColor: '#FF6B35',
         type: 'spot',
@@ -1648,8 +1662,8 @@ let latestState = null;
       });
     }
 
-    // 4. Collision-Free Right Badges Layout
-    const badgeH = 14;
+    // 4. Collision-Free Right Badges Layout (Enhanced Spacing & Boundary Safety)
+    const badgeH = 15;
     rightBadges.forEach(b => { b.drawY = b.rawY; });
     rightBadges.sort((a, b) => a.drawY - b.drawY);
 
@@ -1659,10 +1673,18 @@ let latestState = null;
       }
     }
     for (let i = rightBadges.length - 1; i >= 0; i--) {
-      if (rightBadges[i].drawY > padTop + plotH - 5) {
-        rightBadges[i].drawY = padTop + plotH - 5;
+      if (rightBadges[i].drawY > padTop + plotH - 6) {
+        rightBadges[i].drawY = padTop + plotH - 6;
         if (i > 0 && rightBadges[i - 1].drawY > rightBadges[i].drawY - badgeH - 2) {
           rightBadges[i - 1].drawY = rightBadges[i].drawY - badgeH - 2;
+        }
+      }
+    }
+    for (let i = 0; i < rightBadges.length; i++) {
+      if (rightBadges[i].drawY < padTop + 6) {
+        rightBadges[i].drawY = padTop + 6;
+        if (i + 1 < rightBadges.length && rightBadges[i + 1].drawY < rightBadges[i].drawY + badgeH + 2) {
+          rightBadges[i + 1].drawY = rightBadges[i].drawY + badgeH + 2;
         }
       }
     }
@@ -1670,10 +1692,9 @@ let latestState = null;
     rightBadges.forEach(b => {
       const by = b.drawY;
       const rx = padLeft + plotW + 2;
-      const rw = 68;
 
       ctx.save();
-      if (Math.abs(by - b.rawY) > 3) {
+      if (Math.abs(by - b.rawY) > 2) {
         ctx.strokeStyle = hexToRgba(b.stratColor, 0.45);
         ctx.lineWidth = 1;
         ctx.setLineDash([2, 2]);
@@ -1684,13 +1705,27 @@ let latestState = null;
       }
 
       if (b.isSpot) {
+        ctx.font = 'bold 10px "Cascadia Mono", Consolas, monospace';
+        const txtW = ctx.measureText(b.label).width;
+        const rw = Math.max(88, txtW + 14);
+
         ctx.fillStyle = '#FF6B35';
         ctx.fillRect(rx, by - 8, rw, 16);
         ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 10px "Cascadia Mono", Consolas, monospace';
-        ctx.fillText(b.label, rx + 5, by + 3.5);
+        ctx.fillText(b.label, rx + (rw - txtW) / 2, by + 3.5);
       } else {
-        ctx.fillStyle = 'rgba(14, 17, 24, 0.94)';
+        ctx.font = 'bold 8px "Cascadia Mono", Consolas, monospace';
+        const tagText = b.subTag ? `${b.stratTag}·${b.subTag}` : b.stratTag;
+        const tagW = ctx.measureText(tagText).width;
+
+        ctx.font = '8.5px "Cascadia Mono", Consolas, monospace';
+        const valW = ctx.measureText(b.label).width;
+
+        // Auto-fit box width so numbers and text NEVER overflow the bounding box
+        const rw = Math.max(88, tagW + valW + 14);
+
+        // Bounding box with clean background and border
+        ctx.fillStyle = 'rgba(14, 17, 24, 0.95)';
         ctx.fillRect(rx, by - 7, rw, 14);
         ctx.strokeStyle = hexToRgba(b.stratColor, 0.7);
         ctx.strokeRect(rx, by - 7, rw, 14);
@@ -1699,52 +1734,63 @@ let latestState = null;
         ctx.fillStyle = b.stratColor;
         ctx.fillRect(rx, by - 7, 3, 14);
 
-        // Strategy Tag
-        ctx.font = 'bold 8.5px "Cascadia Mono", Consolas, monospace';
-        ctx.fillStyle = b.stratColor;
-        ctx.fillText(b.stratTag, rx + 5, by + 3.5);
+        // Clip region to strictly guarantee zero pixel spills outside
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(rx + 3, by - 7, rw - 4, 14);
+        ctx.clip();
 
-        // Price Label
+        // Strategy Tag
+        ctx.font = 'bold 8px "Cascadia Mono", Consolas, monospace';
+        ctx.fillStyle = b.stratColor;
+        ctx.fillText(tagText, rx + 6, by + 3.5);
+
+        // Price Label (placed dynamically after tagText to prevent any text collision)
         ctx.font = '8.5px "Cascadia Mono", Consolas, monospace';
         ctx.fillStyle = b.color;
-        ctx.fillText(b.label, rx + 24, by + 3.5);
+        ctx.fillText(b.label, rx + 6 + tagW + 4, by + 3.5);
+
+        ctx.restore();
       }
       ctx.restore();
     });
 
     // 5. Draw Off-Screen Order Indicators (top & bottom edges in Auto mode)
     if (scaleMode === 'auto') {
+      const maxPillX = padLeft + plotW - 12;
       if (offscreenTop.length > 0) {
         ctx.save();
-        ctx.font = '9.5px "Cascadia Mono", Consolas, monospace';
+        ctx.font = '9px "Cascadia Mono", Consolas, monospace';
         let tx = padLeft + 6;
-        offscreenTop.slice(0, 4).forEach(item => {
-          const tw = ctx.measureText(item.label).width + 10;
+        for (const item of offscreenTop.slice(0, 4)) {
+          const tw = ctx.measureText(item.label).width + 8;
+          if (tx + tw > maxPillX) break;
           ctx.fillStyle = hexToRgba(item.color, 0.16);
           ctx.strokeStyle = hexToRgba(item.color, 0.6);
           ctx.fillRect(tx, padTop + 2, tw, 15);
           ctx.strokeRect(tx, padTop + 2, tw, 15);
           ctx.fillStyle = item.color;
-          ctx.fillText(item.label, tx + 5, padTop + 13);
-          tx += tw + 6;
-        });
+          ctx.fillText(item.label, tx + 4, padTop + 13);
+          tx += tw + 5;
+        }
         ctx.restore();
       }
 
       if (offscreenBot.length > 0) {
         ctx.save();
-        ctx.font = '9.5px "Cascadia Mono", Consolas, monospace';
+        ctx.font = '9px "Cascadia Mono", Consolas, monospace';
         let sx = padLeft + 6;
-        offscreenBot.slice(0, 4).forEach(item => {
-          const tw = ctx.measureText(item.label).width + 10;
+        for (const item of offscreenBot.slice(0, 4)) {
+          const tw = ctx.measureText(item.label).width + 8;
+          if (sx + tw > maxPillX) break;
           ctx.fillStyle = hexToRgba(item.color, 0.16);
           ctx.strokeStyle = hexToRgba(item.color, 0.6);
           ctx.fillRect(sx, padTop + plotH - 18, tw, 15);
           ctx.strokeRect(sx, padTop + plotH - 18, tw, 15);
           ctx.fillStyle = item.color;
-          ctx.fillText(item.label, sx + 5, padTop + plotH - 7);
-          sx += tw + 6;
-        });
+          ctx.fillText(item.label, sx + 4, padTop + plotH - 7);
+          sx += tw + 5;
+        }
         ctx.restore();
       }
     }
@@ -1753,35 +1799,37 @@ let latestState = null;
     if (chartBeacons && chartBeacons.length > 0) {
       const now = Date.now();
       const n = useCandles ? visibleCandles.length : rawPrices.length;
-      const step = plotW / Math.max(1, n);
-      const activeHeadX = padLeft + (Math.max(0, n - 1) + 0.5) * step;
+      const step = candlePlotW / Math.max(1, n);
+      const totalCandleW = n * step;
+      const startX = totalCandleW < candlePlotW ? (padLeft + candlePlotW - totalCandleW) : padLeft;
+      const activeHeadX = startX + (Math.max(0, n - 1) + 0.5) * step + (useCandles ? candleSlideOffset : 0);
 
       chartBeacons.forEach(b => {
         const elapsed = now - b.startTime;
         if (elapsed >= b.duration) return;
         const p = elapsed / b.duration;
         const by = Math.max(padTop + 10, Math.min(padTop + plotH - 10, toY(b.price)));
-        const bx = Math.min(padLeft + plotW - 12, Math.max(padLeft + 12, activeHeadX));
+        const bx = Math.min(padLeft + candlePlotW + 4, Math.max(padLeft + 12, activeHeadX));
 
         ctx.save();
         // Ring 1
-        const r1 = 4 + p * 38;
+        const r1 = 4 + p * 32;
         const a1 = Math.max(0, (1 - p) * 0.9);
         ctx.strokeStyle = b.color;
         ctx.globalAlpha = a1;
-        ctx.lineWidth = 2.2 * (1 - p);
+        ctx.lineWidth = 2.0 * (1 - p);
         ctx.shadowColor = b.color;
-        ctx.shadowBlur = 12;
+        ctx.shadowBlur = 10;
         ctx.beginPath();
         ctx.arc(bx, by, r1, 0, Math.PI * 2);
         ctx.stroke();
 
         // Ring 2
         const p2 = (p + 0.38) % 1;
-        const r2 = 4 + p2 * 38;
+        const r2 = 4 + p2 * 32;
         const a2 = Math.max(0, (1 - p2) * 0.65);
         ctx.globalAlpha = a2;
-        ctx.lineWidth = 1.8 * (1 - p2);
+        ctx.lineWidth = 1.6 * (1 - p2);
         ctx.beginPath();
         ctx.arc(bx, by, r2, 0, Math.PI * 2);
         ctx.stroke();
@@ -1791,13 +1839,13 @@ let latestState = null;
         ctx.globalAlpha = 0.95;
         ctx.fillStyle = b.color;
         ctx.beginPath();
-        ctx.arc(bx, by, 3.5 + pulse * 1.5, 0, Math.PI * 2);
+        ctx.arc(bx, by, 3.2 + pulse * 1.3, 0, Math.PI * 2);
         ctx.fill();
 
-        // Badge
+        // Beacon Flag Badge (placed above/left of pulse without overlapping price scale)
         ctx.fillStyle = b.color;
-        ctx.font = 'bold 9px "Cascadia Mono", Consolas, monospace';
-        ctx.fillText(`[${b.stratTag}] ENTRY`, bx + 10, by - 8);
+        ctx.font = 'bold 8.5px "Cascadia Mono", Consolas, monospace';
+        ctx.fillText(`[${b.stratTag}] ENTRY`, Math.max(padLeft + 6, bx - 35), by - 10);
         ctx.restore();
       });
     }
@@ -1852,17 +1900,19 @@ let latestState = null;
 
       const candles = (animCandles && animCandles.length > 0) ? animCandles : (latestState.candles || []);
       const useCandles = chartMode === 'candles' && candles.length >= 2;
-      const padLeft = 10, padRight = 72;
+      const padLeft = 10, padRight = 96;
+      const candleRightOffset = 80;
       const plotW = Math.max(50, rect.width - padLeft - padRight);
+      const candlePlotW = Math.max(50, plotW - candleRightOffset);
 
       if (useCandles) {
         const n = candles.length;
         const maxStep = 13.0;
         const minStep = 5.5;
-        const naturalStep = plotW / Math.max(1, n);
+        const naturalStep = candlePlotW / Math.max(1, n);
         const step = Math.min(maxStep, Math.max(minStep, naturalStep));
         const totalCandleW = n * step;
-        const startX = totalCandleW < plotW ? (padLeft + plotW - totalCandleW) : padLeft;
+        const startX = totalCandleW < candlePlotW ? (padLeft + candlePlotW - totalCandleW) : padLeft;
         const shiftX = candleSlideOffset;
         const idx = Math.floor((mouseX - startX - shiftX) / step);
         if (idx >= 0 && idx < n) {
