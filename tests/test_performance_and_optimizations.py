@@ -88,10 +88,13 @@ def test_splash_logo_concentric_alignment_and_svg_zap():
     assert "polygon points=" in html
     assert "splashZapGrad" in html
 
-    # 2. Icon and radar rings both use translate(-50%, -50%) and top: 50%; left: 50%;
+    # 2. Ripple rings completely deleted per user directive
+    assert "splash-radar-ring" not in html
+    assert ".splash-radar-ring" not in css
+    assert "splashRadarRipple" not in css
+
+    # 3. Clean flex centered emblem badge
     assert ".splash-icon {" in css
     assert "animation: splashIconPulse" in css
-    assert "splashRadarRipple" in css
-    # Confirm markerPulse is NOT used on splash icon
     assert "animation: markerPulse" not in css.split(".splash-icon {")[1].split("}")[0]
 
