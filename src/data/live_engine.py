@@ -101,10 +101,14 @@ class LiveArenaEngine:
         self.max_candles: int = 200
         self.live_start_ts: Optional[float] = None
 
-        # Paced Candlestick Cadence Dispatcher (emits stable slices at 3s/5s heartbeat)
-        self.cadence_sec: float = 3.0
+        # Paced Candlestick Cadence Dispatcher (emits stable slices at 5s heartbeat: :00, :05, :10, :15...)
+        self.cadence_sec: float = 5.0
         self.last_cadence_ts: float = 0.0
+        self.last_cadence_slot: int = 0
         self.published_candles: List[Dict[str, float]] = []
+        self.published_quote: Optional[LiveQuote] = None
+        self._raw_quote_cache: Optional[LiveQuote] = None
+        self.raw_fetch_thread: Optional[threading.Thread] = None
 
         # Style-B automatic hourly evolution
         self.auto_evolve_enabled: bool = True
@@ -449,8 +453,15 @@ class LiveArenaEngine:
                 )
 
             self.published_candles = [dict(c) for c in self.candles]
+            self.published_quote = self.latest_quote
+            self._raw_quote_cache = self.latest_quote
             self.last_cadence_ts = time.time()
+            self.last_cadence_slot = int(self.last_cadence_ts // self.cadence_sec) * int(self.cadence_sec)
             self.is_bootstrapped = True
+            try:
+                self.refresh_intel_digest()
+            except Exception:
+                pass
 
     def start_live_trading(self) -> None:
         """
@@ -461,6 +472,27 @@ class LiveArenaEngine:
             if not self.live_orders_enabled:
                 self.live_orders_enabled = True
                 self.log_event("ARENA_REVEALED", "Arena initialization verified. Live order placement activated.", "info")
+
+    def refresh_intel_digest(self) -> Dict[str, Any]:
+        """
+        Triggers an AI-driven refresh of macro intelligence, synthesizing live/curated events
+        through OmniRoute. Returns updated intel hub telemetry.
+        """
+        try:
+            loop = None
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            if loop and loop.is_running():
+                asyncio.create_task(self.macro_commander.refresh_digest_async())
+            else:
+                asyncio.run(self.macro_commander.refresh_digest_async())
+        except Exception as e:
+            logger.warning("Intel digest refresh error: %s", e)
+        return self.macro_commander.get_intel_hub_telemetry()
 
     def _try_enter_bracket(
         self,
@@ -481,6 +513,11 @@ class LiveArenaEngine:
             self.strategy_cooldown[pid] = ts + 20.0
             self.strategy_telemetry[pid]["intent"] = f"Macro Veto: {self.macro_commander.current_state.directional_bias}"
             self.log_event("VETO_MACRO", f"{competitor.base_name.split(' ')[0]} {side.value} vetoed: {veto_reason}", "loss")
+            self.macro_commander.record_strategy_action(
+                pid, competitor.base_name.split(' ')[0],
+                f"{side.value} Blocked by Macro Veto ({self.macro_commander.current_state.directional_bias})",
+                "loss"
+            )
             return False
 
         # Macro Trend Take-Profit Expansion (R-Multiple expanded when riding macro regime)
@@ -515,6 +552,11 @@ class LiveArenaEngine:
             pos_label = "SHORT" if side == OrderSide.SELL else "LONG"
             event_type = "sell" if side == OrderSide.SELL else "buy"
             self.log_event(event_label, f"{competitor.base_name.split(' ')[0]} opened {pos_label} {fill.qty} BTC @ ${fill.price:,.2f} (SL ${sl:,.2f}{tp_str} | EV {mc_odds.expected_r:+.2f}R)", event_type)
+            self.macro_commander.record_strategy_action(
+                pid, competitor.base_name.split(' ')[0],
+                f"Opened {pos_label} {fill.qty} BTC @ ${fill.price:,.2f}",
+                event_type
+            )
             return True
         return False
 
@@ -1090,10 +1132,29 @@ class LiveArenaEngine:
             self.ema_fast_series = self.ema_fast_series[-max_pts:]
             self.ema_slow_series = self.ema_slow_series[-max_pts:]
 
-    def start_live_loop(self, interval_sec: float = 1.5) -> None:
+    def _quote_fetch_worker(self) -> None:
+        """Hidden background thread: continuously queries public REST APIs without blocking UI cadence."""
+        while self.running:
+            if self.paused:
+                time.sleep(0.25)
+                continue
+            try:
+                raw = self.fetch_realtime_eth_quote()
+                if raw and not raw.is_offline and raw.price > Decimal("0"):
+                    with self.lock:
+                        self._raw_quote_cache = raw
+                        self.market_online = True
+                else:
+                    with self.lock:
+                        self.market_online = False
+            except Exception as e:
+                logger.debug("Background quote fetcher error: %s", e)
+            time.sleep(1.0)
+
+    def start_live_loop(self, interval_sec: float = 5.0) -> None:
         if self.running:
             return
-        self.interval_sec = max(0.5, float(interval_sec))
+        self.cadence_sec = max(1.0, float(interval_sec))
         self.running = True
         self.worker_thread = threading.Thread(target=self._live_loop, daemon=True)
         self.worker_thread.start()
@@ -1103,6 +1164,9 @@ class LiveArenaEngine:
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=3.0)
         self.worker_thread = None
+        if self.raw_fetch_thread and self.raw_fetch_thread.is_alive():
+            self.raw_fetch_thread.join(timeout=2.0)
+        self.raw_fetch_thread = None
 
     def stop(self) -> None:
         self.stop_live_loop()
@@ -1112,89 +1176,113 @@ class LiveArenaEngine:
         self.bootstrap_intraday_session()
         with self.lock:
             self.live_start_ts = time.time()
-            self.last_evolve_ts = time.time()  # the hourly countdown starts when live trading starts
+            self.last_evolve_ts = time.time()
+            self.last_cadence_slot = int(time.time() // self.cadence_sec) * int(self.cadence_sec)
+
+        # Start hidden raw quote fetcher in background
+        self.raw_fetch_thread = threading.Thread(target=self._quote_fetch_worker, daemon=True)
+        self.raw_fetch_thread.start()
 
         while self.running:
             if self.paused:
                 time.sleep(0.25)
                 continue
-            try:
-                quote = self.fetch_realtime_eth_quote()
-                if quote.is_offline or quote.price <= Decimal("0.00"):
+
+            now = time.time()
+            current_slot = int(now // self.cadence_sec) * int(self.cadence_sec)
+
+            if current_slot > self.last_cadence_slot:
+                self.last_cadence_slot = current_slot
+                try:
                     with self.lock:
-                        self.market_online = False
-                        self.latest_quote = quote
-                    self.log_event("FEED_OFFLINE", "Market feed offline. Trading and simulated fills suspended.", "loss")
-                    time.sleep(self.interval_sec)
-                    continue
-
-                with self.lock:
-                    self.market_online = True
-                    prev_p = self.latest_quote.price if (self.latest_quote and not self.latest_quote.is_offline and self.latest_quote.price > Decimal("0")) else quote.price
-                    self.latest_quote = quote
-                    self.tick_count += 1
-
-                    # Live 1-minute candle + RSI(14)/ATR(14) refresh on every tick
-                    self._update_candle(quote.timestamp, quote.price)
-                    self._recompute_candle_indicators()
-
-                    # Paced Cadence Dispatcher: Publish candle slices at stable 3s/5s heartbeat
-                    now_ts = time.time()
-                    if now_ts - self.last_cadence_ts >= self.cadence_sec or not self.published_candles:
-                        self.published_candles = [dict(c) for c in self.candles]
-                        self.last_cadence_ts = now_ts
-
-                    # Update live exponential moving averages & micro-RSI on each real-time tick
-                    alpha_f = Decimal("0.15")
-                    alpha_s = Decimal("0.04")
-                    if self.live_ema_fast <= Decimal("0"):
-                        self.live_ema_fast = quote.price
-                        self.live_ema_slow = quote.price
-                    else:
-                        self.live_ema_fast = ((quote.price * alpha_f) + (self.live_ema_fast * (Decimal("1") - alpha_f))).quantize(Decimal("0.01"))
-                        self.live_ema_slow = ((quote.price * alpha_s) + (self.live_ema_slow * (Decimal("1") - alpha_s))).quantize(Decimal("0.01"))
-
-                    # Live orders & simulated matching activate ONLY after UI initialization is fully complete
-                    if self.live_orders_enabled:
-                        if not self.live_trading_active:
-                            self.live_trading_active = True
-                            self.live_start_ts = time.time()
-                            self.last_evolve_ts = time.time()
-                            self._ensure_active_live_positions(quote.price, quote.timestamp)
-                            self.log_event("LIVE_START", f"Arena revealed. Live order dispatch active @ ${quote.price:,.2f}", "buy")
-
-                        fills = self.broker.on_tick(
-                            price=quote.price,
-                            high=max(quote.price, quote.ask),
-                            low=min(quote.price, quote.bid),
-                            timestamp=quote.timestamp,
-                            open_price=prev_p
-                        )
-                        for f in fills:
-                            if f.side == OrderSide.SELL:
-                                self.strategy_cooldown[f.portfolio_id] = quote.timestamp + 60.0
-                                self.position_entry_ts.pop(f.portfolio_id, None)
-                            pnl_str = f" (PnL: ${f.realized_pnl:+.2f})" if f.side == OrderSide.SELL else ""
-                            self.log_event(
-                                f.reason.value,
-                                f"{f.portfolio_id.upper()} {f.side.value} {f.qty} BTC @ ${f.price:,.2f}{pnl_str}",
-                                "profit" if f.realized_pnl >= Decimal("0") else "loss"
+                        raw = self._raw_quote_cache or self.latest_quote
+                        if raw and not raw.is_offline and raw.price > Decimal("0.00"):
+                            self.market_online = True
+                            prev_p = self.published_quote.price if (self.published_quote and self.published_quote.price > Decimal("0")) else raw.price
+                            cadenced_quote = LiveQuote(
+                                price=raw.price,
+                                bid=raw.bid,
+                                ask=raw.ask,
+                                high_24h=raw.high_24h,
+                                low_24h=raw.low_24h,
+                                volume_24h=raw.volume_24h,
+                                change_24h_pct=raw.change_24h_pct,
+                                source=raw.source,
+                                timestamp=float(current_slot),
+                                is_offline=False
                             )
+                            self.latest_quote = cadenced_quote
+                            self.published_quote = cadenced_quote
+                            self.tick_count += 1
 
-                        if not self.position_entry_ts and all(c.portfolio.position_qty == Decimal("0") for c in self.competitors):
-                            self._ensure_active_live_positions(quote.price, quote.timestamp)
+                            # Live 1-minute candle + RSI(14)/ATR(14) refresh strictly on the 5-second cadence beat
+                            self._update_candle(float(current_slot), cadenced_quote.price)
+                            self._recompute_candle_indicators()
 
-                        self._evaluate_live_strategies(quote.price, prev_p, quote.timestamp)
+                            # Paced Cadence Dispatcher: Publish candle slices at stable 5s heartbeat (:00, :05, :10, :15...)
+                            self.published_candles = [dict(c) for c in self.candles]
+                            self.last_cadence_ts = float(current_slot)
 
-                    self._record_series_point(quote.price, quote.timestamp)
+                            # Update live exponential moving averages on each 5-second cadence beat
+                            alpha_f = Decimal("0.15")
+                            alpha_s = Decimal("0.04")
+                            if self.live_ema_fast <= Decimal("0"):
+                                self.live_ema_fast = cadenced_quote.price
+                                self.live_ema_slow = cadenced_quote.price
+                            else:
+                                self.live_ema_fast = ((cadenced_quote.price * alpha_f) + (self.live_ema_fast * (Decimal("1") - alpha_f))).quantize(Decimal("0.01"))
+                                self.live_ema_slow = ((cadenced_quote.price * alpha_s) + (self.live_ema_slow * (Decimal("1") - alpha_s))).quantize(Decimal("0.01"))
 
-                if self.live_orders_enabled and self._auto_evolve_due():
-                    self.evolve_now(trigger="auto")
+                            # Live orders & simulated matching activate ONLY on the 5-second boundary
+                            if self.live_orders_enabled:
+                                if not self.live_trading_active:
+                                    self.live_trading_active = True
+                                    self.live_start_ts = time.time()
+                                    self.last_evolve_ts = time.time()
+                                    self._ensure_active_live_positions(cadenced_quote.price, float(current_slot))
+                                    self.log_event("LIVE_START", f"Arena revealed. Live order dispatch active @ ${cadenced_quote.price:,.2f}", "buy")
 
-            except Exception as e:
-                self.log_event("FEED_WARN", f"Retrying live quote stream: {e}", "loss")
+                                fills = self.broker.on_tick(
+                                    price=cadenced_quote.price,
+                                    high=max(cadenced_quote.price, cadenced_quote.ask),
+                                    low=min(cadenced_quote.price, cadenced_quote.bid),
+                                    timestamp=float(current_slot),
+                                    open_price=prev_p
+                                )
+                                for f in fills:
+                                    if f.side == OrderSide.SELL:
+                                        self.strategy_cooldown[f.portfolio_id] = float(current_slot) + 60.0
+                                        self.position_entry_ts.pop(f.portfolio_id, None)
+                                    pnl_str = f" (PnL: ${f.realized_pnl:+.2f})" if f.side == OrderSide.SELL else ""
+                                    self.log_event(
+                                        f.reason.value,
+                                        f"{f.portfolio_id.upper()} {f.side.value} {f.qty} BTC @ ${f.price:,.2f}{pnl_str}",
+                                        "profit" if f.realized_pnl >= Decimal("0") else "loss"
+                                    )
+                                    strat_name = self.STRATEGY_SHORT.get(f.portfolio_id, f.portfolio_id)
+                                    if f.side == OrderSide.SELL:
+                                        self.macro_commander.record_strategy_action(
+                                            f.portfolio_id,
+                                            strat_name,
+                                            f"Closed {f.qty} BTC @ ${f.price:,.2f} ({f.reason.value}{pnl_str})",
+                                            "profit" if f.realized_pnl >= Decimal("0") else "loss"
+                                        )
 
-            time.sleep(self.interval_sec)
+                                if not self.position_entry_ts and all(c.portfolio.position_qty == Decimal("0") for c in self.competitors):
+                                    self._ensure_active_live_positions(cadenced_quote.price, float(current_slot))
+
+                                # All 6 strategies evaluated strictly on the 5-second interval
+                                self._evaluate_live_strategies(cadenced_quote.price, prev_p, float(current_slot))
+
+                            self._record_series_point(cadenced_quote.price, float(current_slot))
+
+                        if self.live_orders_enabled and self._auto_evolve_due():
+                            self.evolve_now(trigger="auto")
+
+                except Exception as e:
+                    self.log_event("FEED_WARN", f"Retrying live quote stream: {e}", "loss")
+
+            time.sleep(0.1)  # High-frequency sleep to hit exact 5-second wall clock slot without drift
 
     def _auto_evolve_due(self, now: Optional[float] = None) -> bool:
         now = time.time() if now is None else now
@@ -1494,6 +1582,7 @@ class LiveArenaEngine:
             "next_evolve_sec": int(next_evolve_sec),
             "evolution_events": self.evolution_events,
             "macro_commander": self.macro_commander.current_state.to_dict(),
+            "intel_hub": self.macro_commander.get_intel_hub_telemetry(),
             "candles": [
                 {
                     "t": c["t"],

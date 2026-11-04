@@ -48,6 +48,11 @@
           <span class="pulse-dot"></span>
           <span id="liveStatusText">Live Feed</span>
         </div>
+        <div class="iso-clock-pill num" id="isoClockPill" title="Isochronous UI Master Clock (5.0s Cadenced Output)">
+          <span class="clock-icon">&#x23F1;</span>
+          <span id="isoClockDisplay">00:00:00</span>
+          <span class="clock-cadence-badge">5s CADENCE</span>
+        </div>
         <div class="title-group">
           <h1>TradeBot0 <span style="font-size:10.5px;font-weight:600;color:var(--accent);background:var(--accent-dim);padding:2px 7px;border-radius:4px;border:1px solid var(--accent-border);letter-spacing:0.02em;">BTC/USD Quant Arena</span></h1>
           <span class="title-sub" id="sourceSubtitle">Connecting | Baseline Capital: $500,000.00 / Strategy ($3,000,000 Total)</span>
@@ -95,6 +100,14 @@
       </div>
 
       <div class="action-cluster">
+        <div class="view-switcher">
+          <button class="view-btn active" id="btnViewArena" onclick="switchMainView('arena')" title="Live Candlestick Battleground">
+            Arena View
+          </button>
+          <button class="view-btn" id="btnViewIntel" onclick="switchMainView('intel')" title="Real-World Macro Intelligence Hub & OmniRoute Monitor">
+            Intel Hub
+          </button>
+        </div>
         <button class="btn btn-primary" onclick="triggerEvolution()" title="Trigger tournament selection and crossover mutation now">
           Evolve Gen
         </button>
@@ -111,7 +124,7 @@
     </header>
 
     <!-- Macro Commander Intelligence & Strict Veto Status Ribbon -->
-    <div class="macro-ribbon" id="macroRibbon">
+    <div class="macro-ribbon" id="macroRibbon" onclick="switchMainView('intel')" title="Click to view Macro Intelligence Hub & OmniRoute telemetry" style="cursor:pointer;">
       <div class="macro-badge" id="macroRegimeBadge">
         <span class="macro-dot" id="macroDot"></span>
         <span id="macroRegimeText">MACRO: NORMAL</span>
@@ -128,6 +141,7 @@
       <div class="macro-headline-wrap">
         <span class="macro-headline-icon">&#x1F4E2;</span>
         <span class="macro-headline-text" id="macroHeadlineText">Market in balanced equilibrium. No macro veto active.</span>
+        <span class="macro-hub-hint">[Open Intel Hub &rarr;]</span>
       </div>
     </div>
 
@@ -273,6 +287,114 @@
               </div>
               <span class="omni-text" id="omniSummary" style="margin-left:8px;">Synchronizing live orderflow...</span>
             </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Dedicated Macro Intelligence Hub & OmniRoute Monitor View -->
+    <main class="intel-hub-grid" id="intelHubMainView" style="display:none;">
+      <!-- Top Grid: OmniRoute Gateway Telemetry & Macro Commander Status -->
+      <section class="intel-top-deck">
+        <!-- Card 1: OmniRoute Gateway & Quota Monitor -->
+        <div class="panel intel-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span>OmniRoute AI Gateway &amp; Quota Telemetry</span>
+            </div>
+            <div class="panel-tools">
+              <span id="omniGatewayStatusPill" class="intel-status-pill online">&#x25CF; ONLINE</span>
+            </div>
+          </div>
+          <div class="intel-panel-body">
+            <div class="intel-metrics-row">
+              <div class="intel-metric">
+                <span class="intel-metric-lbl">Gateway Endpoint</span>
+                <span class="intel-metric-val mono" id="omniEndpointVal">http://localhost:20128/v1</span>
+              </div>
+              <div class="intel-metric">
+                <span class="intel-metric-lbl">Remaining Quota</span>
+                <div class="quota-meter-wrap">
+                  <div class="quota-meter-bar" id="omniQuotaBar" style="width:100%;"></div>
+                </div>
+                <span class="intel-metric-sub num" id="omniQuotaPct">100.0% Remaining</span>
+              </div>
+              <div class="intel-metric">
+                <span class="intel-metric-lbl">Token Utilization / Saved</span>
+                <span class="intel-metric-val num" id="omniTokensVal">0 / 0</span>
+                <span class="intel-metric-sub" id="omniTokensSub">85% SHA-256 Dedup Saved</span>
+              </div>
+              <div class="intel-metric">
+                <span class="intel-metric-lbl">Async Concurrency Limit</span>
+                <span class="intel-metric-val num" id="omniConcurrencyVal">25 Semaphores</span>
+                <span class="intel-metric-sub" id="omniReqCounters">Reqs: 0 | Err: 0</span>
+              </div>
+            </div>
+            <div class="intel-meta-subrow">
+              <span class="intel-tag">Ingest Model: <strong id="omniIngestModel">auto</strong></span>
+              <span class="intel-tag">Commander Model: <strong id="omniCommanderModel">auto</strong></span>
+              <button class="btn btn-primary" onclick="requestAiIntelDigest()" id="btnRefreshDigest" style="margin-left:auto;font-size:11px;padding:4px 10px;">
+                &#x21BB; Refresh AI Digest
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: Macro Regime Commander Weather & Directive -->
+        <div class="panel intel-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span>Macro Regime Commander Directive (Option A Strict Veto)</span>
+            </div>
+            <div class="panel-tools">
+              <span id="macroRegimeHubBadge" class="intel-status-pill neutral">NORMAL</span>
+            </div>
+          </div>
+          <div class="intel-panel-body">
+            <div class="intel-metrics-row">
+              <div class="intel-metric">
+                <span class="intel-metric-lbl">Directional Bias</span>
+                <span class="intel-metric-val highlight" id="macroHubBias">BIDIRECTIONAL</span>
+                <span class="intel-metric-sub" id="macroHubBiasSub">All 6 Strategies Permitted</span>
+              </div>
+              <div class="intel-metric">
+                <span class="intel-metric-lbl">Risk Multiplier</span>
+                <span class="intel-metric-val num" id="macroHubRiskMult">1.00x</span>
+                <span class="intel-metric-sub">Dynamic De-leverage Protection</span>
+              </div>
+              <div class="intel-metric">
+                <span class="intel-metric-lbl">Commander Confidence</span>
+                <span class="intel-metric-val num" id="macroHubConfidence">85%</span>
+                <span class="intel-metric-sub" id="macroHubLastEval">Last Eval: --:--:--</span>
+              </div>
+              <div class="intel-metric">
+                <span class="intel-metric-lbl">Vetoes Enforced Today</span>
+                <span class="intel-metric-val num" id="macroHubVetoCount" style="color:var(--c-cons);">0</span>
+                <span class="intel-metric-sub">Counter-trend trades blocked</span>
+              </div>
+            </div>
+            <div class="intel-meta-subrow">
+              <span class="intel-headline-lbl">Active Headline:</span>
+              <span class="intel-headline-text" id="macroHubHeadline">Macro regime balanced. Multi-domain feeds synchronized.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bottom Grid: Curated Real-World Intelligence Stream & Competitor Action Matrix -->
+      <section class="intel-events-section panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span>Curated Real-World Intelligence Stream &amp; Strategy Impact Matrix</span>
+          </div>
+          <div class="panel-tools">
+            <span class="intel-feed-desc">Multi-Domain: US Elections, Fed, Crypto ETFs, AI Semis, Geopolitics</span>
+            <span id="intelEventCountLabel" style="margin-left:12px;color:var(--text-muted);font-size:11px;">5 Events Cached</span>
+          </div>
+        </div>
+        <div class="intel-events-scroll" id="intelEventsScroll">
+          <div class="intel-events-list" id="intelEventsList">
+            <!-- Dynamically populated by renderIntelHub(state) -->
           </div>
         </div>
       </section>

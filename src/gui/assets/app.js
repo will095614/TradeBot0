@@ -506,6 +506,7 @@ let latestState = null;
     renderStrategies(state);
     renderLeaderboard(state);
     renderFills(state);
+    renderIntelHub(state);
     drawPriceChart(state);
 
     // Verify right-side tables are mounted and populated with data
@@ -613,8 +614,8 @@ let latestState = null;
       autoBtn.style.color = 'var(--text-secondary)';
     }
 
-    document.getElementById('sourceSubtitle').textContent =
-      `Feed: ${q.source || 'Live'} (${q.timestamp || ''}) | Baseline: $100,000.00 USDT / Strategy ($600,000 Total)`;
+    lastCadenceFeedTs = (q && q.timestamp) || '';
+    updateUiClockDisplay();
 
     const badge = document.getElementById('liveBadge');
     const statusText = document.getElementById('liveStatusText');
@@ -1233,12 +1234,12 @@ let latestState = null;
     chartAnimRaf = null;
     if (!latestState) return;
 
-    const ease = 0.12; // Silky smooth 60 FPS damping matched to 3s cadence
+    const ease = 0.08; // Silky smooth 60 FPS damping matched to 5s cadence
     let needsMore = false;
 
     // Smooth Horizontal Kinetic Slide Offset Decay (Silky Leftward Glide)
     if (Math.abs(candleSlideOffset) > 0.05) {
-      candleSlideOffset += (0 - candleSlideOffset) * 0.08;
+      candleSlideOffset += (0 - candleSlideOffset) * 0.05;
       needsMore = true;
     } else {
       candleSlideOffset = 0;
@@ -2083,7 +2084,232 @@ let latestState = null;
     }
   }, true);
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  let lastCadenceFeedTs = '';
+  let uiClockInterval = null;
+
+  function updateUiClockDisplay() {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
+    const timeStr = `${hh}:${mm}:${ss}`;
+
+    const clockEl = document.getElementById('isoClockDisplay');
+    if (clockEl) {
+      clockEl.textContent = timeStr;
+    }
+
+    const subEl = document.getElementById('sourceSubtitle');
+    if (subEl) {
+      const secNum = now.getSeconds();
+      const nextCadence = (5 - (secNum % 5)) % 5 || 5;
+      const feedPart = lastCadenceFeedTs ? `Feed Slot: ${lastCadenceFeedTs} | ` : '';
+      subEl.textContent = `UI Isochronous Time: ${timeStr} | ${feedPart}Next 5s Cadence in ${nextCadence}s | Baseline: $500,000.00 / Strategy ($3,000,000 Total)`;
+    }
+  }
+
+  function startUiClock() {
+    updateUiClockDisplay();
+    if (uiClockInterval) clearInterval(uiClockInterval);
+    uiClockInterval = setInterval(updateUiClockDisplay, 1000);
+  }
+
+  let currentMainView = 'arena';
+  function switchMainView(viewName) {
+    currentMainView = viewName;
+    const arenaEl = document.querySelector('.workspace-grid');
+    const intelEl = document.getElementById('intelHubMainView');
+    const btnArena = document.getElementById('btnViewArena');
+    const btnIntel = document.getElementById('btnViewIntel');
+
+    if (viewName === 'intel') {
+      if (arenaEl) arenaEl.style.display = 'none';
+      if (intelEl) intelEl.style.display = 'flex';
+      if (btnArena) btnArena.classList.remove('active');
+      if (btnIntel) btnIntel.classList.add('active');
+      if (latestState) renderIntelHub(latestState);
+    } else {
+      if (intelEl) intelEl.style.display = 'none';
+      if (arenaEl) arenaEl.style.display = 'grid';
+      if (btnIntel) btnIntel.classList.remove('active');
+      if (btnArena) btnArena.classList.add('active');
+      triggerSmoothResize();
+    }
+  }
+
+  async function requestAiIntelDigest() {
+    const btn = document.getElementById('btnRefreshDigest');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Synthesizing...';
+    }
+    try {
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.refresh_intel_digest) {
+        const state = await window.pywebview.api.refresh_intel_digest();
+        if (state) {
+          latestState = state;
+          renderAll(state);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to refresh AI intel digest:', err);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '\u21BB Refresh AI Digest';
+      }
+    }
+  }
+
+  function renderIntelHub(state) {
+    if (!state) return;
+    const intel = state.intel_hub || {};
+    const omni = intel.omniroute || {};
+    const macro = intel.macro_state || state.macro_commander || {};
+    const events = intel.events || [];
+
+    // 1. OmniRoute Gateway Status
+    const statusPill = document.getElementById('omniGatewayStatusPill');
+    if (statusPill) {
+      const isOnline = omni.status === 'ONLINE';
+      statusPill.className = `intel-status-pill ${isOnline ? 'online' : 'standby'}`;
+      statusPill.innerHTML = isOnline ? '&#x25CF; ONLINE (24/7)' : '&#x25CF; STANDBY / SAFE MODE';
+    }
+
+    const epEl = document.getElementById('omniEndpointVal');
+    if (epEl) epEl.textContent = omni.endpoint || 'http://localhost:20128/v1';
+
+    const quotaBar = document.getElementById('omniQuotaBar');
+    const quotaPct = document.getElementById('omniQuotaPct');
+    const qPct = typeof omni.quota_pct === 'number' ? omni.quota_pct : 100.0;
+    if (quotaBar) quotaBar.style.width = `${Math.max(5, Math.min(100, qPct))}%`;
+    if (quotaPct) quotaPct.textContent = `${qPct.toFixed(1)}% Available Quota`;
+
+    const tokensEl = document.getElementById('omniTokensVal');
+    if (tokensEl) {
+      const used = (omni.tokens_used || 0).toLocaleString();
+      const saved = (omni.tokens_saved || 0).toLocaleString();
+      tokensEl.textContent = `${used} used / ${saved} saved`;
+    }
+
+    const ingEl = document.getElementById('omniIngestModel');
+    if (ingEl) ingEl.textContent = omni.model_ingest || 'auto';
+
+    const cmdEl = document.getElementById('omniCommanderModel');
+    if (cmdEl) cmdEl.textContent = omni.model_commander || 'auto';
+
+    const reqEl = document.getElementById('omniReqCounters');
+    if (reqEl) {
+      reqEl.textContent = `Reqs: ${omni.total_requests || 0} | OK: ${omni.successful_requests || 0} | Fail: ${omni.failed_requests || 0}`;
+    }
+
+    // 2. Macro Regime Card
+    const regBadge = document.getElementById('macroRegimeHubBadge');
+    if (regBadge) {
+      const reg = (macro.regime || 'NORMAL').toUpperCase();
+      let cls = 'neutral';
+      if (reg.includes('SURGE')) cls = 'surge';
+      else if (reg.includes('PANIC') || reg.includes('CHOP')) cls = 'standby';
+      regBadge.className = `intel-status-pill ${cls}`;
+      regBadge.textContent = reg;
+    }
+
+    const biasEl = document.getElementById('macroHubBias');
+    if (biasEl) biasEl.textContent = macro.directional_bias || 'BIDIRECTIONAL';
+
+    const biasSub = document.getElementById('macroHubBiasSub');
+    if (biasSub) {
+      const b = macro.directional_bias || 'BIDIRECTIONAL';
+      if (b === 'LONG_ONLY') biasSub.textContent = 'Strict Veto Active: All Short Trades Blocked';
+      else if (b === 'SHORT_ONLY') biasSub.textContent = 'Strict Veto Active: All Long Trades Blocked';
+      else if (b === 'HOLD_CASH') biasSub.textContent = 'Severe Risk-Off: All Opening Orders Blocked';
+      else biasSub.textContent = 'All 6 Arena Strategies Permitted';
+    }
+
+    const multEl = document.getElementById('macroHubRiskMult');
+    if (multEl) multEl.textContent = `${Number(macro.risk_multiplier || 1.0).toFixed(2)}x`;
+
+    const confEl = document.getElementById('macroHubConfidence');
+    if (confEl) confEl.textContent = `${Math.round(Number(macro.confidence || 0.8) * 100)}%`;
+
+    const lastEval = document.getElementById('macroHubLastEval');
+    if (lastEval) lastEval.textContent = `Last Eval: ${macro.last_synthesis_time || 'Continuous'}`;
+
+    const vetoEl = document.getElementById('macroHubVetoCount');
+    if (vetoEl) vetoEl.textContent = String(macro.veto_count_today || 0);
+
+    const headEl = document.getElementById('macroHubHeadline');
+    if (headEl) headEl.textContent = macro.active_headline || 'Market in balanced equilibrium.';
+
+    // 3. Curated Event Cards
+    const countLbl = document.getElementById('intelEventCountLabel');
+    if (countLbl) countLbl.textContent = `${events.length} Curated Events`;
+
+    const listContainer = document.getElementById('intelEventsList');
+    if (listContainer) {
+      if (events.length === 0) {
+        listContainer.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center;">Synchronizing multi-domain live intelligence stream...</div>';
+      } else {
+        listContainer.innerHTML = events.map(evt => {
+          const sent = Number(evt.sentiment || 0);
+          let sentCls = 'neutral', sentTxt = `${sent >= 0 ? '+' : ''}${sent.toFixed(2)} Neutral`;
+          if (sent > 0.2) { sentCls = 'bullish'; sentTxt = `+${sent.toFixed(2)} Bullish`; }
+          else if (sent < -0.2) { sentCls = 'bearish'; sentTxt = `${sent.toFixed(2)} Bearish`; }
+
+          const urg = Number(evt.urgency || 5);
+          const urgBadge = urg >= 8 
+            ? `<span class="intel-urgency-badge">URG ${urg}/10 CRITICAL</span>`
+            : `<span class="intel-domain-badge">URG ${urg}/10</span>`;
+
+          const actions = evt.strategy_actions || [];
+          let actionsHtml = '';
+          if (actions.length > 0) {
+            actionsHtml = actions.map(act => {
+              const bCls = act.badge_cls || 'neutral';
+              return `<span class="strat-action-pill ${bCls}">
+                <strong>${escapeHtml(act.name)}</strong>: ${escapeHtml(act.action)} <small style="opacity:0.75;">(${escapeHtml(act.time || '')})</small>
+              </span>`;
+            }).join('');
+          } else {
+            actionsHtml = `<span class="strat-action-pill neutral">Strategies 1~6: Active Monitoring under ${escapeHtml(macro.directional_bias || 'BIDIRECTIONAL')} Directive</span>`;
+          }
+
+          return `
+            <div class="intel-event-card">
+              <div class="intel-card-header">
+                <span class="intel-event-time num">${escapeHtml(evt.time || '')}</span>
+                <span class="intel-domain-badge">${escapeHtml((evt.domain || 'macro').toUpperCase())}</span>
+                <span class="intel-source-badge">${escapeHtml(evt.source || 'News Wire')}</span>
+                ${urgBadge}
+                <span class="intel-sentiment-badge num ${sentCls}">${sentTxt}</span>
+              </div>
+              <div class="intel-card-headline">${escapeHtml(evt.headline || '')}</div>
+              <div class="intel-card-summary">${escapeHtml(evt.summary || '')}</div>
+              <div class="intel-strategy-actions-box">
+                <div class="intel-strategy-box-title">Arena Competitor Impact (Strategies 1 ~ 6):</div>
+                <div class="strat-actions-wrap">
+                  ${actionsHtml}
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+  }
+
   window.addEventListener('DOMContentLoaded', () => {
+    startUiClock();
     const pWrap = document.getElementById('priceCanvasWrap');
     if (pWrap) resizeObserver.observe(pWrap);
     setupChartInteraction();

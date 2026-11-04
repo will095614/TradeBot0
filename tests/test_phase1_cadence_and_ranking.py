@@ -52,17 +52,17 @@ def test_candle_cadence_dispatcher_timing_and_dispatch():
 
     # Initial state has published candles populated
     assert len(engine.published_candles) > 0
-    assert engine.cadence_sec == 3.0
+    assert engine.cadence_sec == 5.0
 
     state = engine.get_ui_state()
     assert "candles" in state
     assert len(state["candles"]) > 0
-    assert state.get("cadence_sec") == 3.0
+    assert state.get("cadence_sec") == 5.0
 
     # Test dynamic cadence reconfiguration
-    new_cadence = engine.set_cadence_interval(5.0)
-    assert new_cadence == 5.0
-    assert engine.cadence_sec == 5.0
+    new_cadence = engine.set_cadence_interval(3.0)
+    assert new_cadence == 3.0
+    assert engine.cadence_sec == 3.0
 
     # Bounds clamping (1.0 to 10.0)
     assert engine.set_cadence_interval(0.2) == 1.0

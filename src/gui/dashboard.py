@@ -78,6 +78,10 @@ class _ArenaBridgeApi:
         self._dashboard.engine.start_live_trading()
         return self._dashboard.engine.get_ui_state()
 
+    def refresh_intel_digest(self) -> Dict[str, Any]:
+        self._dashboard.engine.refresh_intel_digest()
+        return self._dashboard.engine.get_ui_state()
+
     def toggle_fullscreen(self) -> bool:
         if self._dashboard.window:
             self._dashboard.window.toggle_fullscreen()
@@ -104,13 +108,13 @@ class ArenaDashboard:
         self.engine = LiveArenaEngine(symbol="BTC/USD", initial_cash=self.initial_cash)
         self.engine.auto_evolve_interval_sec = old_interval
         self.engine.auto_evolve_enabled = old_enabled
-        self.engine.start_live_loop(interval_sec=1.5)
+        self.engine.start_live_loop(interval_sec=5.0)
 
     def run(self) -> None:
         import webview
 
         logger.info("Starting TradeBot0 LiveArenaEngine (BTC/USD)...")
-        self.engine.start_live_loop(interval_sec=1.5)
+        self.engine.start_live_loop(interval_sec=5.0)
 
         logger.info("Initializing pywebview GPU Window...")
         window = webview.create_window(
