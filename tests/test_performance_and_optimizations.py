@@ -77,3 +77,21 @@ def test_launchers_and_shortcut_integrity():
     assert cjk_bat.exists()
     content_cjk = cjk_bat.read_text(encoding="utf-8", errors="ignore")
     assert "dist\\TradeBot0_Arena.exe" in content_cjk
+
+
+def test_splash_logo_concentric_alignment_and_svg_zap():
+    html = pathlib.Path("src/gui/assets/index.html").read_text(encoding="utf-8")
+    css = pathlib.Path("src/gui/assets/app.css").read_text(encoding="utf-8")
+
+    # 1. High-tech vector SVG icon is used instead of emoji
+    assert "splash-svg-icon" in html
+    assert "polygon points=" in html
+    assert "splashZapGrad" in html
+
+    # 2. Icon and radar rings both use translate(-50%, -50%) and top: 50%; left: 50%;
+    assert ".splash-icon {" in css
+    assert "animation: splashIconPulse" in css
+    assert "splashRadarRipple" in css
+    # Confirm markerPulse is NOT used on splash icon
+    assert "animation: markerPulse" not in css.split(".splash-icon {")[1].split("}")[0]
+

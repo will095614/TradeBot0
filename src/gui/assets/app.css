@@ -55,39 +55,48 @@
     position: relative;
     width: 80px;
     height: 80px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     margin: 0 auto 24px auto;
   }
   .splash-icon {
-    font-size: 34px;
-    line-height: 1;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 44px;
+    height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 100%;
-    height: 100%;
-    text-align: center;
-    color: #00F5A0;
-    text-shadow: 0 0 20px rgba(0, 245, 160, 0.6);
     z-index: 2;
-    animation: markerPulse 2s infinite ease-in-out;
+    animation: splashIconPulse 2s infinite ease-in-out;
     user-select: none;
+    pointer-events: none;
+  }
+  .splash-svg-icon {
+    display: block;
+    width: 36px;
+    height: 36px;
+    filter: drop-shadow(0 0 12px rgba(0, 245, 160, 0.75));
   }
   .splash-radar-ring {
     position: absolute;
     top: 50%;
     left: 50%;
     border-radius: 50%;
-    border: 1.5px solid rgba(0, 245, 160, 0.4);
-    box-shadow: 0 0 15px rgba(0, 242, 254, 0.2);
+    border: 1.5px solid rgba(0, 245, 160, 0.45);
+    box-shadow: 0 0 15px rgba(0, 242, 254, 0.25);
     animation: splashRadarRipple 2.4s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
     pointer-events: none;
   }
   .splash-radar-ring.ring1 { width: 44px; height: 44px; animation-delay: 0s; }
   .splash-radar-ring.ring2 { width: 68px; height: 68px; animation-delay: 0.8s; }
   .splash-radar-ring.ring3 { width: 92px; height: 92px; animation-delay: 1.6s; }
+
+  @keyframes splashIconPulse {
+    0% { transform: translate(-50%, -50%) scale(1); filter: drop-shadow(0 0 8px rgba(0, 245, 160, 0.5)); }
+    50% { transform: translate(-50%, -50%) scale(1.12); filter: drop-shadow(0 0 20px rgba(0, 242, 254, 0.9)); }
+    100% { transform: translate(-50%, -50%) scale(1); filter: drop-shadow(0 0 8px rgba(0, 245, 160, 0.5)); }
+  }
 
   @keyframes splashRadarRipple {
     0% { transform: translate(-50%, -50%) scale(0.4); opacity: 0.9; }
