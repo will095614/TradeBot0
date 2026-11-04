@@ -2276,7 +2276,9 @@ let latestState = null;
 
     const listContainer = document.getElementById('intelEventsList');
     if (listContainer) {
-      if (events.length === 0) {
+      if (currentMainView !== 'intel' && listContainer.children.length > 0) {
+        // Hub panel is hidden; preserve existing DOM nodes to save rendering cycles
+      } else if (events.length === 0) {
         listContainer.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center;">Synchronizing multi-domain live intelligence stream...</div>';
       } else {
         listContainer.innerHTML = events.map(evt => {

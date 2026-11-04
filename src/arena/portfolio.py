@@ -283,7 +283,3 @@ class Portfolio:
         self.trade_history.append(enriched_fill)
         self.update_market_price(fill.price, fill.timestamp)
         return enriched_fill
-
-        self.trade_history.append(enriched_fill)
-        self.update_market_price(fill.price, fill.timestamp)
-        return enriched_fill

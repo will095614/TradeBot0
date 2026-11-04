@@ -333,13 +333,15 @@ class MacroCommander:
 
             user_prompt = f"Analyze this live intelligence digest and declare the macro regime:\n\n{intel_digest}"
 
-            parsed = await self.client.chat_json(
-                model=self.client.model_commander,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.0,
-                max_tokens=600,
-            )
+            parsed = None
+            if self.client.is_gateway_online:
+                parsed = await self.client.chat_json(
+                    model=self.client.model_commander,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.0,
+                    max_tokens=600,
+                )
 
             self.current_state.total_evaluations += 1
             self.current_state.last_synthesis_ts = now

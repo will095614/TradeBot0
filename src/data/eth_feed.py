@@ -1,6 +1,7 @@
 from __future__ import annotations
 from decimal import Decimal
 from typing import List, Optional
+import os
 import time
 import warnings
 import pandas as pd
@@ -165,11 +166,14 @@ class ETHFeed:
 
     @staticmethod
     def _fetch_dataframe(ticker: str, period: str, interval: str) -> pd.DataFrame:
+        if os.environ.get("ARENA_FAST_TEST") == "1":
+            return pd.DataFrame()
+
         try:
             import yfinance as yf
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                df = yf.download(ticker, period=period, interval=interval, progress=False)
+                df = yf.download(ticker, period=period, interval=interval, progress=False, timeout=3.5)
             if df is not None and not df.empty:
                 return df
         except Exception:
@@ -178,7 +182,7 @@ class ETHFeed:
         # Automatic CCXT Public Exchange Fallback (Kraken ETH/USD, zero API key needed)
         try:
             import ccxt
-            exchange = ccxt.kraken({"enableRateLimit": True})
+            exchange = ccxt.kraken({"enableRateLimit": True, "timeout": 2500})
             tf_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "1d": "1d"}
             ccxt_tf = tf_map.get(interval, "15m")
             ohlcv = exchange.fetch_ohlcv("BTC/USD", timeframe=ccxt_tf, limit=720)

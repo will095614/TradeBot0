@@ -104,11 +104,13 @@ class ArenaDashboard:
     def reset_engine(self) -> None:
         old_interval = self.engine.auto_evolve_interval_sec
         old_enabled = self.engine.auto_evolve_enabled
+        old_cadence = self.engine.cadence_sec
         self.engine.stop()
         self.engine = LiveArenaEngine(symbol="BTC/USD", initial_cash=self.initial_cash)
         self.engine.auto_evolve_interval_sec = old_interval
         self.engine.auto_evolve_enabled = old_enabled
-        self.engine.start_live_loop(interval_sec=5.0)
+        self.engine.cadence_sec = old_cadence
+        self.engine.start_live_loop(interval_sec=old_cadence)
 
     def run(self) -> None:
         import webview

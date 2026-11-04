@@ -129,7 +129,7 @@ class OmniRouteClient:
         try:
             sess = await self.get_session()
             url = f"{self.root_url}/api/health"
-            async with sess.get(url, timeout=aiohttp.ClientTimeout(total=3.0)) as r:
+            async with sess.get(url, timeout=aiohttp.ClientTimeout(total=0.75)) as r:
                 if r.status == 200:
                     data = await r.json()
                     self.is_gateway_online = bool(data.get("ok", True))
