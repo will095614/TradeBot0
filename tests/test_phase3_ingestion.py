@@ -162,3 +162,74 @@ def test_harvester_stage1_processing_and_urgent_interrupt():
 
     asyncio.run(_run())
 
+
+def test_feed_registry_completeness_r3():
+    """
+    [R3 Checkpoint] Assert that the feed registry explicitly includes
+    Semiconductor/AI Supply Chain feeds and Geopolitics/War/Maritime Chokepoint feeds.
+    """
+    from src.intelligence.ingestion import FEED_REGISTRY
+    names = {f["name"] for f in FEED_REGISTRY}
+    ids = {f["id"] for f in FEED_REGISTRY}
+
+    # Semiconductor / AI Supply Chain
+    assert any("semianalysis" in i for i in ids)
+    assert any("trendforce" in i for i in ids)
+    assert any("digitimes" in i for i in ids)
+    assert any("technews" in i for i in ids)
+
+    # Geopolitics / War / Maritime
+    assert any("isw" in i for i in ids)
+    assert any("war_zone" in i for i in ids)
+    assert any("liveuamap" in i for i in ids)
+    assert any("gcaptain" in i for i in ids)
+
+    # Core Tape & Macro
+    assert any("tree_news" in i for i in ids)
+    assert any("polymarket" in i for i in ids)
+    assert any("sec_edgar" in i for i in ids)
+
+
+def test_stage2_interrupt_debouncing_r4():
+    """
+    [R4 Checkpoint] Simulate consecutive high-urgency events (urgency >= 8)
+    within the cooldown window. Verify anti-interrupt storm debouncing.
+    """
+    async def _run():
+        from src.intelligence.ingestion import InterruptDebouncer, StructuredEvent
+
+        dispatched_batches = []
+
+        async def _mock_dispatch(events):
+            dispatched_batches.append(events)
+
+        # 0.2s fast cooldown for test
+        debouncer = InterruptDebouncer(_mock_dispatch, cooldown_sec=0.2)
+
+        ev1 = StructuredEvent("ts", "s1", "m", ["BTC"], 9, 0.8, "Event 1")
+        ev2 = StructuredEvent("ts", "s2", "m", ["BTC"], 8, 0.7, "Event 2")
+        ev3 = StructuredEvent("ts", "s3", "m", ["BTC"], 9, 0.9, "Event 3")
+
+        # First trigger outside active window: dispatches ev1 immediately
+        await debouncer.trigger(ev1)
+        await asyncio.sleep(0.02)
+        assert len(dispatched_batches) == 1
+        assert len(dispatched_batches[0]) == 1
+        assert dispatched_batches[0][0].summary == "Event 1"
+
+        # Rapid arrivals inside cooldown window: queued
+        await debouncer.trigger(ev2)
+        await debouncer.trigger(ev3)
+        # Should not have dispatched yet
+        assert len(dispatched_batches) == 1
+
+        # Wait for cooldown to expire
+        await asyncio.sleep(0.25)
+        # Merged batched call executed
+        assert len(dispatched_batches) == 2
+        assert len(dispatched_batches[1]) == 2
+        assert dispatched_batches[1][0].summary == "Event 2"
+        assert dispatched_batches[1][1].summary == "Event 3"
+
+    asyncio.run(_run())
+

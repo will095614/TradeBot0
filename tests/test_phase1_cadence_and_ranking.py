@@ -67,3 +67,43 @@ def test_candle_cadence_dispatcher_timing_and_dispatch():
     # Bounds clamping (1.0 to 10.0)
     assert engine.set_cadence_interval(0.2) == 1.0
     assert engine.set_cadence_interval(30.0) == 10.0
+    engine.stop()
+
+
+def test_micro_bar_aggregation_preserves_wick_extremes_r1():
+    """
+    [R1 Checkpoint] Verify that intermediate high spike and low flush
+    inside a slice are preserved in micro-bar aggregation and never discarded.
+    """
+    from src.data.live_engine import LiveQuote
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    engine.bootstrap_intraday_session()
+
+    t0 = engine.candles[-1]["t"]
+    quotes = [
+        LiveQuote(price=Decimal("95000.00"), bid=Decimal("94990.00"), ask=Decimal("95010.00"), high_24h=Decimal("98000.00"), low_24h=Decimal("92000.00"), volume_24h=Decimal("100.0"), change_24h_pct=Decimal("2.0"), source="test", timestamp=t0),
+        LiveQuote(price=Decimal("95800.00"), bid=Decimal("95790.00"), ask=Decimal("95810.00"), high_24h=Decimal("98000.00"), low_24h=Decimal("92000.00"), volume_24h=Decimal("100.0"), change_24h_pct=Decimal("2.0"), source="test", timestamp=t0 + 1.0),
+        LiveQuote(price=Decimal("94200.00"), bid=Decimal("94190.00"), ask=Decimal("94210.00"), high_24h=Decimal("98000.00"), low_24h=Decimal("92000.00"), volume_24h=Decimal("100.0"), change_24h_pct=Decimal("2.0"), source="test", timestamp=t0 + 2.0),
+        LiveQuote(price=Decimal("95200.00"), bid=Decimal("95190.00"), ask=Decimal("95210.00"), high_24h=Decimal("98000.00"), low_24h=Decimal("92000.00"), volume_24h=Decimal("100.0"), change_24h_pct=Decimal("2.0"), source="test", timestamp=t0 + 3.0),
+    ]
+
+    with engine.lock:
+        engine._slice_ticks.extend(quotes)
+
+    # Aggregate slice
+    ticks = list(engine._slice_ticks)
+    open_p = ticks[0].price
+    high_p = max(t.price for t in ticks)
+    low_p = min(t.price for t in ticks)
+    close_p = ticks[-1].price
+
+    assert open_p == Decimal("95000.00")
+    assert high_p == Decimal("95800.00")  # Extreme high captured
+    assert low_p == Decimal("94200.00")   # Extreme low captured
+    assert close_p == Decimal("95200.00")
+
+    engine._update_candle(t0, close=close_p, high=high_p, low=low_p, open_=open_p)
+    last_candle = engine.candles[-1]
+    assert last_candle["h"] >= float(Decimal("95800.00"))
+    assert last_candle["l"] <= float(Decimal("94200.00"))
+    engine.stop()

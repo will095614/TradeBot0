@@ -39,12 +39,14 @@ def test_macro_commander_strict_veto_logic():
     ok, _ = commander.check_trade_veto(OrderSide.SELL, "Aggressive")
     assert ok is True
 
-    # 4. HOLD_CASH regime: All opening orders blocked
+    # 4. HOLD_CASH regime: All opening orders blocked [R5]
     commander.current_state.directional_bias = "HOLD_CASH"
     ok, reason = commander.check_trade_veto(OrderSide.BUY, "ORB")
     assert ok is False
+    assert "VETO_MACRO_HOLD_CASH" in reason
     ok, reason = commander.check_trade_veto(OrderSide.SELL, "VWAP")
     assert ok is False
+    assert "VETO_MACRO_HOLD_CASH" in reason
     assert commander.current_state.veto_count_today == 4
 
 
@@ -115,5 +117,6 @@ def test_live_engine_enforces_macro_commander_veto():
     # Check that veto logs were created
     veto_logs = [l for l in engine.live_logs if l["tag"] == "VETO_MACRO"]
     assert len(veto_logs) == 6
+    engine.stop()
     assert engine.macro_commander.current_state.veto_count_today == 6
 

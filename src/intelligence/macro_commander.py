@@ -272,7 +272,7 @@ class MacroCommander:
 
         if bias == "HOLD_CASH":
             self.current_state.veto_count_today += 1
-            reason = f"VETO_MACRO_DEFENSE: All opening orders blocked during severe risk-off regime ({self.current_state.active_headline})"
+            reason = f"VETO_MACRO_HOLD_CASH: All opening orders blocked during severe risk-off regime ({self.current_state.active_headline})"
             return False, reason
 
         return True, "PASSED"

@@ -67,6 +67,7 @@ def test_live_engine_refresh_intel_digest():
     state_after = engine.get_ui_state()
     assert "intel_hub" in state_after
     assert len(state_after["intel_hub"]["events"]) > 0
+    engine.stop()
 
 
 def test_arena_bridge_api_refresh_intel():
@@ -78,4 +79,5 @@ def test_arena_bridge_api_refresh_intel():
     assert "intel_hub" in new_state
     assert "macro_commander" in new_state
     assert "candles" in new_state
+    dash.engine.stop()
 

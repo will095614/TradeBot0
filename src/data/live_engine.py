@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Dict, List, Any, Optional
@@ -108,6 +109,7 @@ class LiveArenaEngine:
         self.published_candles: List[Dict[str, float]] = []
         self.published_quote: Optional[LiveQuote] = None
         self._raw_quote_cache: Optional[LiveQuote] = None
+        self._slice_ticks: List[LiveQuote] = []
         self.raw_fetch_thread: Optional[threading.Thread] = None
 
         # Style-B automatic hourly evolution
@@ -1143,6 +1145,7 @@ class LiveArenaEngine:
                 if raw and not raw.is_offline and raw.price > Decimal("0"):
                     with self.lock:
                         self._raw_quote_cache = raw
+                        self._slice_ticks.append(raw)
                         self.market_online = True
                 else:
                     with self.lock:
@@ -1170,6 +1173,11 @@ class LiveArenaEngine:
 
     def stop(self) -> None:
         self.stop_live_loop()
+        if hasattr(self, "omniroute_client") and self.omniroute_client:
+            try:
+                self.omniroute_client.close_sync()
+            except Exception:
+                pass
 
     def _live_loop(self) -> None:
         self.log_event("BOOT", "Connecting to real-time BTC/USD orderflow & warming 1m indicators...", "info")
@@ -1196,11 +1204,26 @@ class LiveArenaEngine:
                 try:
                     with self.lock:
                         raw = self._raw_quote_cache or self.latest_quote
+                        ticks = list(self._slice_ticks)
+                        self._slice_ticks.clear()
+
                         if raw and not raw.is_offline and raw.price > Decimal("0.00"):
                             self.market_online = True
                             prev_p = self.published_quote.price if (self.published_quote and self.published_quote.price > Decimal("0")) else raw.price
+
+                            if ticks:
+                                open_p = ticks[0].price
+                                high_p = max(t.price for t in ticks)
+                                low_p = min(t.price for t in ticks)
+                                close_p = ticks[-1].price
+                            else:
+                                open_p = prev_p
+                                high_p = max(raw.price, raw.ask)
+                                low_p = min(raw.price, raw.bid)
+                                close_p = raw.price
+
                             cadenced_quote = LiveQuote(
-                                price=raw.price,
+                                price=close_p,
                                 bid=raw.bid,
                                 ask=raw.ask,
                                 high_24h=raw.high_24h,
@@ -1215,8 +1238,14 @@ class LiveArenaEngine:
                             self.published_quote = cadenced_quote
                             self.tick_count += 1
 
-                            # Live 1-minute candle + RSI(14)/ATR(14) refresh strictly on the 5-second cadence beat
-                            self._update_candle(float(current_slot), cadenced_quote.price)
+                            # Micro-bar aggregated 1-minute candle refresh [R1]
+                            self._update_candle(
+                                float(current_slot),
+                                close=cadenced_quote.price,
+                                high=high_p,
+                                low=low_p,
+                                open_=open_p
+                            )
                             self._recompute_candle_indicators()
 
                             # Paced Cadence Dispatcher: Publish candle slices at stable 5s heartbeat (:00, :05, :10, :15...)
@@ -1244,8 +1273,8 @@ class LiveArenaEngine:
 
                                 fills = self.broker.on_tick(
                                     price=cadenced_quote.price,
-                                    high=max(cadenced_quote.price, cadenced_quote.ask),
-                                    low=min(cadenced_quote.price, cadenced_quote.bid),
+                                    high=max(high_p, cadenced_quote.price, cadenced_quote.ask),
+                                    low=min(low_p, cadenced_quote.price, cadenced_quote.bid),
                                     timestamp=float(current_slot),
                                     open_price=prev_p
                                 )

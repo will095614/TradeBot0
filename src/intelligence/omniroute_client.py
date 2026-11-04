@@ -235,3 +235,26 @@ class OmniRouteClient:
             await self._session.close()
             self._session = None
 
+    def close_sync(self) -> None:
+        """Synchronously closes underlying session or schedules close on loop."""
+        if self._session and not self._session.closed and self._owns_session:
+            try:
+                loop = None
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    pass
+                if loop and loop.is_running():
+                    loop.create_task(self._session.close())
+                else:
+                    asyncio.run(self._session.close())
+            except Exception:
+                pass
+            self._session = None
+
+    def __del__(self) -> None:
+        try:
+            self.close_sync()
+        except Exception:
+            pass
+

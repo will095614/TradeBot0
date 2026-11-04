@@ -17,6 +17,32 @@ logger = logging.getLogger(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 TradeBot0-Intelligence/1.0"
 
+# [R3] Comprehensive Multi-Domain Feed Registry
+FEED_REGISTRY: List[Dict[str, Any]] = [
+    # Tier 0: Breaking Websocket / Sub-second tape
+    {"id": "tree_news_ws", "name": "Tree News", "tier": 0, "domain": "crypto", "type": "websocket", "url": "wss://news.treeofalpha.com/ws"},
+    # Tier 1: 30-60s Breaking Wires, Prediction & Geopolitics
+    {"id": "polymarket_gamma", "name": "Polymarket Gamma", "tier": 1, "domain": "prediction", "type": "rest_json", "url": "https://gamma-api.polymarket.com/events?limit=25&active=true"},
+    {"id": "sec_edgar_8k", "name": "SEC EDGAR 8-K", "tier": 1, "domain": "corporate", "type": "atom", "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&CIK=&type=8-K&company=&dateb=&owner=include&start=0&count=40&output=atom"},
+    {"id": "isw_updates", "name": "Institute for the Study of War (ISW)", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://www.understandingwar.org/rss.xml"},
+    {"id": "war_zone", "name": "The War Zone", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://www.twz.com/feed"},
+    {"id": "liveuamap", "name": "Liveuamap", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://liveuamap.com/rss"},
+    {"id": "gcaptain", "name": "gCaptain Maritime Security", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://gcaptain.com/feed/"},
+    {"id": "forexlive", "name": "ForexLive Breaking Wire", "tier": 1, "domain": "macro", "type": "rss", "url": "https://www.forexlive.com/feed/news"},
+    # Tier 2: 3-5m Semiconductor/AI Supply Chain, Crypto & Community
+    {"id": "semianalysis", "name": "SemiAnalysis", "tier": 2, "domain": "tech", "type": "rss", "url": "https://www.semianalysis.com/feed"},
+    {"id": "trendforce", "name": "TrendForce Global Tech", "tier": 2, "domain": "tech", "type": "rss", "url": "https://www.trendforce.com/rss"},
+    {"id": "digitimes", "name": "DigiTimes Semiconductor Wire", "tier": 2, "domain": "tech", "type": "rss", "url": "https://www.digitimes.com/rss/daily.xml"},
+    {"id": "technews_tw", "name": "TechNews Global Supply Chain", "tier": 2, "domain": "tech", "type": "rss", "url": "https://technews.tw/feed/"},
+    {"id": "coindesk_wire", "name": "CoinDesk Live", "tier": 2, "domain": "crypto", "type": "rss", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
+    {"id": "cointelegraph_wire", "name": "CoinTelegraph", "tier": 2, "domain": "crypto", "type": "rss", "url": "https://cointelegraph.com/rss"},
+    {"id": "reddit_crypto", "name": "Reddit r/CryptoCurrency", "tier": 2, "domain": "crypto", "type": "reddit_json", "url": "https://www.reddit.com/r/CryptoCurrency/hot.json?limit=25"},
+    {"id": "reddit_wsb", "name": "Reddit r/wallstreetbets", "tier": 2, "domain": "macro", "type": "reddit_json", "url": "https://www.reddit.com/r/wallstreetbets/hot.json?limit=25"},
+    # Tier 3: 15-30m Macro Liquidity & Treasury
+    {"id": "fred_releases", "name": "FRED Economic Data Releases", "tier": 3, "domain": "macro", "type": "rss", "url": "https://fred.stlouisfed.org/rss/releases.xml"},
+    {"id": "us_treasury", "name": "US Treasury Press Releases", "tier": 3, "domain": "macro", "type": "rss", "url": "https://home.treasury.gov/rss/press-releases.xml"},
+]
+
 
 @dataclass
 class RawEvent:
@@ -219,6 +245,86 @@ def parse_reddit_posts(data: Any, subreddit: str, domain: str) -> List[RawEvent]
     return events
 
 
+class InterruptDebouncer:
+    """
+    [R4] Anti-Interrupt Storm Debouncer:
+    Enforces a 10.0-second cooldown window on out-of-band interrupts.
+    The first urgency >= 8 event fires immediately (<500ms latency) and opens the window.
+    Subsequent events arriving within the 10s window are batched and dispatched
+    in a single merged call when the window closes.
+    """
+
+    def __init__(
+        self,
+        dispatch_fn: Callable[[Any], Coroutine[Any, Any, None]],
+        cooldown_sec: float = 10.0,
+    ) -> None:
+        self.dispatch_fn = dispatch_fn
+        self.cooldown_sec = cooldown_sec
+        self.pending_events: List[StructuredEvent] = []
+        self.last_dispatch_ts: float = 0.0
+        self.timer_task: Optional[asyncio.Task] = None
+        self._lock = asyncio.Lock()
+
+    async def trigger(self, event: StructuredEvent) -> None:
+        async with self._lock:
+            now = time.time()
+            self.pending_events.append(event)
+            # If outside active cooldown window, dispatch immediately (<500ms latency)
+            if now - self.last_dispatch_ts >= self.cooldown_sec and self.timer_task is None:
+                to_dispatch = list(self.pending_events)
+                self.pending_events.clear()
+                self.last_dispatch_ts = now
+                asyncio.create_task(self._safe_dispatch(to_dispatch))
+                # Open cooldown window timer to flush any arrivals inside 10s
+                self.timer_task = asyncio.create_task(self._cooldown_timer())
+            else:
+                if self.timer_task is None:
+                    self.timer_task = asyncio.create_task(self._cooldown_timer())
+
+    async def _safe_dispatch(self, events: List[StructuredEvent]) -> None:
+        if not events:
+            return
+        import inspect
+        is_batch = False
+        try:
+            sig = inspect.signature(self.dispatch_fn)
+            params = list(sig.parameters.values())
+            if params:
+                p_name = params[0].name.lower()
+                p_ann = str(params[0].annotation).lower()
+                if "batch" in p_name or "events" in p_name or "list" in p_ann:
+                    is_batch = True
+        except Exception:
+            pass
+
+        if is_batch:
+            try:
+                res = self.dispatch_fn(events)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception as ex:
+                logger.debug("Interrupt batch dispatch error: %s", ex)
+        else:
+            for ev in events:
+                try:
+                    res = self.dispatch_fn(ev)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as ex:
+                    logger.debug("Interrupt dispatch error: %s", ex)
+
+    async def _cooldown_timer(self) -> None:
+        await asyncio.sleep(self.cooldown_sec)
+        async with self._lock:
+            self.timer_task = None
+            if self.pending_events:
+                to_dispatch = list(self.pending_events)
+                self.pending_events.clear()
+                self.last_dispatch_ts = time.time()
+                asyncio.create_task(self._safe_dispatch(to_dispatch))
+
+
 class IntelligenceHarvester:
     """
     Stage 1 Harvester: Ingests raw news streams, deduplicates, and uses
@@ -230,11 +336,14 @@ class IntelligenceHarvester:
         self,
         client: OmniRouteClient,
         dedup_buffer: Optional[DeduplicationBuffer] = None,
-        on_urgent_interrupt: Optional[Callable[[StructuredEvent], Coroutine[Any, Any, None]]] = None,
+        on_urgent_interrupt: Optional[Callable[[Any], Coroutine[Any, Any, None]]] = None,
     ) -> None:
         self.client = client
         self.dedup = dedup_buffer or DeduplicationBuffer(capacity=5000)
         self.on_urgent_interrupt = on_urgent_interrupt
+        self.debouncer: Optional[InterruptDebouncer] = (
+            InterruptDebouncer(on_urgent_interrupt, cooldown_sec=10.0) if on_urgent_interrupt else None
+        )
 
         # Rolling storage of recent structured events
         self.recent_structured_events: deque[StructuredEvent] = deque(maxlen=200)
@@ -314,12 +423,15 @@ class IntelligenceHarvester:
                     self.recent_structured_events.append(se)
 
                     # Trigger out-of-band interrupt if event is critical
-                    if urgency >= 8 and self.on_urgent_interrupt:
+                    if urgency >= 8:
                         logger.warning(
                             "CRITICAL INTELLIGENCE SHOCK (Urgency %d): %s [%s]",
                             urgency, summary, raw.title[:80]
                         )
-                        asyncio.create_task(self.on_urgent_interrupt(se))
+                        if self.debouncer:
+                            asyncio.create_task(self.debouncer.trigger(se))
+                        elif self.on_urgent_interrupt:
+                            asyncio.create_task(self.on_urgent_interrupt(se))
 
                 except Exception as ex:
                     logger.debug("Failed parsing individual event extraction: %s", ex)
@@ -349,8 +461,11 @@ class IntelligenceHarvester:
                 )
                 structured_results.append(se)
                 self.recent_structured_events.append(se)
-                if urgency >= 8 and self.on_urgent_interrupt:
-                    asyncio.create_task(self.on_urgent_interrupt(se))
+                if urgency >= 8:
+                    if self.debouncer:
+                        asyncio.create_task(self.debouncer.trigger(se))
+                    elif self.on_urgent_interrupt:
+                        asyncio.create_task(self.on_urgent_interrupt(se))
 
         return structured_results
 
