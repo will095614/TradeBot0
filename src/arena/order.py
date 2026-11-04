@@ -12,6 +12,12 @@ class OrderSide(str, Enum):
     SELL = "SELL"
 
 
+class PositionSide(str, Enum):
+    FLAT = "FLAT"
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
 class OrderType(str, Enum):
     MARKET = "MARKET"
     LIMIT = "LIMIT"
@@ -65,6 +71,7 @@ class FillEvent:
     reason: ExecutionReason = ExecutionReason.SIGNAL
     fill_seq: int = 0
     entry_price: Optional[Decimal] = None
+    position_side: PositionSide = PositionSide.LONG
 
     def with_realized_pnl(self, pnl: Decimal, entry_price: Optional[Decimal] = None) -> FillEvent:
         return replace(self, realized_pnl=pnl, entry_price=entry_price if entry_price is not None else self.entry_price)

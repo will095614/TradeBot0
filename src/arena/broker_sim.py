@@ -8,6 +8,7 @@ from src.arena.order import (
     OrderType,
     ExecutionReason,
     FillEvent,
+    PositionSide,
 )
 from src.arena.portfolio import Portfolio, PRECISION_CASH
 from src.arena.risk_guard import RiskGuard, MAX_DRAWDOWN_LIMIT_PCT
@@ -95,12 +96,13 @@ class BrokerSim:
         self.execution_audit.append(enriched_fill)
 
         # Register or clear Bracket Exits
-        if ticket.side == OrderSide.BUY and portfolio.position_qty > Decimal("0"):
+        if portfolio.position_qty > Decimal("0"):
+            exit_side = OrderSide.SELL if portfolio.position_side == PositionSide.LONG else OrderSide.BUY
             if ticket.stop_loss is not None:
                 self.active_stops[ticket.portfolio_id] = OrderTicket(
                     portfolio_id=ticket.portfolio_id,
                     symbol=ticket.symbol,
-                    side=OrderSide.SELL,
+                    side=exit_side,
                     order_type=OrderType.STOP_MARKET,
                     qty=portfolio.position_qty,
                     price=ticket.stop_loss,
@@ -111,14 +113,14 @@ class BrokerSim:
                 self.active_targets[ticket.portfolio_id] = OrderTicket(
                     portfolio_id=ticket.portfolio_id,
                     symbol=ticket.symbol,
-                    side=OrderSide.SELL,
+                    side=exit_side,
                     order_type=OrderType.LIMIT,
                     qty=portfolio.position_qty,
                     price=ticket.take_profit,
                     reason=ExecutionReason.TAKE_PROFIT,
                     timestamp=ticket.timestamp
                 )
-        elif ticket.side == OrderSide.SELL and portfolio.position_qty == Decimal("0"):
+        elif portfolio.position_qty == Decimal("0"):
             self.active_stops.pop(ticket.portfolio_id, None)
             self.active_targets.pop(ticket.portfolio_id, None)
 
@@ -152,21 +154,33 @@ class BrokerSim:
             if p.position_qty <= Decimal("0"):
                 continue
 
+            is_short = (p.position_side == PositionSide.SHORT)
+            exit_side = OrderSide.BUY if is_short else OrderSide.SELL
+
             # Check Stop-Loss (or Trailing Stop) first
             stop_order = self.active_stops.get(p_id)
             if stop_order and stop_order.price is not None:
-                if low_price <= stop_order.price:
-                    # If bar opened below stop, fill at open; otherwise fill at stop trigger price
-                    trigger_p = min(bar_open, stop_order.price) if open_price is not None else stop_order.price
-                    reason = (
-                        ExecutionReason.TRAILING_STOP
-                        if (p.avg_entry_price > Decimal("0") and stop_order.price > p.avg_entry_price)
-                        else stop_order.reason
-                    )
+                stop_hit = (high_price >= stop_order.price) if is_short else (low_price <= stop_order.price)
+                if stop_hit:
+                    if is_short:
+                        trigger_p = max(bar_open, stop_order.price) if open_price is not None else stop_order.price
+                        reason = (
+                            ExecutionReason.TRAILING_STOP
+                            if (p.avg_entry_price > Decimal("0") and stop_order.price < p.avg_entry_price)
+                            else stop_order.reason
+                        )
+                    else:
+                        trigger_p = min(bar_open, stop_order.price) if open_price is not None else stop_order.price
+                        reason = (
+                            ExecutionReason.TRAILING_STOP
+                            if (p.avg_entry_price > Decimal("0") and stop_order.price > p.avg_entry_price)
+                            else stop_order.reason
+                        )
+
                     stop_fill = self.submit_order(OrderTicket(
                         portfolio_id=p_id,
                         symbol=self.symbol,
-                        side=OrderSide.SELL,
+                        side=exit_side,
                         order_type=OrderType.STOP_MARKET,
                         qty=p.position_qty,
                         price=trigger_p,
@@ -177,15 +191,16 @@ class BrokerSim:
                         fills.append(stop_fill)
                     continue
 
-            # Check Take-Profit (Limit fill at target price or better if gapped up)
+            # Check Take-Profit
             target_order = self.active_targets.get(p_id)
             if target_order and target_order.price is not None:
-                if high_price >= target_order.price:
-                    trigger_p = max(bar_open, target_order.price) if open_price is not None else target_order.price
+                target_hit = (low_price <= target_order.price) if is_short else (high_price >= target_order.price)
+                if target_hit:
+                    trigger_p = (min(bar_open, target_order.price) if is_short else max(bar_open, target_order.price)) if open_price is not None else target_order.price
                     target_fill = self.submit_order(OrderTicket(
                         portfolio_id=p_id,
                         symbol=self.symbol,
-                        side=OrderSide.SELL,
+                        side=exit_side,
                         order_type=OrderType.LIMIT,
                         qty=p.position_qty,
                         price=trigger_p,
@@ -202,10 +217,11 @@ class BrokerSim:
             if p.leverage_enabled and p.position_qty > Decimal("0") and p.margin_locked > Decimal("0"):
                 if p.total_equity <= (p.margin_locked * Decimal("0.10")):
                     p.is_circuit_breaker_tripped = True
+                    liq_exit_side = OrderSide.BUY if p.position_side == PositionSide.SHORT else OrderSide.SELL
                     liq_fill = self.submit_order(OrderTicket(
                         portfolio_id=p_id,
                         symbol=self.symbol,
-                        side=OrderSide.SELL,
+                        side=liq_exit_side,
                         order_type=OrderType.MARKET,
                         qty=p.position_qty,
                         price=price,
@@ -219,10 +235,11 @@ class BrokerSim:
             if not p.is_circuit_breaker_tripped and p.max_drawdown_pct >= MAX_DRAWDOWN_LIMIT_PCT:
                 p.is_circuit_breaker_tripped = True
                 if p.position_qty > Decimal("0"):
+                    cb_exit_side = OrderSide.BUY if p.position_side == PositionSide.SHORT else OrderSide.SELL
                     cb_fill = self.submit_order(OrderTicket(
                         portfolio_id=p_id,
                         symbol=self.symbol,
-                        side=OrderSide.SELL,
+                        side=cb_exit_side,
                         order_type=OrderType.MARKET,
                         qty=p.position_qty,
                         price=price,

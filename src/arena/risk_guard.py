@@ -1,7 +1,7 @@
 from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Tuple
-from src.arena.order import OrderTicket, OrderSide, OrderType
+from src.arena.order import OrderTicket, OrderSide, OrderType, PositionSide
 from src.arena.portfolio import Portfolio, PRECISION_CASH
 
 MAX_DRAWDOWN_LIMIT_PCT = Decimal("15.00")
@@ -11,9 +11,9 @@ class RiskGuard:
     """
     ECC AgentShield & trader-risk Safety Guard for Arena Trading.
     Enforces risk invariants before simulated orders reach the matching engine.
-    Supports strategy-specific leverage caps and margin validation.
-    Crucial rule from trader-risk: Closing/reducing an open position (SELL) is NEVER
-    blocked by a circuit breaker or drawdown limit.
+    Supports strategy-specific leverage caps, margin validation, and bidirectional Long/Short trading.
+    Crucial rule from trader-risk: Closing/reducing an open position (SELL for Long, BUY for Short)
+    is NEVER blocked by a circuit breaker or drawdown limit.
     """
     @staticmethod
     def validate_order(
@@ -30,12 +30,18 @@ class RiskGuard:
         if base_price <= Decimal("0"):
             return False, "Market price or order price must be positive."
 
-        if ticket.side == OrderSide.SELL:
+        # 1. Closing / Reducing Position Checks (Never blocked by drawdown/breaker)
+        if portfolio.position_side == PositionSide.LONG and ticket.side == OrderSide.SELL:
             if ticket.qty > portfolio.position_qty:
-                return False, f"Overselling: attempting to sell {ticket.qty}, currently holding {portfolio.position_qty}"
+                return False, f"Overclosing: attempting to sell {ticket.qty}, currently holding {portfolio.position_qty}"
             return True, "PASS"
 
-        # Below checks apply strictly to new BUY entries
+        if portfolio.position_side == PositionSide.SHORT and ticket.side == OrderSide.BUY:
+            if ticket.qty > portfolio.position_qty:
+                return False, f"Overcovering: attempting to cover {ticket.qty}, currently short {portfolio.position_qty}"
+            return True, "PASS"
+
+        # 2. Position Opening / Expanding Checks (Applies to BUY when flat/long, or SELL when flat/short)
         if portfolio.is_circuit_breaker_tripped:
             return False, f"Portfolio {portfolio.portfolio_id} circuit breaker is tripped."
 
@@ -43,15 +49,16 @@ class RiskGuard:
             portfolio.is_circuit_breaker_tripped = True
             return False, f"Max drawdown exceeded ({portfolio.max_drawdown_pct}% >= {MAX_DRAWDOWN_LIMIT_PCT}%). Tripping breaker."
 
-        # Factor in slippage for market BUY orders
+        # Factor in slippage for market orders
         if ticket.order_type == OrderType.MARKET:
-            effective_buy_price = (market_price * (Decimal("1") + slippage_pct)).quantize(
+            mult = (Decimal("1") + slippage_pct) if ticket.side == OrderSide.BUY else (Decimal("1") - slippage_pct)
+            effective_order_price = (market_price * mult).quantize(
                 PRECISION_CASH, rounding=ROUND_HALF_UP
             )
         else:
-            effective_buy_price = base_price
+            effective_order_price = base_price
 
-        order_val = (ticket.qty * effective_buy_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        order_val = (ticket.qty * effective_order_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         eff_lev = portfolio.leverage if portfolio.leverage_enabled and portfolio.leverage > Decimal("0") else Decimal("1.0")
 
         # Check maximum single position cap relative to total equity with leverage

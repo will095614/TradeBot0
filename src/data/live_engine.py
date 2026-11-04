@@ -9,7 +9,7 @@ import time
 import requests
 
 from src.arena.broker_sim import BrokerSim
-from src.arena.order import OrderTicket, OrderSide, OrderType, ExecutionReason, FillEvent
+from src.arena.order import OrderTicket, OrderSide, OrderType, ExecutionReason, FillEvent, PositionSide
 from src.arena.leaderboard import Leaderboard
 from src.arena.evolution import GeneticEvolver
 from src.competitors.aggressive import AggressiveCompetitor
@@ -166,12 +166,12 @@ class LiveArenaEngine:
     @staticmethod
     def _get_entry_rule_desc(pid: str) -> str:
         rules = {
-            "comp_agg": "Breakout > EMA-Fast + positive tick velocity | Wide SL, Uncapped Run",
-            "comp_cons": "Pullback dip bounce (RSI < 52 or lower band) | Tight SL & Quick Scalp TP",
-            "comp_atr": "Volatility-scaled size (1.5% risk / 1.5x ATR SL / 2.5x ATR TP)",
-            "comp_trail": "Trend alignment entry + automatic breakeven & 0.25% live peak ratchet",
-            "comp_orb": "Breakout > 15m Range High | Dynamic Midpoint SL & 2.0R Target",
-            "comp_vwap": "Pullback test of Session VWAP + Rebound | Tight VWAP SL & 2.2R Target",
+            "comp_agg": "Breakout > EMA-Fast (Long) or Breakdown < EMA-Slow (Short) | Wide SL, Uncapped Run",
+            "comp_cons": "RSI bounce <= 48 (Long) or RSI fade >= 58 (Short) | Tight SL & Quick Scalp TP",
+            "comp_atr": "ATR volatility-scaled Long & Short channels (1.5% risk / Dynamic SL & TP)",
+            "comp_trail": "Trend-following Long/Short entry + automatic breakeven & peak/trough ratchet",
+            "comp_orb": "Breakout > Range High (Long) / Breakdown < Range Low (Short) | Midpoint SL & 2.0R Target",
+            "comp_vwap": "Pullback test & bounce at VWAP (Long) / Rejection at VWAP (Short) | 2.2R Target",
         }
         return rules.get(pid, "")
 
@@ -457,6 +457,7 @@ class LiveArenaEngine:
         tp: Optional[Decimal],
         ts: float,
         event_label: str,
+        side: OrderSide = OrderSide.BUY,
         risk_budget: Optional[Decimal] = None
     ) -> bool:
         pid = competitor.portfolio_id
@@ -474,20 +475,23 @@ class LiveArenaEngine:
             return False
 
         fill = self.broker.submit_order(OrderTicket(
-            portfolio_id=pid, symbol=self.symbol, side=OrderSide.BUY,
+            portfolio_id=pid, symbol=self.symbol, side=side,
             order_type=OrderType.MARKET, qty=qty, stop_loss=sl, take_profit=tp, timestamp=ts
         ))
         if fill:
             self.position_entry_ts[pid] = ts
             tp_str = f" | TP ${tp:,.2f}" if tp else ""
-            self.log_event(event_label, f"{competitor.base_name.split(' ')[0]} entered {fill.qty} BTC @ ${fill.price:,.2f} (SL ${sl:,.2f}{tp_str} | EV {mc_odds.expected_r:+.2f}R)", "buy")
+            pos_label = "SHORT" if side == OrderSide.SELL else "LONG"
+            event_type = "sell" if side == OrderSide.SELL else "buy"
+            self.log_event(event_label, f"{competitor.base_name.split(' ')[0]} opened {pos_label} {fill.qty} BTC @ ${fill.price:,.2f} (SL ${sl:,.2f}{tp_str} | EV {mc_odds.expected_r:+.2f}R)", event_type)
             return True
         return False
 
     def _evaluate_live_strategies(self, price: Decimal, prev_price: Decimal, ts: float) -> None:
         """
         Executes differentiated real-time decision logic for each of the 6 strategies on every live tick/bar.
-        Incorporates anti-churn cooldowns, channel stagnation exits, and dynamic volatility adaptation.
+        Incorporates bidirectional Long & Short setups, anti-churn cooldowns, channel stagnation exits,
+        and dynamic volatility adaptation.
         """
         vel = price - prev_price
         is_uptrend = self.live_ema_fast >= self.live_ema_slow
@@ -499,10 +503,12 @@ class LiveArenaEngine:
             if p.position_qty > Decimal("0") and p.avg_entry_price > Decimal("0"):
                 entry_ts = self.position_entry_ts.get(pid, ts)
                 hold_sec = ts - entry_ts
-                gain_pct = ((price - p.avg_entry_price) / p.avg_entry_price) * Decimal("100")
+                is_short = p.position_side == PositionSide.SHORT
+                gain_pct = ((p.avg_entry_price - price) / p.avg_entry_price * Decimal("100")) if is_short else ((price - p.avg_entry_price) / p.avg_entry_price * Decimal("100"))
                 if hold_sec >= 2400.0 and abs(gain_pct) < Decimal("0.10"):
+                    exit_side = OrderSide.BUY if is_short else OrderSide.SELL
                     fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id=pid, symbol=self.symbol, side=OrderSide.SELL,
+                        portfolio_id=pid, symbol=self.symbol, side=exit_side,
                         order_type=OrderType.MARKET, qty=p.position_qty,
                         reason=ExecutionReason.SIGNAL, timestamp=ts
                     ))
@@ -519,117 +525,201 @@ class LiveArenaEngine:
             if can_enter and ((is_uptrend and vel > Decimal("0") and self.live_rsi < Decimal("68")) or (vel > self.live_atr * Decimal("0.25"))):
                 sl = (price * (Decimal("1") - g_agg.stop_loss_pct)).quantize(Decimal("0.01"))
                 tp = (price * (Decimal("1") + g_agg.take_profit_pct)).quantize(Decimal("0.01")) if g_agg.take_profit_pct else None
-                self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKOUT_BUY")
+                self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKOUT_LONG", side=OrderSide.BUY)
+            elif can_enter and (((not is_uptrend) and vel < Decimal("0") and self.live_rsi > Decimal("32")) or (vel < -self.live_atr * Decimal("0.25"))):
+                sl = (price * (Decimal("1") + g_agg.stop_loss_pct)).quantize(Decimal("0.01"))
+                tp = (price * (Decimal("1") - g_agg.take_profit_pct)).quantize(Decimal("0.01")) if g_agg.take_profit_pct else None
+                self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKDOWN_SHORT", side=OrderSide.SELL)
+
             if p_agg.position_qty == Decimal("0") and not self.strategy_telemetry["comp_agg"]["intent"].startswith("EV Gate"):
-                self.strategy_telemetry["comp_agg"]["intent"] = f"Scanning breakout > ${self.live_ema_fast:,.2f}"
+                self.strategy_telemetry["comp_agg"]["intent"] = f"Scanning breakout / breakdown near ${self.live_ema_fast:,.2f}"
         else:
             entry_p = p_agg.avg_entry_price
             if entry_p > Decimal("0"):
-                gain_usd = price - entry_p
-                gain_pct = (gain_usd / entry_p) * Decimal("100")
-                # Momentum micro-take-profit or trend stall exit
-                if gain_pct >= Decimal("0.25") or (self.live_ema_fast < self.live_ema_slow and self.live_rsi < Decimal("48") and gain_usd >= (self.live_atr * Decimal("0.5"))):
-                    fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.SELL,
-                        order_type=OrderType.MARKET, qty=p_agg.position_qty,
-                        reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
-                    ))
-                    if fill:
-                        self.strategy_cooldown["comp_agg"] = ts + 60.0
-                        self.position_entry_ts.pop("comp_agg", None)
-                        self.log_event("MOMENTUM_TP", f"Aggressive locked profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
-                elif self.live_rsi > Decimal("74") and vel < Decimal("0"):
-                    fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.SELL,
-                        order_type=OrderType.MARKET, qty=p_agg.position_qty, timestamp=ts
-                    ))
-                    if fill:
-                        self.strategy_cooldown["comp_agg"] = ts + 60.0
-                        self.position_entry_ts.pop("comp_agg", None)
-                        self.log_event("MOMENTUM_EXIT", f"Aggressive closed {fill.qty} BTC @ ${fill.price:,.2f} (PnL ${fill.realized_pnl:+.2f})", "profit" if fill.realized_pnl >= 0 else "loss")
+                if p_agg.position_side == PositionSide.SHORT:
+                    gain_usd = entry_p - price
+                    gain_pct = (gain_usd / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.25") or (self.live_ema_fast > self.live_ema_slow and self.live_rsi > Decimal("52") and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.BUY,
+                            order_type=OrderType.MARKET, qty=p_agg.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_agg"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_agg", None)
+                            self.log_event("MOMENTUM_TP", f"Aggressive locked short profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                    elif self.live_rsi < Decimal("26") and vel > Decimal("0"):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.BUY,
+                            order_type=OrderType.MARKET, qty=p_agg.position_qty, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_agg"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_agg", None)
+                            self.log_event("MOMENTUM_EXIT", f"Aggressive covered short {fill.qty} BTC @ ${fill.price:,.2f} (PnL ${fill.realized_pnl:+.2f})", "profit" if fill.realized_pnl >= 0 else "loss")
+                else:
+                    gain_usd = price - entry_p
+                    gain_pct = (gain_usd / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.25") or (self.live_ema_fast < self.live_ema_slow and self.live_rsi < Decimal("48") and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.SELL,
+                            order_type=OrderType.MARKET, qty=p_agg.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_agg"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_agg", None)
+                            self.log_event("MOMENTUM_TP", f"Aggressive locked long profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                    elif self.live_rsi > Decimal("74") and vel < Decimal("0"):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.SELL,
+                            order_type=OrderType.MARKET, qty=p_agg.position_qty, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_agg"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_agg", None)
+                            self.log_event("MOMENTUM_EXIT", f"Aggressive closed long {fill.qty} BTC @ ${fill.price:,.2f} (PnL ${fill.realized_pnl:+.2f})", "profit" if fill.realized_pnl >= 0 else "loss")
 
         # --- 2. Conservative Mean-Reversion Scalper (comp_cons) ---
         p_cons = self.comp_b.portfolio
         g_cons = self.comp_b.genome
         if p_cons.position_qty == Decimal("0"):
             can_enter = ts >= self.strategy_cooldown.get("comp_cons", 0.0)
-            if can_enter and self.live_rsi <= Decimal("53.5") and vel >= Decimal("0"):
-                sl_pct = min(Decimal("0.006"), g_cons.stop_loss_pct)   # Tight 0.6% scalp SL
-                tp_pct = min(Decimal("0.009"), g_cons.take_profit_pct or Decimal("0.009"))  # Quick 0.9% scalp TP
+            sl_pct = min(Decimal("0.006"), g_cons.stop_loss_pct)
+            tp_pct = min(Decimal("0.009"), g_cons.take_profit_pct or Decimal("0.009"))
+            if can_enter and self.live_rsi <= Decimal("52.0") and vel >= Decimal("0"):
                 sl = (price * (Decimal("1") - sl_pct)).quantize(Decimal("0.01"))
                 tp = (price * (Decimal("1") + tp_pct)).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_b, price, sl, tp, ts, "SCALP_BUY")
+                self._try_enter_bracket(self.comp_b, price, sl, tp, ts, "SCALP_LONG", side=OrderSide.BUY)
+            elif can_enter and self.live_rsi >= Decimal("58.0") and vel <= Decimal("0"):
+                sl = (price * (Decimal("1") + sl_pct)).quantize(Decimal("0.01"))
+                tp = (price * (Decimal("1") - tp_pct)).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_b, price, sl, tp, ts, "SCALP_SHORT", side=OrderSide.SELL)
         else:
             entry_p = p_cons.avg_entry_price
             if entry_p > Decimal("0"):
-                gain_usd = price - entry_p
-                gain_pct = (gain_usd / entry_p) * Decimal("100")
-                if gain_pct >= Decimal("0.15") or (price >= self.live_ema_fast and gain_usd >= (self.live_atr * Decimal("0.5"))):
-                    fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_cons", symbol=self.symbol, side=OrderSide.SELL,
-                        order_type=OrderType.MARKET, qty=p_cons.position_qty,
-                        reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
-                    ))
-                    if fill:
-                        self.strategy_cooldown["comp_cons"] = ts + 60.0
-                        self.position_entry_ts.pop("comp_cons", None)
-                        self.log_event("SCALP_TP", f"Conservative locked profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                if p_cons.position_side == PositionSide.SHORT:
+                    gain_usd = entry_p - price
+                    gain_pct = (gain_usd / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.15") or (price <= self.live_ema_fast and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_cons", symbol=self.symbol, side=OrderSide.BUY,
+                            order_type=OrderType.MARKET, qty=p_cons.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_cons"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_cons", None)
+                            self.log_event("SCALP_TP", f"Conservative locked short profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                else:
+                    gain_usd = price - entry_p
+                    gain_pct = (gain_usd / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.15") or (price >= self.live_ema_fast and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_cons", symbol=self.symbol, side=OrderSide.SELL,
+                            order_type=OrderType.MARKET, qty=p_cons.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_cons"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_cons", None)
+                            self.log_event("SCALP_TP", f"Conservative locked long profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
         # --- 3. ATR Volatility Adaptive (comp_atr) ---
         p_atr = self.comp_c.portfolio
         g_atr = self.comp_c.genome
         if p_atr.position_qty == Decimal("0"):
             can_enter = ts >= self.strategy_cooldown.get("comp_atr", 0.0)
+            stop_dist = max(Decimal("50.00"), (self.live_atr * g_atr.atr_stop_mult).quantize(Decimal("0.01")))
+            target_dist = max(Decimal("100.00"), (self.live_atr * g_atr.atr_target_mult).quantize(Decimal("0.01")))
+            risk_budget = p_atr.total_equity * g_atr.atr_risk_pct
             if can_enter and ((price >= self.live_ema_fast and vel > Decimal("0")) or self.live_rsi < Decimal("42")):
-                stop_dist = max(Decimal("50.00"), (self.live_atr * g_atr.atr_stop_mult).quantize(Decimal("0.01")))
-                target_dist = max(Decimal("100.00"), (self.live_atr * g_atr.atr_target_mult).quantize(Decimal("0.01")))
                 sl = (price - stop_dist).quantize(Decimal("0.01"))
                 tp = (price + target_dist).quantize(Decimal("0.01"))
-                risk_budget = p_atr.total_equity * g_atr.atr_risk_pct
-                self._try_enter_bracket(self.comp_c, price, sl, tp, ts, "ATR_ADAPT_BUY", risk_budget=risk_budget)
+                self._try_enter_bracket(self.comp_c, price, sl, tp, ts, "ATR_ADAPT_LONG", side=OrderSide.BUY, risk_budget=risk_budget)
+            elif can_enter and ((price <= self.live_ema_fast and vel < Decimal("0")) or self.live_rsi > Decimal("58")):
+                sl = (price + stop_dist).quantize(Decimal("0.01"))
+                tp = (price - target_dist).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_c, price, sl, tp, ts, "ATR_ADAPT_SHORT", side=OrderSide.SELL, risk_budget=risk_budget)
         else:
             entry_p = p_atr.avg_entry_price
             if entry_p > Decimal("0"):
-                gain_usd = price - entry_p
                 target_threshold = max(Decimal("80.00"), self.live_atr * Decimal("1.4"))
-                if gain_usd >= target_threshold:
-                    fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_atr", symbol=self.symbol, side=OrderSide.SELL,
-                        order_type=OrderType.MARKET, qty=p_atr.position_qty,
-                        reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
-                    ))
-                    if fill:
-                        self.strategy_cooldown["comp_atr"] = ts + 60.0
-                        self.position_entry_ts.pop("comp_atr", None)
-                        self.log_event("ATR_TP", f"ATR Dynamic locked target {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                if p_atr.position_side == PositionSide.SHORT:
+                    gain_usd = entry_p - price
+                    if gain_usd >= target_threshold:
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_atr", symbol=self.symbol, side=OrderSide.BUY,
+                            order_type=OrderType.MARKET, qty=p_atr.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_atr"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_atr", None)
+                            self.log_event("ATR_TP", f"ATR Dynamic locked short target {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                else:
+                    gain_usd = price - entry_p
+                    if gain_usd >= target_threshold:
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_atr", symbol=self.symbol, side=OrderSide.SELL,
+                            order_type=OrderType.MARKET, qty=p_atr.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_atr"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_atr", None)
+                            self.log_event("ATR_TP", f"ATR Dynamic locked long target {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
         # --- 4. Trailing Profit Ratchet Guard (comp_trail) ---
         p_trail = self.comp_d.portfolio
         g_trail = self.comp_d.genome
         if p_trail.position_qty > Decimal("0"):
-            if price > self.comp_d.highest_price_since_entry:
-                self.comp_d.highest_price_since_entry = price
             entry_p = p_trail.avg_entry_price
             if entry_p > Decimal("0"):
-                gain_pct = ((self.comp_d.highest_price_since_entry - entry_p) / entry_p) * Decimal("100")
-                # Live micro-ratchet: activate trailing stop once gain >= +0.12%
-                if gain_pct >= Decimal("0.12"):
-                    self.comp_d.trailing_active = True
-                    new_sl = (self.comp_d.highest_price_since_entry * Decimal("0.9985")).quantize(Decimal("0.01"))
-                    curr_stop = self.broker.active_stops.get("comp_trail")
-                    if curr_stop and (curr_stop.price is None or new_sl > curr_stop.price):
-                        self.broker.active_stops["comp_trail"] = OrderTicket(
-                            portfolio_id="comp_trail", symbol=self.symbol, side=OrderSide.SELL,
-                            order_type=OrderType.STOP_MARKET, qty=p_trail.position_qty,
-                            price=new_sl, reason=ExecutionReason.TRAILING_STOP, timestamp=ts
-                        )
-                        self.log_event("TRAIL_RATCHET", f"Trailing Guard raised stop -> ${new_sl:,.2f} (Peak ${self.comp_d.highest_price_since_entry:,.2f})", "info")
+                if p_trail.position_side == PositionSide.SHORT:
+                    if self.comp_d.lowest_price_since_entry == Decimal("0") or price < self.comp_d.lowest_price_since_entry:
+                        self.comp_d.lowest_price_since_entry = price
+                    gain_pct = ((entry_p - self.comp_d.lowest_price_since_entry) / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.12"):
+                        self.comp_d.trailing_active = True
+                        new_sl = (self.comp_d.lowest_price_since_entry * Decimal("1.0015")).quantize(Decimal("0.01"))
+                        curr_stop = self.broker.active_stops.get("comp_trail")
+                        if curr_stop and (curr_stop.price is None or new_sl < curr_stop.price):
+                            self.broker.active_stops["comp_trail"] = OrderTicket(
+                                portfolio_id="comp_trail", symbol=self.symbol, side=OrderSide.BUY,
+                                order_type=OrderType.STOP_MARKET, qty=p_trail.position_qty,
+                                price=new_sl, reason=ExecutionReason.TRAILING_STOP, timestamp=ts
+                            )
+                            self.log_event("TRAIL_RATCHET", f"Trailing Guard lowered stop -> ${new_sl:,.2f} (Trough ${self.comp_d.lowest_price_since_entry:,.2f})", "info")
+                else:
+                    if price > self.comp_d.highest_price_since_entry:
+                        self.comp_d.highest_price_since_entry = price
+                    gain_pct = ((self.comp_d.highest_price_since_entry - entry_p) / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.12"):
+                        self.comp_d.trailing_active = True
+                        new_sl = (self.comp_d.highest_price_since_entry * Decimal("0.9985")).quantize(Decimal("0.01"))
+                        curr_stop = self.broker.active_stops.get("comp_trail")
+                        if curr_stop and (curr_stop.price is None or new_sl > curr_stop.price):
+                            self.broker.active_stops["comp_trail"] = OrderTicket(
+                                portfolio_id="comp_trail", symbol=self.symbol, side=OrderSide.SELL,
+                                order_type=OrderType.STOP_MARKET, qty=p_trail.position_qty,
+                                price=new_sl, reason=ExecutionReason.TRAILING_STOP, timestamp=ts
+                            )
+                            self.log_event("TRAIL_RATCHET", f"Trailing Guard raised stop -> ${new_sl:,.2f} (Peak ${self.comp_d.highest_price_since_entry:,.2f})", "info")
         else:
             can_enter = ts >= self.strategy_cooldown.get("comp_trail", 0.0)
-            if can_enter and vel >= Decimal("0") and self.live_rsi < Decimal("66"):
+            if can_enter and vel >= Decimal("0") and self.live_rsi < Decimal("66") and (is_uptrend or self.live_rsi <= Decimal("50")):
                 sl = (price * Decimal("0.991")).quantize(Decimal("0.01"))  # 0.9% initial guard
-                if self._try_enter_bracket(self.comp_d, price, sl, None, ts, "TRAIL_ENTRY"):
+                if self._try_enter_bracket(self.comp_d, price, sl, None, ts, "TRAIL_LONG", side=OrderSide.BUY):
                     self.comp_d.highest_price_since_entry = price
+                    self.comp_d.lowest_price_since_entry = price
+                    self.comp_d.trailing_active = False
+            elif can_enter and vel <= Decimal("0") and self.live_rsi > Decimal("34") and ((not is_uptrend) or self.live_rsi >= Decimal("50")):
+                sl = (price * Decimal("1.009")).quantize(Decimal("0.01"))  # 0.9% initial guard
+                if self._try_enter_bracket(self.comp_d, price, sl, None, ts, "TRAIL_SHORT", side=OrderSide.SELL):
+                    self.comp_d.highest_price_since_entry = price
+                    self.comp_d.lowest_price_since_entry = price
                     self.comp_d.trailing_active = False
 
         # --- 5. Opening Range Breakout (comp_orb) ---
@@ -642,30 +732,53 @@ class LiveArenaEngine:
         if p_orb.position_qty == Decimal("0"):
             can_enter = ts >= self.strategy_cooldown.get("comp_orb", 0.0)
             is_breakout = (price >= orb_high and vel >= Decimal("0")) or (price > orb_mid and is_uptrend and vel > self.live_atr * Decimal("0.2"))
+            is_breakdown = (price <= orb_low and vel <= Decimal("0")) or (price < orb_mid and (not is_uptrend) and vel < -self.live_atr * Decimal("0.2"))
             if can_enter and is_breakout and self.live_rsi < Decimal("72"):
                 sl = max(orb_mid, (price - max(Decimal("50.00"), self.live_atr * Decimal("1.2"))).quantize(Decimal("0.01")))
                 if sl >= price:
                     sl = (price * Decimal("0.992")).quantize(Decimal("0.01"))
                 r_dist = price - sl
                 tp = (price + r_dist * Decimal("2.0")).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_BREAKOUT")
+                self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_LONG", side=OrderSide.BUY)
+            elif can_enter and is_breakdown and self.live_rsi > Decimal("28"):
+                sl = min(orb_mid, (price + max(Decimal("50.00"), self.live_atr * Decimal("1.2"))).quantize(Decimal("0.01")))
+                if sl <= price:
+                    sl = (price * Decimal("1.008")).quantize(Decimal("0.01"))
+                r_dist = sl - price
+                tp = (price - r_dist * Decimal("2.0")).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_SHORT", side=OrderSide.SELL)
+
             if p_orb.position_qty == Decimal("0") and not self.strategy_telemetry["comp_orb"]["intent"].startswith("EV Gate"):
-                self.strategy_telemetry["comp_orb"]["intent"] = f"Watching ORB High ${orb_high:,.2f} (Mid ${orb_mid:,.2f})"
+                self.strategy_telemetry["comp_orb"]["intent"] = f"Watching ORB High ${orb_high:,.2f} / Low ${orb_low:,.2f} (Mid ${orb_mid:,.2f})"
         else:
             entry_p = p_orb.avg_entry_price
             if entry_p > Decimal("0"):
-                gain_usd = price - entry_p
-                gain_pct = (gain_usd / entry_p) * Decimal("100")
-                if gain_pct >= Decimal("0.35") or (price < orb_mid and gain_usd >= (self.live_atr * Decimal("0.5"))):
-                    fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_orb", symbol=self.symbol, side=OrderSide.SELL,
-                        order_type=OrderType.MARKET, qty=p_orb.position_qty,
-                        reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
-                    ))
-                    if fill:
-                        self.strategy_cooldown["comp_orb"] = ts + 60.0
-                        self.position_entry_ts.pop("comp_orb", None)
-                        self.log_event("ORB_TP", f"ORB locked target {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                if p_orb.position_side == PositionSide.SHORT:
+                    gain_usd = entry_p - price
+                    gain_pct = (gain_usd / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.35") or (price > orb_mid and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_orb", symbol=self.symbol, side=OrderSide.BUY,
+                            order_type=OrderType.MARKET, qty=p_orb.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_orb"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_orb", None)
+                            self.log_event("ORB_TP", f"ORB locked short target {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                else:
+                    gain_usd = price - entry_p
+                    gain_pct = (gain_usd / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.35") or (price < orb_mid and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_orb", symbol=self.symbol, side=OrderSide.SELL,
+                            order_type=OrderType.MARKET, qty=p_orb.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_orb"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_orb", None)
+                            self.log_event("ORB_TP", f"ORB locked long target {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
         # --- 6. Institutional VWAP Pullback (comp_vwap) ---
         p_vwap = self.comp_f.portfolio
@@ -675,31 +788,54 @@ class LiveArenaEngine:
         if p_vwap.position_qty == Decimal("0"):
             can_enter = ts >= self.strategy_cooldown.get("comp_vwap", 0.0)
             near_vwap = abs(price - vwap_ref) <= (self.live_atr * Decimal("0.85"))
-            is_rebound = vel >= Decimal("0") and self.live_rsi >= Decimal("42")
+            is_rebound = vel >= Decimal("0") and self.live_rsi >= Decimal("42") and price >= (vwap_ref - self.live_atr * Decimal("0.5"))
+            is_rejection = vel <= Decimal("0") and self.live_rsi <= Decimal("58") and price <= (vwap_ref + self.live_atr * Decimal("0.5"))
             if can_enter and near_vwap and is_rebound:
                 sl = (vwap_ref - max(Decimal("50.00"), self.live_atr * Decimal("0.6"))).quantize(Decimal("0.01"))
                 if sl >= price:
                     sl = (price * Decimal("0.993")).quantize(Decimal("0.01"))
                 r_dist = price - sl
                 tp = (price + r_dist * Decimal("2.2")).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_f, price, sl, tp, ts, "VWAP_BUY")
+                self._try_enter_bracket(self.comp_f, price, sl, tp, ts, "VWAP_LONG", side=OrderSide.BUY)
+            elif can_enter and near_vwap and is_rejection:
+                sl = (vwap_ref + max(Decimal("50.00"), self.live_atr * Decimal("0.6"))).quantize(Decimal("0.01"))
+                if sl <= price:
+                    sl = (price * Decimal("1.007")).quantize(Decimal("0.01"))
+                r_dist = sl - price
+                tp = (price - r_dist * Decimal("2.2")).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_f, price, sl, tp, ts, "VWAP_SHORT", side=OrderSide.SELL)
+
             if p_vwap.position_qty == Decimal("0") and not self.strategy_telemetry["comp_vwap"]["intent"].startswith("EV Gate"):
-                self.strategy_telemetry["comp_vwap"]["intent"] = f"Awaiting VWAP pullback near ${vwap_ref:,.2f}"
+                self.strategy_telemetry["comp_vwap"]["intent"] = f"Awaiting VWAP bounce / rejection near ${vwap_ref:,.2f}"
         else:
             entry_p = p_vwap.avg_entry_price
             if entry_p > Decimal("0"):
-                gain_usd = price - entry_p
-                gain_pct = (gain_usd / entry_p) * Decimal("100")
-                if gain_pct >= Decimal("0.30") or (price >= (vwap_ref + self.live_atr * Decimal("1.5")) and gain_usd >= (self.live_atr * Decimal("0.6"))):
-                    fill = self.broker.submit_order(OrderTicket(
-                        portfolio_id="comp_vwap", symbol=self.symbol, side=OrderSide.SELL,
-                        order_type=OrderType.MARKET, qty=p_vwap.position_qty,
-                        reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
-                    ))
-                    if fill:
-                        self.strategy_cooldown["comp_vwap"] = ts + 60.0
-                        self.position_entry_ts.pop("comp_vwap", None)
-                        self.log_event("VWAP_TP", f"VWAP locked profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                if p_vwap.position_side == PositionSide.SHORT:
+                    gain_usd = entry_p - price
+                    gain_pct = (gain_usd / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.30") or (price <= (vwap_ref - self.live_atr * Decimal("1.5")) and gain_usd >= (self.live_atr * Decimal("0.6"))):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_vwap", symbol=self.symbol, side=OrderSide.BUY,
+                            order_type=OrderType.MARKET, qty=p_vwap.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_vwap"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_vwap", None)
+                            self.log_event("VWAP_TP", f"VWAP locked short profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+                else:
+                    gain_usd = price - entry_p
+                    gain_pct = (gain_usd / entry_p) * Decimal("100")
+                    if gain_pct >= Decimal("0.30") or (price >= (vwap_ref + self.live_atr * Decimal("1.5")) and gain_usd >= (self.live_atr * Decimal("0.6"))):
+                        fill = self.broker.submit_order(OrderTicket(
+                            portfolio_id="comp_vwap", symbol=self.symbol, side=OrderSide.SELL,
+                            order_type=OrderType.MARKET, qty=p_vwap.position_qty,
+                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
+                        ))
+                        if fill:
+                            self.strategy_cooldown["comp_vwap"] = ts + 60.0
+                            self.position_entry_ts.pop("comp_vwap", None)
+                            self.log_event("VWAP_TP", f"VWAP locked long profit {fill.qty} BTC @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
         self._update_telemetry_snapshot(price)
 
@@ -707,50 +843,87 @@ class LiveArenaEngine:
         """
         Ensures that on startup in Live Mode, any flat competitor deploys its initial strategy
         bracket at the current live market price with TimeMachine EV Gate and Dynamic R-Multiple sizing.
+        Enters Long or Short according to market conditions and trend bias.
         """
         if price <= Decimal("0"):
             return
 
+        is_uptrend = self.live_ema_fast >= self.live_ema_slow if self.live_ema_slow > Decimal("0") else True
+        orb_high = self.live_orb_high if self.live_orb_high > Decimal("0") else (price * Decimal("1.002"))
+        orb_low = self.live_orb_low if self.live_orb_low > Decimal("0") else (price * Decimal("0.998"))
+        orb_mid = ((orb_high + orb_low) / Decimal("2")).quantize(Decimal("0.01"))
+        vwap_ref = self.live_vwap if self.live_vwap > Decimal("0") else (self.live_ema_slow if self.live_ema_slow > Decimal("0") else price)
+
         # 1. Aggressive
         if self.comp_a.portfolio.position_qty == Decimal("0"):
-            sl = (price * (Decimal("1") - self.comp_a.genome.stop_loss_pct)).quantize(Decimal("0.01"))
-            tp = (price * (Decimal("1") + self.comp_a.genome.take_profit_pct)).quantize(Decimal("0.01")) if self.comp_a.genome.take_profit_pct else None
-            self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKOUT_BUY")
+            if is_uptrend:
+                sl = (price * (Decimal("1") - self.comp_a.genome.stop_loss_pct)).quantize(Decimal("0.01"))
+                tp = (price * (Decimal("1") + self.comp_a.genome.take_profit_pct)).quantize(Decimal("0.01")) if self.comp_a.genome.take_profit_pct else None
+                self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKOUT_LONG", side=OrderSide.BUY)
+            else:
+                sl = (price * (Decimal("1") + self.comp_a.genome.stop_loss_pct)).quantize(Decimal("0.01"))
+                tp = (price * (Decimal("1") - self.comp_a.genome.take_profit_pct)).quantize(Decimal("0.01")) if self.comp_a.genome.take_profit_pct else None
+                self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKDOWN_SHORT", side=OrderSide.SELL)
 
         # 2. Conservative
         if self.comp_b.portfolio.position_qty == Decimal("0"):
-            sl = (price * Decimal("0.994")).quantize(Decimal("0.01"))
-            tp = (price * Decimal("1.009")).quantize(Decimal("0.01"))
-            self._try_enter_bracket(self.comp_b, price, sl, tp, ts, "SCALP_BUY")
+            if self.live_rsi > Decimal("52.0"):
+                sl = (price * Decimal("1.006")).quantize(Decimal("0.01"))
+                tp = (price * Decimal("0.991")).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_b, price, sl, tp, ts, "SCALP_SHORT", side=OrderSide.SELL)
+            else:
+                sl = (price * Decimal("0.994")).quantize(Decimal("0.01"))
+                tp = (price * Decimal("1.009")).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_b, price, sl, tp, ts, "SCALP_LONG", side=OrderSide.BUY)
 
         # 3. ATR Dynamic
         if self.comp_c.portfolio.position_qty == Decimal("0"):
             stop_dist = max(Decimal("50.00"), (self.live_atr * self.comp_c.genome.atr_stop_mult).quantize(Decimal("0.01")))
             target_dist = max(Decimal("100.00"), (self.live_atr * self.comp_c.genome.atr_target_mult).quantize(Decimal("0.01")))
-            sl = (price - stop_dist).quantize(Decimal("0.01"))
-            tp = (price + target_dist).quantize(Decimal("0.01"))
             risk_budget = self.comp_c.portfolio.total_equity * self.comp_c.genome.atr_risk_pct
-            self._try_enter_bracket(self.comp_c, price, sl, tp, ts, "ATR_ADAPT_BUY", risk_budget=risk_budget)
+            if is_uptrend:
+                sl = (price - stop_dist).quantize(Decimal("0.01"))
+                tp = (price + target_dist).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_c, price, sl, tp, ts, "ATR_ADAPT_LONG", side=OrderSide.BUY, risk_budget=risk_budget)
+            else:
+                sl = (price + stop_dist).quantize(Decimal("0.01"))
+                tp = (price - target_dist).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_c, price, sl, tp, ts, "ATR_ADAPT_SHORT", side=OrderSide.SELL, risk_budget=risk_budget)
 
         # 4. Trailing Guard
         if self.comp_d.portfolio.position_qty == Decimal("0"):
-            sl = (price * Decimal("0.991")).quantize(Decimal("0.01"))
-            if self._try_enter_bracket(self.comp_d, price, sl, None, ts, "TRAIL_ENTRY"):
-                self.comp_d.highest_price_since_entry = price
+            if is_uptrend:
+                sl = (price * Decimal("0.991")).quantize(Decimal("0.01"))
+                if self._try_enter_bracket(self.comp_d, price, sl, None, ts, "TRAIL_LONG", side=OrderSide.BUY):
+                    self.comp_d.highest_price_since_entry = price
+                    self.comp_d.lowest_price_since_entry = price
+            else:
+                sl = (price * Decimal("1.009")).quantize(Decimal("0.01"))
+                if self._try_enter_bracket(self.comp_d, price, sl, None, ts, "TRAIL_SHORT", side=OrderSide.SELL):
+                    self.comp_d.highest_price_since_entry = price
+                    self.comp_d.lowest_price_since_entry = price
 
         # 5. ORB Breakout
         if self.comp_e.portfolio.position_qty == Decimal("0"):
-            sl = (price * Decimal("0.992")).quantize(Decimal("0.01"))
-            tp = (price + (price - sl) * Decimal("2.0")).quantize(Decimal("0.01"))
-            self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_BREAKOUT")
+            if price >= orb_mid:
+                sl = (price * Decimal("0.992")).quantize(Decimal("0.01"))
+                tp = (price + (price - sl) * Decimal("2.0")).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_LONG", side=OrderSide.BUY)
+            else:
+                sl = (price * Decimal("1.008")).quantize(Decimal("0.01"))
+                tp = (price - (sl - price) * Decimal("2.0")).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_SHORT", side=OrderSide.SELL)
 
         # 6. VWAP Pullback
         if self.comp_f.portfolio.position_qty == Decimal("0"):
-            sl = (price * Decimal("0.993")).quantize(Decimal("0.01"))
-            tp = (price + (price - sl) * Decimal("2.2")).quantize(Decimal("0.01"))
-            self._try_enter_bracket(self.comp_f, price, sl, tp, ts, "VWAP_BUY")
-
-        self._update_telemetry_snapshot(price)
+            if price >= vwap_ref:
+                sl = (price * Decimal("0.993")).quantize(Decimal("0.01"))
+                tp = (price + (price - sl) * Decimal("2.2")).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_f, price, sl, tp, ts, "VWAP_LONG", side=OrderSide.BUY)
+            else:
+                sl = (price * Decimal("1.007")).quantize(Decimal("0.01"))
+                tp = (price - (sl - price) * Decimal("2.2")).quantize(Decimal("0.01"))
+                self._try_enter_bracket(self.comp_f, price, sl, tp, ts, "VWAP_SHORT", side=OrderSide.SELL)
 
         self._update_telemetry_snapshot(price)
 
@@ -767,21 +940,27 @@ class LiveArenaEngine:
             mc_st = prev_tel.get("mc_stats", {})
 
             if p.position_qty > Decimal("0"):
-                upnl = p.unrealized_pnl
-                upnl_pct = ((price - p.avg_entry_price) / p.avg_entry_price * Decimal("100")) if p.avg_entry_price > 0 else Decimal("0")
-                if pid == "comp_agg":
-                    intent = f"LONG {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | Uncapped Trend Run ({upnl_pct:+.2f}%)"
-                elif pid == "comp_cons":
-                    intent = f"SCALP LONG {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | Target ${tp_p:,.2f}" if tp_p else f"LONG {p.position_qty} BTC"
-                elif pid == "comp_atr":
-                    intent = f"ATR-SCALED {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | 1.5x/2.5x ATR Bracket"
-                elif pid == "comp_orb":
-                    intent = f"ORB BREAKOUT {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | 2.0R Target ${tp_p:,.2f}" if tp_p else f"LONG {p.position_qty} BTC"
-                elif pid == "comp_vwap":
-                    intent = f"VWAP PULLBACK {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | 2.2R Target ${tp_p:,.2f}" if tp_p else f"LONG {p.position_qty} BTC"
+                is_short = p.position_side == PositionSide.SHORT
+                pos_dir = "SHORT" if is_short else "LONG"
+                if is_short:
+                    upnl_pct = ((p.avg_entry_price - price) / p.avg_entry_price * Decimal("100")) if p.avg_entry_price > 0 else Decimal("0")
                 else:
-                    peak = self.comp_d.highest_price_since_entry
-                    intent = f"TRAILING {p.position_qty} BTC | Peak ${peak:,.2f} | Ratchet SL ${sl_p:,.2f}" if sl_p else f"LONG {p.position_qty} BTC"
+                    upnl_pct = ((price - p.avg_entry_price) / p.avg_entry_price * Decimal("100")) if p.avg_entry_price > 0 else Decimal("0")
+
+                if pid == "comp_agg":
+                    intent = f"{pos_dir} {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | Uncapped Trend Run ({upnl_pct:+.2f}%)"
+                elif pid == "comp_cons":
+                    intent = f"SCALP {pos_dir} {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | Target ${tp_p:,.2f}" if tp_p else f"{pos_dir} {p.position_qty} BTC"
+                elif pid == "comp_atr":
+                    intent = f"ATR {pos_dir} {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | 1.5x/2.5x ATR Bracket"
+                elif pid == "comp_orb":
+                    intent = f"ORB {pos_dir} {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | 2.0R Target ${tp_p:,.2f}" if tp_p else f"{pos_dir} {p.position_qty} BTC"
+                elif pid == "comp_vwap":
+                    intent = f"VWAP {pos_dir} {p.position_qty} BTC @ ${p.avg_entry_price:,.2f} | 2.2R Target ${tp_p:,.2f}" if tp_p else f"{pos_dir} {p.position_qty} BTC"
+                else:
+                    ref_p = self.comp_d.lowest_price_since_entry if is_short else self.comp_d.highest_price_since_entry
+                    ref_tag = "Trough" if is_short else "Peak"
+                    intent = f"TRAILING {pos_dir} {p.position_qty} BTC | {ref_tag} ${ref_p:,.2f} | Ratchet SL ${sl_p:,.2f}" if sl_p else f"{pos_dir} {p.position_qty} BTC"
             else:
                 intent = prev_tel.get("intent") or f"SCANNING LIVE BOOK (Cash: ${p.cash:,.2f})"
 
@@ -1125,20 +1304,28 @@ class LiveArenaEngine:
             tel = self.strategy_telemetry.get(pid, {})
             mc_st = tel.get("mc_stats", {})
             in_pos = p.position_qty > Decimal("0")
+            is_short = p.position_side == PositionSide.SHORT
             upnl_pct = Decimal("0")
             if in_pos and p.avg_entry_price > Decimal("0") and spot > Decimal("0"):
-                upnl_pct = (spot - p.avg_entry_price) / p.avg_entry_price * Decimal("100")
-            tp_txt = f"{float(g.take_profit_pct) * 100:.1f}%" if g.take_profit_pct else "∞"
+                if is_short:
+                    upnl_pct = (p.avg_entry_price - spot) / p.avg_entry_price * Decimal("100")
+                else:
+                    upnl_pct = (spot - p.avg_entry_price) / p.avg_entry_price * Decimal("100")
+            tp_txt = f"{float(g.take_profit_pct) * 100:.1f}%" if g.take_profit_pct else "—"
             stop_ord = self.broker.active_stops.get(pid)
             tp_ord = self.broker.active_targets.get(pid)
             sl_p = fz(stop_ord.price) if (in_pos and stop_ord and stop_ord.price) else None
             tp_p = fz(tp_ord.price) if (in_pos and tp_ord and tp_ord.price) else None
-            # Trailing Guard has no fixed TP: show a virtual ceiling (2x current stop distance above
-            # max(entry, spot)) so the bracket bar stays meaningful even after the stop ratchets above entry
+            # Trailing Guard has no fixed TP: show a virtual ceiling (for Long) or virtual floor (for Short)
+            # so the bracket bar stays meaningful even after the stop ratchets
             if in_pos and tp_p is None and sl_p is not None:
                 entry_f = fz(p.avg_entry_price)
-                ref = max(fz(spot), entry_f)
-                tp_p = round(ref + 2 * max(0.5, abs(ref - sl_p)), 2)
+                if is_short:
+                    ref = min(fz(spot), entry_f)
+                    tp_p = round(max(1.0, ref - 2 * max(0.5, abs(sl_p - ref))), 2)
+                else:
+                    ref = max(fz(spot), entry_f)
+                    tp_p = round(ref + 2 * max(0.5, abs(ref - sl_p)), 2)
             strategies.append({
                 "id": pid,
                 "rank": r.rank,
@@ -1157,6 +1344,7 @@ class LiveArenaEngine:
                 "unrealized_pct": fz(upnl_pct),
                 "realized_pnl": fz(p.realized_pnl),
                 "in_position": in_pos,
+                "position_side": p.position_side.value,
                 "qty": fz(p.position_qty),
                 "entry_price": fz(p.avg_entry_price) if in_pos else None,
                 "stop_loss": sl_p,
@@ -1180,9 +1368,13 @@ class LiveArenaEngine:
         for f in reversed(self.fill_records[-60:]):
             pid = f.portfolio_id
             is_live = bool(live_start > 0 and f.timestamp >= (live_start - 2.0))
-            is_buy = f.side == OrderSide.BUY
-            action_tag = "OPEN" if is_buy else "CLOSE"
-            action_label = f"{action_tag} {f.side.value}"
+            is_short_pos = getattr(f, "position_side", PositionSide.LONG) == PositionSide.SHORT
+            if is_short_pos:
+                is_entry = f.side == OrderSide.SELL
+                action_label = "OPEN SHORT" if is_entry else "COVER SHORT"
+            else:
+                is_entry = f.side == OrderSide.BUY
+                action_label = "OPEN LONG" if is_entry else "CLOSE LONG"
             base_reason = self.REASON_DISPLAY.get(f.reason.value, f.reason.value)
             entry_p_dec = getattr(f, "entry_price", None)
             reason_detail = base_reason
@@ -1193,11 +1385,11 @@ class LiveArenaEngine:
                 "strategy": self.STRATEGY_DISPLAY.get(pid, pid).split(" ")[0],
                 "side": f.side.value,
                 "action_label": action_label,
-                "is_entry": is_buy,
+                "is_entry": is_entry,
                 "qty": fz(f.qty),
                 "price": fz(f.price),
                 "entry_price": fz(entry_p_dec) if entry_p_dec else None,
-                "pnl": fz(f.realized_pnl) if f.side == OrderSide.SELL else None,
+                "pnl": fz(f.realized_pnl) if not is_entry else None,
                 "reason": reason_detail,
                 "is_live": is_live,
             })

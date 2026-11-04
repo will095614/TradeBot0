@@ -266,7 +266,7 @@ class MonteCarloOddsEvaluator:
     ) -> MonteCarloBracketOdds:
         entry_f = float(entry_price)
         sl_f = float(stop_loss)
-        if entry_f <= 0.0 or sl_f <= 0.0 or sl_f >= entry_f:
+        if entry_f <= 0.0 or sl_f <= 0.0 or sl_f == entry_f:
             return MonteCarloBracketOdds(
                 passed=False,
                 target_prob=0.0,
@@ -280,15 +280,29 @@ class MonteCarloOddsEvaluator:
                 green_prob=0.0,
             )
 
-        stop_dist = entry_f - sl_f
-        if take_profit is not None and float(take_profit) > entry_f:
-            tp_f = float(take_profit)
-            target_dist = tp_f - entry_f
-            r_mult = max(0.5, target_dist / stop_dist)
+        is_short = (sl_f > entry_f)
+        stop_dist = abs(entry_f - sl_f)
+
+        if is_short:
+            # SHORT bracket: Stop-Loss is above entry, Take-Profit is below entry
+            if take_profit is not None and float(take_profit) < entry_f:
+                tp_f = float(take_profit)
+                target_dist = entry_f - tp_f
+                r_mult = max(0.5, target_dist / stop_dist)
+            else:
+                # Uncapped short runner assumes target at 1.8R downward
+                r_mult = 1.8
+                tp_f = entry_f - (stop_dist * r_mult)
         else:
-            # Uncapped trend runners / trailing stops assume target at 1.8R
-            r_mult = 1.8
-            tp_f = entry_f + (stop_dist * r_mult)
+            # LONG bracket: Stop-Loss is below entry, Take-Profit is above entry
+            if take_profit is not None and float(take_profit) > entry_f:
+                tp_f = float(take_profit)
+                target_dist = tp_f - entry_f
+                r_mult = max(0.5, target_dist / stop_dist)
+            else:
+                # Uncapped trend runner assumes target at 1.8R upward
+                r_mult = 1.8
+                tp_f = entry_f + (stop_dist * r_mult)
 
         breakeven_win_rate = 1.0 / (1.0 + r_mult)
 
@@ -312,8 +326,12 @@ class MonteCarloOddsEvaluator:
             shocks = self._rng.normal(loc=drift, scale=sigma, size=(n_sims, n_steps))
             paths = entry_f * np.exp(np.cumsum(shocks, axis=1))
 
-            stop_hit = paths <= sl_f
-            target_hit = paths >= tp_f
+            if is_short:
+                stop_hit = paths >= sl_f
+                target_hit = paths <= tp_f
+            else:
+                stop_hit = paths <= sl_f
+                target_hit = paths >= tp_f
 
             first_stop = np.where(stop_hit.any(axis=1), np.argmax(stop_hit, axis=1), 999999)
             first_target = np.where(target_hit.any(axis=1), np.argmax(target_hit, axis=1), 999999)
@@ -326,7 +344,10 @@ class MonteCarloOddsEvaluator:
             payoffs[stop_first] = -1.0
             payoffs[target_first] = r_mult
             if neither.any():
-                payoffs[neither] = (paths[neither, -1] - entry_f) / stop_dist
+                if is_short:
+                    payoffs[neither] = (entry_f - paths[neither, -1]) / stop_dist
+                else:
+                    payoffs[neither] = (paths[neither, -1] - entry_f) / stop_dist
 
             target_prob = float(np.mean(target_first))
             stop_prob = float(np.mean(stop_first))
@@ -334,8 +355,11 @@ class MonteCarloOddsEvaluator:
             expected_r = float(np.mean(payoffs))
 
             # trader-timemachine specification:
-            # Green paths: Target first, or finished in profit at simulation horizon (paths[:, -1] >= entry_f)
-            green_paths = target_first | (neither & (paths[:, -1] >= entry_f))
+            # Green paths: Target first, or finished in profit at simulation horizon
+            if is_short:
+                green_paths = target_first | (neither & (paths[:, -1] <= entry_f))
+            else:
+                green_paths = target_first | (neither & (paths[:, -1] >= entry_f))
             green_prob = float(np.mean(green_paths))
         else:
             # Fallback pure-python estimator

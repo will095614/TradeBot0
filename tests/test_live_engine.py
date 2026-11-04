@@ -118,7 +118,7 @@ def test_fill_event_has_monotonic_seq_and_action_label():
     for f in fills:
         assert isinstance(f["seq"], int)
         assert f["seq"] > 0
-        assert f["action_label"] in ("OPEN BUY", "CLOSE SELL")
+        assert f["action_label"] in ("OPEN LONG", "CLOSE LONG", "OPEN SHORT", "COVER SHORT")
 
 
 def test_anti_churn_cooldown_prevents_same_timestamp_reentry():
@@ -321,6 +321,45 @@ def test_live_engine_btc_and_leverage_configuration():
         elif strat["id"] == "comp_cons":
             assert strat["leverage_enabled"] is False
             assert "Spot 1x" in strat["leverage_label"]
+
+
+def test_live_engine_bidirectional_long_and_short_execution():
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    ts = 1700000000.0
+    engine.live_start_ts = ts
+    engine.is_bootstrapped = True
+    engine.live_orders_enabled = True
+
+    # 1. Drive a downtrend tick sequence: price falling, EMA fast < slow
+    engine.live_ema_fast = Decimal("3400.00")
+    engine.live_ema_slow = Decimal("3500.00")
+    engine.live_rsi = Decimal("30.00")
+    engine.live_atr = Decimal("20.00")
+
+    # comp_a breakdown short entry
+    engine.comp_a.portfolio.position_qty = Decimal("0.0000")
+    engine.strategy_cooldown["comp_agg"] = 0.0
+    engine._evaluate_live_strategies(Decimal("3400.00"), Decimal("3420.00"), ts + 1.0)
+
+    # If TimeMachine passed, verify Comp A entered SHORT
+    if engine.comp_a.portfolio.position_qty > Decimal("0.0000"):
+        assert engine.comp_a.portfolio.position_side.value == "SHORT"
+        assert engine.broker.active_stops["comp_agg"].price > Decimal("3400.00")  # Short SL is ABOVE entry!
+
+    # 2. Drive an oversold/uptrend tick sequence: price rising, RSI bounce
+    engine.live_ema_fast = Decimal("3550.00")
+    engine.live_ema_slow = Decimal("3500.00")
+    engine.live_rsi = Decimal("45.00")
+    engine.comp_b.portfolio.position_qty = Decimal("0.0000")
+    engine.strategy_cooldown["comp_cons"] = 0.0
+    engine._evaluate_live_strategies(Decimal("3520.00"), Decimal("3510.00"), ts + 2.0)
+
+    # Verify UI state exposes position_side
+    state = engine.get_ui_state()
+    for strat in state["strategies"]:
+        assert "position_side" in strat
+        assert strat["position_side"] in ("FLAT", "LONG", "SHORT")
+
 
 
 

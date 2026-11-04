@@ -787,6 +787,13 @@
     box-shadow: 0 0 6px rgba(0, 230, 118, 0.2);
   }
 
+  .pos-badge.in-pos-short {
+    background: var(--down-dim);
+    color: var(--down);
+    border: 1px solid rgba(255, 23, 68, 0.35);
+    box-shadow: 0 0 6px rgba(255, 23, 68, 0.2);
+  }
+
   .pos-badge.flat {
     background: rgba(255, 255, 255, 0.05);
     color: var(--text-muted);

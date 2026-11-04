@@ -653,8 +653,19 @@ let latestState = null;
       let bracketHtml = '';
       if (s.in_position) {
         let pct = 50;
-        if (s.stop_loss && s.take_profit && s.take_profit > s.stop_loss) {
-          pct = Math.max(3, Math.min(97, ((spot - s.stop_loss) / (s.take_profit - s.stop_loss)) * 100));
+        const isShort = s.position_side === 'SHORT';
+        if (s.stop_loss && s.take_profit) {
+          if (isShort) {
+            const span = s.stop_loss - s.take_profit;
+            if (span > 0) {
+              pct = Math.max(3, Math.min(97, ((s.stop_loss - spot) / span) * 100));
+            }
+          } else {
+            const span = s.take_profit - s.stop_loss;
+            if (span > 0) {
+              pct = Math.max(3, Math.min(97, ((spot - s.stop_loss) / span) * 100));
+            }
+          }
         }
         const slText = s.stop_loss ? `SL ${fmtUsd(s.stop_loss, 1)}` : 'Dynamic SL';
         const tpText = s.take_profit ? `TP ${fmtUsd(s.take_profit, 1)}` : 'Uncapped';
@@ -693,7 +704,9 @@ let latestState = null;
         : `<span class="lev-pill lev-spot" title="Spot Only">Spot 1x</span>`;
 
       const posPill = s.in_position
-        ? `<span class="pos-badge in-pos">Long ${s.qty.toFixed(4)} BTC</span>`
+        ? (s.position_side === 'SHORT'
+            ? `<span class="pos-badge in-pos-short">Short ${s.qty.toFixed(4)} BTC</span>`
+            : `<span class="pos-badge in-pos">Long ${s.qty.toFixed(4)} BTC</span>`)
         : `<span class="pos-badge flat">Idle</span>`;
 
       const pnlLabel = s.in_position ? 'Unrealized PnL' : 'Cash Balance';
@@ -951,12 +964,27 @@ let latestState = null;
         ? '<span class="tag-live">LIVE</span>'
         : '<span class="tag-warmup">WARMUP</span>';
 
-      const actionBadge = isBuy
-        ? '<span class="badge-buy">BUY</span>'
-        : '<span class="badge-sell">SELL</span>';
+      let actionBadge = '';
+      if (f.action_label) {
+        if (f.action_label === 'OPEN LONG') {
+          actionBadge = '<span class="badge-buy">OPEN LONG</span>';
+        } else if (f.action_label === 'CLOSE LONG') {
+          actionBadge = '<span class="badge-sell">CLOSE LONG</span>';
+        } else if (f.action_label === 'OPEN SHORT') {
+          actionBadge = '<span class="badge-sell">OPEN SHORT</span>';
+        } else if (f.action_label === 'COVER SHORT') {
+          actionBadge = '<span class="badge-buy">COVER SHORT</span>';
+        } else {
+          actionBadge = `<span class="${isBuy ? 'badge-buy' : 'badge-sell'}">${f.action_label}</span>`;
+        }
+      } else {
+        actionBadge = isBuy
+          ? '<span class="badge-buy">BUY</span>'
+          : '<span class="badge-sell">SELL</span>';
+      }
 
       const seqStr = f.seq ? `#${f.seq}` : '';
-      const priceSubHtml = (!isBuy && f.entry_price)
+      const priceSubHtml = (!f.is_entry && f.entry_price)
         ? `<div style="font-size:8.5px;color:var(--text-muted);font-weight:400;">Cost $${Number(f.entry_price).toFixed(2)}</div>`
         : '';
 
@@ -1395,8 +1423,8 @@ let latestState = null;
 
     // 3. Strategy Levels, Brackets & Spot Price Badges (Crisp Lines on Pure Obsidian Black)
     const rightBadges = [];
-    const offscreenTargets = [];
-    const offscreenStops = [];
+    const offscreenTop = [];
+    const offscreenBot = [];
     const activeStrats = strategies.filter(s => s.in_position);
 
     activeStrats.forEach((s, idx) => {
@@ -1429,7 +1457,11 @@ let latestState = null;
             type: 'tp'
           });
         } else if (s.take_profit > maxP) {
-          offscreenTargets.push({ name: sTag, price: s.take_profit, color: sColor });
+          const diffPct = spot > 0 ? (((s.take_profit - spot) / spot) * 100).toFixed(1) : '0';
+          offscreenTop.push({ label: `[${sTag}] TP $${s.take_profit.toFixed(0)} (+${diffPct}%)`, color: sColor });
+        } else if (s.take_profit < minP) {
+          const diffPct = spot > 0 ? (((spot - s.take_profit) / spot) * 100).toFixed(1) : '0';
+          offscreenBot.push({ label: `[${sTag}] TP $${s.take_profit.toFixed(0)} (-${diffPct}%)`, color: sColor });
         }
       }
 
@@ -1483,31 +1515,38 @@ let latestState = null;
             type: 'sl'
           });
         } else if (s.stop_loss < minP) {
-          offscreenStops.push({ name: sTag, price: s.stop_loss, color: sColor });
+          const diffPct = spot > 0 ? (((spot - s.stop_loss) / spot) * 100).toFixed(1) : '0';
+          offscreenBot.push({ label: `[${sTag}] SL $${s.stop_loss.toFixed(0)} (-${diffPct}%)`, color: sColor });
+        } else if (s.stop_loss > maxP) {
+          const diffPct = spot > 0 ? (((s.stop_loss - spot) / spot) * 100).toFixed(1) : '0';
+          offscreenTop.push({ label: `[${sTag}] SL $${s.stop_loss.toFixed(0)} (+${diffPct}%)`, color: sColor });
         }
       }
 
-      // Vertical Bracket Connector
-      const bracketTop = yTP !== null ? yTP : (yEntry !== null ? yEntry : null);
-      const bracketBot = ySL !== null ? ySL : (yEntry !== null ? yEntry : null);
-      if (bracketTop !== null && bracketBot !== null && bracketBot > bracketTop) {
-        const bx = padLeft + plotW - 5 - (idx * 8);
-        ctx.save();
-        ctx.strokeStyle = sColor;
-        ctx.lineWidth = 1.6;
-        ctx.beginPath();
-        ctx.moveTo(bx, bracketTop);
-        ctx.lineTo(bx, bracketBot);
-        ctx.moveTo(bx - 3, bracketTop);
-        ctx.lineTo(bx + 3, bracketTop);
-        ctx.moveTo(bx - 3, bracketBot);
-        ctx.lineTo(bx + 3, bracketBot);
-        if (yEntry !== null && yEntry > bracketTop && yEntry < bracketBot) {
-          ctx.moveTo(bx, yEntry);
-          ctx.lineTo(bx - 4, yEntry);
+      // Vertical Bracket Connector (bidirectional)
+      const validYs = [yTP, yEntry, ySL].filter(y => y !== null);
+      if (validYs.length >= 2) {
+        const bracketTop = Math.min(...validYs);
+        const bracketBot = Math.max(...validYs);
+        if (bracketBot > bracketTop + 2) {
+          const bx = padLeft + plotW - 5 - (idx * 8);
+          ctx.save();
+          ctx.strokeStyle = sColor;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(bx, bracketTop);
+          ctx.lineTo(bx, bracketBot);
+          ctx.moveTo(bx - 3, bracketTop);
+          ctx.lineTo(bx + 3, bracketTop);
+          ctx.moveTo(bx - 3, bracketBot);
+          ctx.lineTo(bx + 3, bracketBot);
+          if (yEntry !== null && yEntry > bracketTop && yEntry < bracketBot) {
+            ctx.moveTo(bx, yEntry);
+            ctx.lineTo(bx - 4, yEntry);
+          }
+          ctx.stroke();
+          ctx.restore();
         }
-        ctx.stroke();
-        ctx.restore();
       }
     });
 
@@ -1675,39 +1714,35 @@ let latestState = null;
 
     // 5. Draw Off-Screen Order Indicators (top & bottom edges in Auto mode)
     if (scaleMode === 'auto') {
-      if (offscreenTargets.length > 0) {
+      if (offscreenTop.length > 0) {
         ctx.save();
         ctx.font = '9.5px "Cascadia Mono", Consolas, monospace';
         let tx = padLeft + 6;
-        offscreenTargets.slice(0, 4).forEach(t => {
-          const diffPct = spot > 0 ? (((t.price - spot) / spot) * 100).toFixed(1) : '0';
-          const txt = `[${t.name}] TP $${t.price.toFixed(0)} (+${diffPct}%)`;
-          const tw = ctx.measureText(txt).width + 10;
-          ctx.fillStyle = hexToRgba(t.color, 0.16);
-          ctx.strokeStyle = hexToRgba(t.color, 0.6);
+        offscreenTop.slice(0, 4).forEach(item => {
+          const tw = ctx.measureText(item.label).width + 10;
+          ctx.fillStyle = hexToRgba(item.color, 0.16);
+          ctx.strokeStyle = hexToRgba(item.color, 0.6);
           ctx.fillRect(tx, padTop + 2, tw, 15);
           ctx.strokeRect(tx, padTop + 2, tw, 15);
-          ctx.fillStyle = t.color;
-          ctx.fillText(txt, tx + 5, padTop + 13);
+          ctx.fillStyle = item.color;
+          ctx.fillText(item.label, tx + 5, padTop + 13);
           tx += tw + 6;
         });
         ctx.restore();
       }
 
-      if (offscreenStops.length > 0) {
+      if (offscreenBot.length > 0) {
         ctx.save();
         ctx.font = '9.5px "Cascadia Mono", Consolas, monospace';
         let sx = padLeft + 6;
-        offscreenStops.slice(0, 4).forEach(s => {
-          const diffPct = spot > 0 ? (((spot - s.price) / spot) * 100).toFixed(1) : '0';
-          const txt = `[${s.name}] SL $${s.price.toFixed(0)} (-${diffPct}%)`;
-          const tw = ctx.measureText(txt).width + 10;
-          ctx.fillStyle = hexToRgba(s.color, 0.16);
-          ctx.strokeStyle = hexToRgba(s.color, 0.6);
+        offscreenBot.slice(0, 4).forEach(item => {
+          const tw = ctx.measureText(item.label).width + 10;
+          ctx.fillStyle = hexToRgba(item.color, 0.16);
+          ctx.strokeStyle = hexToRgba(item.color, 0.6);
           ctx.fillRect(sx, padTop + plotH - 18, tw, 15);
           ctx.strokeRect(sx, padTop + plotH - 18, tw, 15);
-          ctx.fillStyle = s.color;
-          ctx.fillText(txt, sx + 5, padTop + plotH - 7);
+          ctx.fillStyle = item.color;
+          ctx.fillText(item.label, sx + 5, padTop + plotH - 7);
           sx += tw + 6;
         });
         ctx.restore();

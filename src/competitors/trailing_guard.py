@@ -33,12 +33,14 @@ class TrailingGuardCompetitor(BaseCompetitor):
             genome=default_genome
         )
         self.highest_price_since_entry: Decimal = Decimal("0")
+        self.lowest_price_since_entry: Decimal = Decimal("0")
         self.trailing_active: bool = False
 
     def reset_for_new_generation(self, new_genome: CompetitorGenome, preserve_portfolio: bool = True) -> None:
         super().reset_for_new_generation(new_genome, preserve_portfolio=preserve_portfolio)
         if not preserve_portfolio or self.portfolio.position_qty == Decimal("0"):
             self.highest_price_since_entry = Decimal("0")
+            self.lowest_price_since_entry = Decimal("0")
             self.trailing_active = False
 
     def evaluate_signal(

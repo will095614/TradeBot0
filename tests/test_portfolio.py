@@ -76,6 +76,20 @@ def test_portfolio_insufficient_cash():
 
 def test_portfolio_overselling():
     p = Portfolio(portfolio_id="test_p", name="Test Portfolio", initial_cash=Decimal("3000.00"))
+    # First buy 0.5000 ETH
+    buy_fill = FillEvent(
+        order_id="ord0",
+        portfolio_id="test_p",
+        symbol="ETH/USD",
+        side=OrderSide.BUY,
+        qty=Decimal("0.5000"),
+        price=Decimal("2500.00"),
+        fee=Decimal("1.25"),
+        timestamp=999.0
+    )
+    p.apply_fill(buy_fill)
+
+    # Attempt to sell 1.0000 ETH (overselling 0.5 held)
     fill = FillEvent(
         order_id="ord1",
         portfolio_id="test_p",
@@ -88,6 +102,44 @@ def test_portfolio_overselling():
     )
     with pytest.raises(ValueError, match="Overselling"):
         p.apply_fill(fill)
+
+
+def test_portfolio_short_accounting_and_overcovering():
+    p = Portfolio(portfolio_id="test_p", name="Test Portfolio", initial_cash=Decimal("3000.00"), maker_taker_fee_rate=Decimal("0.001"))
+    # Short 1.0 ETH at $2500.00
+    short_fill = FillEvent(
+        order_id="ord_s1", portfolio_id="test_p", symbol="ETH/USD", side=OrderSide.SELL,
+        qty=Decimal("1.0000"), price=Decimal("2500.00"), fee=Decimal("2.50"), timestamp=1000.0
+    )
+    p.apply_fill(short_fill)
+    assert p.position_side.value == "SHORT"
+    assert p.position_qty == Decimal("1.0000")
+    assert p.margin_locked == Decimal("2500.00")
+    assert p.cash == Decimal("497.50")
+
+    # Price drops to $2400.00 (profit for short!)
+    p.update_market_price(Decimal("2400.00"), timestamp=1001.0)
+    assert p.unrealized_pnl == Decimal("100.00")
+    assert p.total_equity == Decimal("3097.50")
+
+    # Overcovering check
+    overcover = FillEvent(
+        order_id="ov1", portfolio_id="test_p", symbol="ETH/USD", side=OrderSide.BUY,
+        qty=Decimal("1.5000"), price=Decimal("2400.00"), fee=Decimal("2.40"), timestamp=1002.0
+    )
+    with pytest.raises(ValueError, match="Overcovering"):
+        p.apply_fill(overcover)
+
+    # Cover short at $2400.00
+    cover_fill = FillEvent(
+        order_id="ord_s2", portfolio_id="test_p", symbol="ETH/USD", side=OrderSide.BUY,
+        qty=Decimal("1.0000"), price=Decimal("2400.00"), fee=Decimal("2.40"), timestamp=1003.0
+    )
+    enriched = p.apply_fill(cover_fill)
+    assert p.position_side.value == "FLAT"
+    assert p.position_qty == Decimal("0.0000")
+    assert enriched.realized_pnl == Decimal("95.10")  # 100 gross - 2.50 entry fee - 2.40 exit fee
+    assert p.total_equity == Decimal("3095.10")
 
 
 def test_portfolio_breakeven_trade_does_not_count_as_loss():
