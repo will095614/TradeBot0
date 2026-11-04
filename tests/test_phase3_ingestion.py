@@ -161,3 +161,4 @@ def test_harvester_stage1_processing_and_urgent_interrupt():
         assert urgent_called[0].urgency_score == 9
 
     asyncio.run(_run())
+

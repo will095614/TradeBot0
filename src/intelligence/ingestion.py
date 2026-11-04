@@ -357,3 +357,4 @@ class IntelligenceHarvester:
     def get_latest_events(self, count: int = 30) -> List[StructuredEvent]:
         """Returns the most recent structured events."""
         return list(self.recent_structured_events)[-count:]
+

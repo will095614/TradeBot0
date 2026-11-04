@@ -116,3 +116,4 @@ def test_live_engine_enforces_macro_commander_veto():
     veto_logs = [l for l in engine.live_logs if l["tag"] == "VETO_MACRO"]
     assert len(veto_logs) == 6
     assert engine.macro_commander.current_state.veto_count_today == 6
+

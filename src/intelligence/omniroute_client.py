@@ -234,3 +234,4 @@ class OmniRouteClient:
         if self._session and not self._session.closed and self._owns_session:
             await self._session.close()
             self._session = None
+

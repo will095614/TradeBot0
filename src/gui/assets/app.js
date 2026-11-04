@@ -501,6 +501,7 @@ let latestState = null;
 
   function renderAll(state) {
     renderHeader(state);
+    renderMacroRibbon(state);
     renderTacticalHud(state);
     renderStrategies(state);
     renderLeaderboard(state);
@@ -512,6 +513,52 @@ let latestState = null;
     const stratGrid = document.getElementById('tabCardsView') || document.getElementById('strategiesGrid');
     if (lbBody && lbBody.children.length >= 6 && stratGrid && stratGrid.children.length >= 6) {
       hasFirstTableRendered = true;
+    }
+  }
+
+
+  function renderMacroRibbon(state) {
+    const mc = state.macro_commander;
+    if (!mc) return;
+
+    const badge = document.getElementById('macroRegimeBadge');
+    const regimeTxt = document.getElementById('macroRegimeText');
+    const biasTag = document.getElementById('macroBiasTag');
+    const multTag = document.getElementById('macroMultTag');
+    const vetoTag = document.getElementById('macroVetoTag');
+    const omniTag = document.getElementById('macroOmniTag');
+    const headline = document.getElementById('macroHeadlineText');
+
+    if (badge && regimeTxt) {
+      badge.className = 'macro-badge';
+      if (mc.regime === 'BULLISH_SURGE') badge.classList.add('regime-bullish');
+      else if (mc.regime === 'BEARISH_PANIC') badge.classList.add('regime-bearish');
+      else if (mc.regime === 'HIGH_VOLATILITY_CHOP') badge.classList.add('regime-chop');
+      regimeTxt.textContent = 'MACRO: ' + mc.regime;
+    }
+
+    if (biasTag) {
+      biasTag.textContent = 'BIAS: ' + mc.directional_bias;
+      if (mc.directional_bias === 'LONG_ONLY') biasTag.style.color = '#00E676';
+      else if (mc.directional_bias === 'SHORT_ONLY') biasTag.style.color = '#FF334B';
+      else biasTag.style.color = '';
+    }
+
+    if (multTag) {
+      multTag.textContent = 'RISK MULT: ' + (Number(mc.risk_multiplier) || 1.0).toFixed(2) + 'x';
+    }
+
+    if (vetoTag) {
+      vetoTag.textContent = 'VETOES TODAY: ' + (mc.veto_count_today || 0);
+    }
+
+    if (omniTag) {
+      omniTag.textContent = 'OMNIROUTE: ' + (mc.status || 'ONLINE') + ' (24/7)';
+      omniTag.style.color = (mc.status === 'ONLINE') ? '#00E676' : '#FFB800';
+    }
+
+    if (headline) {
+      headline.textContent = mc.active_headline || 'Market in balanced equilibrium. No macro veto active.';
     }
   }
 

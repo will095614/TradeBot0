@@ -168,3 +168,4 @@ class MacroCommander:
                 self.current_state.status = "STANDBY" if not self.client.is_gateway_online else "ONLINE"
 
             return self.current_state
+

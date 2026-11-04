@@ -216,7 +216,7 @@
   /* App Shell: Fluid 100vh Layout */
   .app-shell {
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto auto 1fr;
     width: 100vw;
     height: 100vh;
     gap: 8px;
@@ -1497,4 +1497,83 @@
   @keyframes toastProgressShrink {
     from { width: 100%; }
     to { width: 0%; }
+  }
+
+  /* Macro Commander Intelligence & Strict Veto Status Ribbon */
+  .macro-ribbon {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 16px;
+    background: #0B0E14;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    min-height: 27px;
+    overflow: hidden;
+  }
+  .macro-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    background: rgba(56, 189, 248, 0.15);
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .macro-badge.regime-bullish {
+    background: rgba(0, 230, 118, 0.15);
+    border-color: rgba(0, 230, 118, 0.45);
+    color: var(--up);
+  }
+  .macro-badge.regime-bearish {
+    background: rgba(255, 51, 75, 0.15);
+    border-color: rgba(255, 51, 75, 0.45);
+    color: var(--down);
+  }
+  .macro-badge.regime-chop {
+    background: rgba(255, 184, 0, 0.15);
+    border-color: rgba(255, 184, 0, 0.45);
+    color: #FFB800;
+  }
+  .macro-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: currentColor;
+    box-shadow: 0 0 6px currentColor;
+  }
+  .macro-meta-cluster {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .macro-tag {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .macro-sep {
+    color: rgba(255, 255, 255, 0.2);
+  }
+  .macro-headline-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text-muted);
+  }
+  .macro-headline-text {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: #E2E8F0;
   }
