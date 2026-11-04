@@ -20,6 +20,8 @@ from src.competitors.orb import ORBCompetitor
 from src.competitors.vwap import VWAPPullbackCompetitor
 from src.data.eth_feed import ETHFeed, CandleBar
 from src.data.timemachine import MonteCarloOddsEvaluator
+from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.macro_commander import MacroCommander, MacroRegimeState
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +129,10 @@ class LiveArenaEngine:
 
         # TimeMachine Monte Carlo Odds Evaluator & EV Gate (day-trader-skill)
         self.mc_evaluator = MonteCarloOddsEvaluator(seed=19)
+
+        # Macro Commander & OmniRoute Intelligence Layer (Strict Veto Option A)
+        self.omniroute_client = OmniRouteClient()
+        self.macro_commander = MacroCommander(self.omniroute_client)
 
         self._init_broker()
 
@@ -468,6 +474,24 @@ class LiveArenaEngine:
         risk_budget: Optional[Decimal] = None
     ) -> bool:
         pid = competitor.portfolio_id
+
+        # Strict Veto Gate (Macro Commander Option A)
+        allowed, veto_reason = self.macro_commander.check_trade_veto(side, competitor.base_name)
+        if not allowed:
+            self.strategy_cooldown[pid] = ts + 20.0
+            self.strategy_telemetry[pid]["intent"] = f"Macro Veto: {self.macro_commander.current_state.directional_bias}"
+            self.log_event("VETO_MACRO", f"{competitor.base_name.split(' ')[0]} {side.value} vetoed: {veto_reason}", "loss")
+            return False
+
+        # Macro Trend Take-Profit Expansion (R-Multiple expanded when riding macro regime)
+        if tp is not None and self.macro_commander.current_state.risk_multiplier > 1.0:
+            if side == OrderSide.BUY and self.macro_commander.current_state.directional_bias == "LONG_ONLY":
+                r_dist = price - sl
+                tp = (price + r_dist * Decimal(str(round(2.0 * self.macro_commander.current_state.risk_multiplier, 2)))).quantize(Decimal("0.01"))
+            elif side == OrderSide.SELL and self.macro_commander.current_state.directional_bias == "SHORT_ONLY":
+                r_dist = sl - price
+                tp = (price - r_dist * Decimal(str(round(2.0 * self.macro_commander.current_state.risk_multiplier, 2)))).quantize(Decimal("0.01"))
+
         mc_odds = self.mc_evaluator.evaluate_bracket(price, sl, tp, atr=self.live_atr, recent_candles=self.candles)
         self.strategy_telemetry[pid]["mc_stats"] = mc_odds.to_dict()
         if not mc_odds.passed:
@@ -1469,6 +1493,7 @@ class LiveArenaEngine:
             "auto_evolve_interval_sec": self.auto_evolve_interval_sec,
             "next_evolve_sec": int(next_evolve_sec),
             "evolution_events": self.evolution_events,
+            "macro_commander": self.macro_commander.current_state.to_dict(),
             "candles": [
                 {
                     "t": c["t"],
