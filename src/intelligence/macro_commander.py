@@ -82,7 +82,7 @@ class MacroCommander:
                 "headline": "美國總統大選勝率飆升：親加密候選人以 68% 機率領先，Polymarket 交易量創 32 億美元新高",
                 "summary": "Polymarket 預測市場投注量突破 32 億美元歷史新高，親加密總統候選人勝率攀升至 68%。現貨買盤積極搶先佈局監管明朗化紅利，帶動全市場多頭情緒。",
                 "strategy_actions": [
-                    {"strat_id": "comp_agg", "name": "Strategy 1 (AGG)", "action": "Opened LONG 0.50 BTC (Momentum Breakout)", "badge_cls": "buy", "time": t_str},
+                    {"strat_id": "comp_agg", "name": "Strategy 1 (AGG)", "action": "Opened LONG 5.00 ETH (Momentum Breakout)", "badge_cls": "buy", "time": t_str},
                     {"strat_id": "comp_cons", "name": "Strategy 2 (CONS)", "action": "SHORT Vetoed by Macro Commander (LONG_ONLY)", "badge_cls": "loss", "time": t_str},
                     {"strat_id": "comp_atr", "name": "Strategy 3 (ATR)", "action": "Take-Profit Target Expanded to 3.5R", "badge_cls": "profit", "time": t_str},
                 ]
@@ -94,8 +94,8 @@ class MacroCommander:
                 "domain": "crypto",
                 "urgency": 8,
                 "sentiment": 0.76,
-                "headline": "美國比特幣現貨 ETF 48 小時內淨流入達 11.8 億美元，機構增持力道強勁",
-                "summary": "貝萊德 IBIT 與富達 FBTC 兩日內吸納逾 14,200 枚 BTC，大幅超越礦工每日產出量。場外 OTC 櫃檯流動性庫存創下兩年來新低。",
+                "headline": "美國以太坊現貨 ETF 48 小時內淨流入達 11.8 億美元，機構增持力道強勁",
+                "summary": "貝萊德 ETHA 與富達 FETH 兩日內吸納逾 14,200 枚 ETH，大幅超越每日產出量。場外 OTC 櫃檯流動性庫存創下歷史新低。",
                 "strategy_actions": [
                     {"strat_id": "comp_trail", "name": "Strategy 4 (TRAIL)", "action": "Trailing Ratchet Tightened to Lock In Gains", "badge_cls": "profit", "time": t_str},
                     {"strat_id": "comp_orb", "name": "Strategy 5 (ORB)", "action": "15m Opening Range Breakout Triggered", "badge_cls": "buy", "time": t_str},
@@ -177,7 +177,7 @@ class MacroCommander:
                 timestamp=iso_now,
                 source="TreeNews / Polymarket",
                 domain="prediction",
-                entities_tickers=["BTC", "ELECTION"],
+                entities_tickers=["ETH", "ELECTION"],
                 urgency_score=9,
                 sentiment_score=0.88,
                 summary="美國總統大選勝率飆升：親加密候選人以 68% 機率領先，Polymarket 交易量突破 32 億美元，現貨買盤全面激勵。",
@@ -187,11 +187,11 @@ class MacroCommander:
                 timestamp=iso_now,
                 source="Bloomberg / SEC",
                 domain="crypto",
-                entities_tickers=["BTC", "ETF"],
+                entities_tickers=["ETH", "ETF"],
                 urgency_score=8,
                 sentiment_score=0.76,
-                summary="美國比特幣現貨 ETF 48 小時內淨流入達 11.8 億美元，機構吸籌強勁，場外 OTC 現貨儲備跌至歷史低點。",
-                raw_title="機構現貨比特幣 ETF 資金加速流入：48 小時淨流入達 11.8 億美元"
+                summary="美國以太坊現貨 ETF 48 小時內淨流入達 11.8 億美元，機構吸籌強勁，場外 OTC 現貨儲備跌至歷史低點。",
+                raw_title="機構現貨以太坊 ETF 資金加速流入：48 小時淨流入達 11.8 億美元"
             ),
             StructuredEvent(
                 timestamp=iso_now,

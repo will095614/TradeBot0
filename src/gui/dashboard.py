@@ -97,7 +97,7 @@ class ArenaDashboard:
 
     def __init__(self, initial_cash: Decimal = Decimal("100000.00")) -> None:
         self.initial_cash = initial_cash
-        self.engine = LiveArenaEngine(symbol="BTC/USD", initial_cash=initial_cash)
+        self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=initial_cash)
         self.window = None
         self._bridge = _ArenaBridgeApi(self)
 
@@ -106,7 +106,7 @@ class ArenaDashboard:
         old_enabled = self.engine.auto_evolve_enabled
         old_cadence = self.engine.cadence_sec
         self.engine.stop()
-        self.engine = LiveArenaEngine(symbol="BTC/USD", initial_cash=self.initial_cash)
+        self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=self.initial_cash)
         self.engine.auto_evolve_interval_sec = old_interval
         self.engine.auto_evolve_enabled = old_enabled
         self.engine.cadence_sec = old_cadence
@@ -115,12 +115,12 @@ class ArenaDashboard:
     def run(self) -> None:
         import webview
 
-        logger.info("Starting TradeBot0 LiveArenaEngine (BTC/USD)...")
+        logger.info("Starting TradeBot0 LiveArenaEngine (ETH/USD)...")
         self.engine.start_live_loop(interval_sec=5.0)
 
         logger.info("Initializing pywebview GPU Window...")
         window = webview.create_window(
-            title="TradeBot0 — BTC/USD Multi-Strategy Quant Arena (Obsidian High-Contrast · Style B Evolution)",
+            title="TradeBot0 — ETH/USD Multi-Strategy Quant Arena (Obsidian High-Contrast · Style B Evolution)",
             html=HTML_TEMPLATE,
             js_api=self._bridge,
             width=1540,

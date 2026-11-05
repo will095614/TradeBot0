@@ -31,7 +31,7 @@ class TimeMachineArena:
     """
     def __init__(
         self,
-        symbol: str = "BTC/USD",
+        symbol: str = "ETH/USD",
         initial_cash: Decimal = Decimal("100000.00")
     ):
         self.symbol = symbol

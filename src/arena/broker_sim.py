@@ -23,7 +23,7 @@ class BrokerSim:
     """
     def __init__(
         self,
-        symbol: str = "BTC/USD",
+        symbol: str = "ETH/USD",
         slippage_pct: Decimal = Decimal("0.0002"),  # 0.02% slippage
         mode: str = "paper_arena"
     ):

@@ -39,8 +39,8 @@ def main() -> None:
                 generations = 3
 
         print(f"=== TradeBot0 CLI Time Machine & Style-B Evolution Arena (Generations: {generations}) ===")
-        bars = ETHFeed.fetch_historical_bars(ticker="BTC-USD", period="1mo", interval="15m")
-        arena = TimeMachineArena(symbol="BTC/USD", initial_cash=Decimal("100000.00"))
+        bars = ETHFeed.fetch_historical_bars(ticker="ETH-USD", period="1mo", interval="15m")
+        arena = TimeMachineArena(symbol="ETH/USD", initial_cash=Decimal("100000.00"))
 
         if generations > 1:
             rankings = arena.run_evolution_tournament(bars, generations=generations)

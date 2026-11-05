@@ -59,7 +59,7 @@ def test_macro_commander_skips_chat_when_gateway_offline():
 
 def test_eth_feed_fast_fallback_under_test_flag(monkeypatch):
     monkeypatch.setenv("ARENA_FAST_TEST", "1")
-    df = ETHFeed._fetch_dataframe(ticker="BTC-USD", period="1d", interval="1m")
+    df = ETHFeed._fetch_dataframe(ticker="ETH-USD", period="1d", interval="1m")
     assert df.empty
 
 

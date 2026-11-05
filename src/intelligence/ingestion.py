@@ -377,7 +377,7 @@ class IntelligenceHarvester:
             "[\n"
             "  {\n"
             '    "index": 1,\n'
-            '    "entities_tickers": ["BTC", "FED"],\n'
+            '    "entities_tickers": ["ETH", "FED"],\n'
             '    "urgency_score": 1_to_10,\n'
             '    "sentiment_score": -1.0_to_1.0,\n'
             '    "summary": "Brief 15-word impact summary"\n'
@@ -453,7 +453,7 @@ class IntelligenceHarvester:
                     timestamp=iso_now,
                     source=raw.source,
                     domain=raw.domain,
-                    entities_tickers=["BTC"],
+                    entities_tickers=["ETH"],
                     urgency_score=urgency,
                     sentiment_score=sentiment,
                     summary=raw.title[:100],

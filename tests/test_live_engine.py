@@ -280,9 +280,9 @@ def test_lifecycle_sequence_warmup_before_live_orders():
     assert engine.get_ui_state()["live_orders_enabled"] is True
 
 
-def test_live_engine_btc_and_leverage_configuration():
+def test_live_engine_eth_and_leverage_configuration():
     engine = LiveArenaEngine()
-    assert engine.symbol == "BTC/USD"
+    assert engine.symbol == "ETH/USD"
     assert engine.initial_cash == Decimal("100000.00")
     for c in engine.competitors:
         assert c.portfolio.cash == Decimal("100000.00")

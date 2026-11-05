@@ -38,7 +38,7 @@ def test_record_strategy_actions_mapped_to_events():
     commander = MacroCommander(mock_client)
 
     # Record action for Strategy 1 (comp_agg)
-    commander.record_strategy_action("comp_agg", "AGG", "Opened LONG 0.50 BTC", "buy")
+    commander.record_strategy_action("comp_agg", "AGG", "Opened LONG 5.00 ETH", "buy")
     # Record veto for Strategy 2 (comp_cons)
     commander.record_strategy_action("comp_cons", "CONS", "SHORT Vetoed by Macro Commander", "loss")
 

@@ -112,8 +112,8 @@ class BaseCompetitor(ABC):
         """
         if entry_price <= Decimal("0"):
             return Decimal("0")
-        # For BTC ($70k+), minimum stop distance is $10.00
-        stop_dist = max(Decimal("10.00"), abs(entry_price - stop_price))
+        # For ETH/Crypto, minimum stop distance is $2.00
+        stop_dist = max(Decimal("2.00"), abs(entry_price - stop_price))
         eff_lev = self.genome.leverage if self.genome.leverage_enabled and self.genome.leverage > Decimal("0") else Decimal("1.0")
         budget = (
             risk_budget

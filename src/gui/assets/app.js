@@ -252,7 +252,7 @@ let latestState = null;
           <span class="toast-close" onclick="this.closest('.chart-toast').remove()" title="Close notification">×</span>
         </div>
         <div class="toast-main-row num">
-          <span class="toast-qty">BUY <strong>${qty.toFixed(4)}</strong> BTC</span>
+          <span class="toast-qty">BUY <strong>${qty.toFixed(4)}</strong> ETH</span>
           <span style="color:var(--text-muted);margin:0 2px;">|</span>
           <span class="toast-entry">Entry <strong>$${entryP.toFixed(2)}</strong></span>
         </div>
@@ -772,8 +772,8 @@ let latestState = null;
 
       const posPill = s.in_position
         ? (s.position_side === 'SHORT'
-            ? `<span class="pos-badge in-pos-short">Short ${s.qty.toFixed(4)} BTC</span>`
-            : `<span class="pos-badge in-pos">Long ${s.qty.toFixed(4)} BTC</span>`)
+            ? `<span class="pos-badge in-pos-short">Short ${s.qty.toFixed(4)} ETH</span>`
+            : `<span class="pos-badge in-pos">Long ${s.qty.toFixed(4)} ETH</span>`)
         : `<span class="pos-badge flat">Idle</span>`;
 
       const pnlLabel = s.in_position ? 'Unrealized PnL' : 'Cash Balance';
@@ -924,7 +924,7 @@ let latestState = null;
     const cashPct = totCap > 0 ? ((totCash / totCap) * 100).toFixed(1) : '100.0';
 
     const expQtyEl = document.getElementById('hudExposureQty');
-    if (expQtyEl) expQtyEl.textContent = `${totQty.toFixed(4)} BTC`;
+    if (expQtyEl) expQtyEl.textContent = `${totQty.toFixed(4)} ETH`;
     const expValEl = document.getElementById('hudExposureVal');
     if (expValEl) expValEl.textContent = `${fmtUsd(expVal, 2)} · Cash ${cashPct}%`;
 
@@ -1151,7 +1151,7 @@ let latestState = null;
     const canvas = document.getElementById('priceCanvas');
     const canvasW = canvas ? (canvas.clientWidth || 800) : 800;
     const padLeft = 10;
-    const padRight = 96; // generous price scale axis for 6-digit BTC badges
+    const padRight = 96; // generous price scale axis for ETH badges
     const plotW = Math.max(50, canvasW - padLeft - padRight);
     const candleRightOffset = 80; // dedicated breathing space between newest candle and price axis
     const candlePlotW = Math.max(50, plotW - candleRightOffset);
@@ -1339,7 +1339,7 @@ let latestState = null;
     const useCandles = chartMode === 'candles' && visibleCandles.length >= 2;
 
     const padLeft = 10;
-    const padRight = 96; // generous price scale axis for 6-digit BTC badges
+    const padRight = 96; // generous price scale axis for ETH badges
     const padTop = 16;
     const padBottom = 22;
     const plotW = Math.max(50, w - padLeft - padRight);

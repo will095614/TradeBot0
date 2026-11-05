@@ -94,7 +94,7 @@ def audit_cadence_and_microbar():
 # =========================================================================
 def audit_competitors_and_sizing():
     log_section("Component 3: All 6 Competitors Signal & Sizing Verification")
-    broker = BrokerSim(symbol="BTC/USD", slippage_pct=Decimal("0.0001"))
+    broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0001"))
     comps = [
         AggressiveCompetitor(portfolio_id="comp_agg", initial_cash=Decimal("100000.00")),
         ConservativeCompetitor(portfolio_id="comp_cons", initial_cash=Decimal("100000.00")),
@@ -109,11 +109,11 @@ def audit_competitors_and_sizing():
         assert_true(c.portfolio.cash == Decimal("100000.00"), f"{c.name} initialized with $100k cash")
 
     # Verify R-Multiple dynamic sizing
-    market_price = Decimal("80000.00")
-    stop_price = Decimal("78500.00") # $1500 stop distance
+    market_price = Decimal("2600.00")
+    stop_price = Decimal("2550.00") # $50 stop distance
     for c in comps:
         qty = c.compute_r_multiple_qty(market_price, stop_price, broker)
-        assert_true(qty > Decimal("0"), f"{c.name} computed valid risk quantity: {qty} BTC")
+        assert_true(qty > Decimal("0"), f"{c.name} computed valid risk quantity: {qty} ETH")
         # Ensure position does not exceed cash * leverage
         eff_lev = c.genome.leverage if c.genome.leverage_enabled else Decimal("1.0")
         max_notional = c.portfolio.cash * eff_lev * c.max_position_ratio
@@ -126,50 +126,50 @@ def audit_competitors_and_sizing():
 # =========================================================================
 def audit_broker_matching_engine():
     log_section("Component 4: BrokerSim Matching Engine (Fills, Brackets, PnL, Fees)")
-    broker = BrokerSim(symbol="BTC/USD", slippage_pct=Decimal("0.0002"))
+    broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0002"))
     p_long = Portfolio("p_long", "Long Tester", initial_cash=Decimal("100000.00"), leverage=Decimal("2.0"), leverage_enabled=True, maker_taker_fee_rate=Decimal("0.0006"))
     p_short = Portfolio("p_short", "Short Tester", initial_cash=Decimal("100000.00"), leverage=Decimal("2.0"), leverage_enabled=True, maker_taker_fee_rate=Decimal("0.0006"))
     broker.register_portfolio(p_long, max_position_ratio=Decimal("0.50"))
     broker.register_portfolio(p_short, max_position_ratio=Decimal("0.50"))
 
     # Initial tick
-    broker.on_tick(price=Decimal("80000.00"), timestamp=1000.0)
+    broker.on_tick(price=Decimal("2600.00"), timestamp=1000.0)
 
-    # 1. Enter LONG bracket: Price $80,000, SL $78,000, TP $84,000
+    # 1. Enter LONG bracket: Price $2,600, SL $2,500, TP $2,800
     t_long = OrderTicket(
-        portfolio_id="p_long", symbol="BTC/USD", side=OrderSide.BUY,
-        order_type=OrderType.MARKET, qty=Decimal("0.5000"),
-        stop_loss=Decimal("78000.00"), take_profit=Decimal("84000.00"), timestamp=1000.0
+        portfolio_id="p_long", symbol="ETH/USD", side=OrderSide.BUY,
+        order_type=OrderType.MARKET, qty=Decimal("5.0000"),
+        stop_loss=Decimal("2500.00"), take_profit=Decimal("2800.00"), timestamp=1000.0
     )
     fill_long = broker.submit_order(t_long)
-    assert_true(fill_long is not None, f"Long entered: {fill_long.qty} BTC @ ${fill_long.price}")
-    assert_true(p_long.position_qty == Decimal("0.5000"), "Long position is 0.5000 BTC")
+    assert_true(fill_long is not None, f"Long entered: {fill_long.qty} ETH @ ${fill_long.price}")
+    assert_true(p_long.position_qty == Decimal("5.0000"), "Long position is 5.0000 ETH")
     assert_true(p_long.position_side == PositionSide.LONG, "Long position side verified")
 
-    # 2. Enter SHORT bracket: Price $80,000, SL $82,000, TP $76,000
+    # 2. Enter SHORT bracket: Price $2,600, SL $2,700, TP $2,400
     t_short = OrderTicket(
-        portfolio_id="p_short", symbol="BTC/USD", side=OrderSide.SELL,
-        order_type=OrderType.MARKET, qty=Decimal("0.5000"),
-        stop_loss=Decimal("82000.00"), take_profit=Decimal("76000.00"), timestamp=1000.0
+        portfolio_id="p_short", symbol="ETH/USD", side=OrderSide.SELL,
+        order_type=OrderType.MARKET, qty=Decimal("5.0000"),
+        stop_loss=Decimal("2700.00"), take_profit=Decimal("2400.00"), timestamp=1000.0
     )
     fill_short = broker.submit_order(t_short)
-    assert_true(fill_short is not None, f"Short entered: {fill_short.qty} BTC @ ${fill_short.price}")
-    assert_true(p_short.position_qty == Decimal("0.5000"), "Short position is 0.5000 BTC")
+    assert_true(fill_short is not None, f"Short entered: {fill_short.qty} ETH @ ${fill_short.price}")
+    assert_true(p_short.position_qty == Decimal("5.0000"), "Short position is 5.0000 ETH")
     assert_true(p_short.position_side == PositionSide.SHORT, "Short position side verified")
 
-    # 3. Simulate Price Spiking to $84,500 (Pierces Long TP at $84,000, Triggers Short SL at $82,000)
+    # 3. Simulate Price Spiking to $2,850 (Pierces Long TP at $2,800, Triggers Short SL at $2,700)
     fills = broker.on_tick(
-        price=Decimal("83000.00"),
-        high=Decimal("84500.00"),
-        low=Decimal("79900.00"),
+        price=Decimal("2750.00"),
+        high=Decimal("2850.00"),
+        low=Decimal("2580.00"),
         timestamp=1005.0,
-        open_price=Decimal("80000.00")
+        open_price=Decimal("2600.00")
     )
     assert_true(len(fills) == 2, f"Spike triggered both Long TP and Short SL: {len(fills)} fills")
 
     # Verify Long TP fill
     tp_fill = [f for f in fills if f.portfolio_id == "p_long"][0]
-    assert_true(tp_fill.price == Decimal("84000.00"), f"Long TP executed at limit ${tp_fill.price}")
+    assert_true(tp_fill.price == Decimal("2800.00"), f"Long TP executed at limit ${tp_fill.price}")
     assert_true(tp_fill.reason == ExecutionReason.TAKE_PROFIT, "Long execution reason TAKE_PROFIT")
     assert_true(tp_fill.realized_pnl > Decimal("0"), f"Long realized profit: +${tp_fill.realized_pnl:,.2f}")
     assert_true(p_long.position_qty == Decimal("0"), "Long position completely flat")
@@ -177,7 +177,7 @@ def audit_broker_matching_engine():
 
     # Verify Short SL fill (Executed as STOP_MARKET with buy slippage)
     sl_fill = [f for f in fills if f.portfolio_id == "p_short"][0]
-    expected_short_sl = (Decimal("82000.00") * (Decimal("1") + broker.slippage_pct)).quantize(Decimal("0.01"))
+    expected_short_sl = (Decimal("2700.00") * (Decimal("1") + broker.slippage_pct)).quantize(Decimal("0.01"))
     assert_true(sl_fill.price == expected_short_sl, f"Short SL executed with buy slippage at ${sl_fill.price}")
     assert_true(sl_fill.reason == ExecutionReason.STOP_LOSS, "Short execution reason STOP_LOSS")
     assert_true(sl_fill.realized_pnl < Decimal("0"), f"Short realized loss: ${sl_fill.realized_pnl:,.2f}")
@@ -309,8 +309,8 @@ def audit_omniroute_and_ingestion():
             dispatched_events.extend(events)
 
         debouncer = InterruptDebouncer(on_batch, cooldown_sec=0.2)
-        evt1 = StructuredEvent(timestamp="2026-11-04T12:00:00Z", source="TreeNews", domain="crypto", entities_tickers=["BTC"], urgency_score=9, sentiment_score=0.9, summary="Urgent 1")
-        evt2 = StructuredEvent(timestamp="2026-11-04T12:00:00Z", source="TreeNews", domain="crypto", entities_tickers=["BTC"], urgency_score=8, sentiment_score=0.8, summary="Urgent 2")
+        evt1 = StructuredEvent(timestamp="2026-11-04T12:00:00Z", source="TreeNews", domain="crypto", entities_tickers=["ETH"], urgency_score=9, sentiment_score=0.9, summary="Urgent 1")
+        evt2 = StructuredEvent(timestamp="2026-11-04T12:00:00Z", source="TreeNews", domain="crypto", entities_tickers=["ETH"], urgency_score=8, sentiment_score=0.8, summary="Urgent 2")
 
         # First urgent event dispatches immediately (<500ms)
         t_start = time.time()
@@ -363,7 +363,7 @@ def audit_macro_commander():
     assert_true(not pass_any_short, f"SHORT vetoed under HOLD_CASH: {reason_cash_short}")
 
     # 4. Strategy action recording in Intel Hub
-    commander.record_strategy_action("comp_agg", "AGG", "Opened LONG 0.50 BTC", "buy")
+    commander.record_strategy_action("comp_agg", "AGG", "Opened LONG 5.00 ETH", "buy")
     commander.record_strategy_action("comp_cons", "CONS", "SHORT Vetoed by Macro Commander", "loss")
 
     telemetry = commander.get_intel_hub_telemetry()
