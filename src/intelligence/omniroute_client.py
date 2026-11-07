@@ -104,7 +104,9 @@ class OmniRouteClient:
         self.max_retries = int(os.getenv("LLM_MAX_RETRIES", str(max_retries)))
 
         self._sem = asyncio.Semaphore(self.max_concurrent)
+        self._sem_loop: Optional[asyncio.AbstractEventLoop] = None
         self._session = session
+        self._session_loop: Optional[asyncio.AbstractEventLoop] = None
         self._owns_session = session is None
 
         # Telemetry & Status
@@ -117,10 +119,33 @@ class OmniRouteClient:
         self.total_tokens_used: int = 0
         self.total_tokens_saved: int = 0
 
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        try:
+            current_loop = asyncio.get_running_loop()
+            if self._sem_loop is not current_loop:
+                self._sem = asyncio.Semaphore(self.max_concurrent)
+                self._sem_loop = current_loop
+        except RuntimeError:
+            pass
+        return self._sem
+
     async def get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
+        if not self._owns_session and self._session is not None and not self._session.closed:
+            return self._session
+        current_loop = asyncio.get_running_loop()
+        if (
+            self._session is None
+            or self._session.closed
+            or (self._session_loop is not None and self._session_loop is not current_loop)
+        ):
+            if self._session and not self._session.closed and self._owns_session:
+                try:
+                    await self._session.close()
+                except Exception:
+                    pass
             timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
             self._session = aiohttp.ClientSession(timeout=timeout)
+            self._session_loop = current_loop
             self._owns_session = True
         return self._session
 
@@ -140,7 +165,7 @@ class OmniRouteClient:
         except Exception:
             self.is_gateway_online = False
 
-        self.last_health_check_ts = asyncio.get_event_loop().time()
+        self.last_health_check_ts = asyncio.get_running_loop().time()
         return self.is_gateway_online
 
     async def chat_json(
@@ -174,7 +199,7 @@ class OmniRouteClient:
 
         for attempt in range(self.max_retries + 1):
             try:
-                async with self._sem:
+                async with self._get_semaphore():
                     async with sess.post(
                         endpoint,
                         json=payload,
@@ -251,12 +276,12 @@ class OmniRouteClient:
             try:
                 loop = None
                 try:
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                 except RuntimeError:
                     pass
                 if loop and loop.is_running():
                     loop.create_task(self._session.close())
-                else:
+                elif self._session_loop is None or not self._session_loop.is_closed():
                     asyncio.run(self._session.close())
             except Exception:
                 pass

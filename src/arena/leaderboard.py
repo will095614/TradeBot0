@@ -54,6 +54,11 @@ class Leaderboard:
         if len(history) < 3:
             return 0.0, 0.0
 
+        cache_key = (len(history), history[-1][0], history[-1][1], risk_free_rate)
+        cached = getattr(portfolio, "_metrics_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+
         returns: List[float] = []
         for i in range(1, len(history)):
             prev_eq = float(history[i - 1][1])
@@ -91,15 +96,17 @@ class Leaderboard:
         else:
             sortino = round(abs(sharpe) * 1.5, 2) if mean_ret > 0 else 0.0
 
-        return sharpe, sortino
+        result = (sharpe, sortino)
+        portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
+        return result
 
     @staticmethod
     def calculate_win_rate(portfolio: Portfolio) -> Decimal:
-        sells = [t for t in portfolio.trade_history if t.side == OrderSide.SELL]
-        if not sells:
+        closed_fills = [t for t in portfolio.trade_history if t.is_closing_fill]
+        if not closed_fills:
             return Decimal("0.00")
-        wins = sum(1 for t in sells if t.realized_pnl > Decimal("0"))
-        win_rate = (Decimal(wins) / Decimal(len(sells))) * Decimal("100")
+        wins = sum(1 for t in closed_fills if t.realized_pnl > Decimal("0"))
+        win_rate = (Decimal(wins) / Decimal(len(closed_fills))) * Decimal("100")
         return win_rate.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     @staticmethod
@@ -128,7 +135,7 @@ class Leaderboard:
             sharpe, sortino = cls.calculate_sharpe_and_sortino(p)
             win_rate = cls.calculate_win_rate(p)
             status = "CIRCUIT_TRIPPED" if p.is_circuit_breaker_tripped else "ACTIVE"
-            sells_count = sum(1 for t in p.trade_history if t.side == OrderSide.SELL)
+            closed_count = sum(1 for t in p.trade_history if t.is_closing_fill)
             fitness = cls.calculate_fitness(
                 float(p.roi_pct),
                 float(p.max_drawdown_pct),
@@ -149,7 +156,7 @@ class Leaderboard:
                 profit_factor=p.profit_factor,
                 win_rate_pct=win_rate,
                 total_trades=len(p.trade_history),
-                closed_trades=sells_count,
+                closed_trades=closed_count,
                 current_qty=p.position_qty,
                 cash=p.cash,
                 fitness_score=fitness,

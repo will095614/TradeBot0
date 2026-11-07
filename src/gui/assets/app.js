@@ -193,12 +193,14 @@ let latestState = null;
       'comp_agg': 'AGG',
       'comp_cons': 'CONS',
       'comp_atr': 'ATR',
-      'comp_trail': 'TRAIL'
+      'comp_trail': 'TRAIL',
+      'comp_orb': 'ORB',
+      'comp_vwap': 'VWAP'
     };
     chartBeacons.push({
       id: s.id,
       stratTag: tagMap[s.id] || (s.name ? s.name.slice(0, 4) : 'STRAT'),
-      color: s.color || '#FFB800',
+      color: s.color || '#F59E0B',
       price: Number(s.entry_price),
       startTime: Date.now(),
       duration: 3800
@@ -222,17 +224,21 @@ let latestState = null;
       'comp_agg': 'Aggressive Momentum',
       'comp_cons': 'Conservative Scalper',
       'comp_atr': 'ATR Dynamic',
-      'comp_trail': 'Trailing Guard'
+      'comp_trail': 'Trailing Guard',
+      'comp_orb': 'ORB Breakout (15m)',
+      'comp_vwap': 'Institutional VWAP'
     };
     const stratName = tagMap[strat.id] || strat.name || 'Quant Strategy';
-    const sColor = strat.color || '#FFB800';
+    const sColor = strat.color || '#F59E0B';
     const entryP = Number(strat.entry_price || 0);
     const tpP = Number(strat.take_profit || 0);
     const slP = Number(strat.stop_loss || 0);
     const qty = Number(strat.qty || 0);
+    const isShort = strat.position_side === 'SHORT';
+    const sideVerb = isShort ? 'SHORT' : 'LONG';
 
-    const tpPct = (entryP > 0 && tpP > 0) ? (((tpP - entryP) / entryP) * 100).toFixed(2) : null;
-    const slPct = (entryP > 0 && slP > 0) ? (((entryP - slP) / entryP) * 100).toFixed(2) : null;
+    const tpPct = (entryP > 0 && tpP > 0) ? ((Math.abs(tpP - entryP) / entryP) * 100).toFixed(2) : null;
+    const slPct = (entryP > 0 && slP > 0) ? ((Math.abs(entryP - slP) / entryP) * 100).toFixed(2) : null;
 
     const toast = document.createElement('div');
     toast.className = 'chart-toast';
@@ -252,7 +258,7 @@ let latestState = null;
           <span class="toast-close" onclick="this.closest('.chart-toast').remove()" title="Close notification">×</span>
         </div>
         <div class="toast-main-row num">
-          <span class="toast-qty">BUY <strong>${qty.toFixed(4)}</strong> ETH</span>
+          <span class="toast-qty">${sideVerb} <strong>${qty.toFixed(4)}</strong> ETH</span>
           <span style="color:var(--text-muted);margin:0 2px;">|</span>
           <span class="toast-entry">Entry <strong>$${entryP.toFixed(2)}</strong></span>
         </div>
@@ -291,13 +297,13 @@ let latestState = null;
     if (strategies.length === 0) return;
     const inPosStrat = strategies.find(s => s.in_position);
     const chosen = inPosStrat || strategies[Math.floor(Math.random() * strategies.length)];
-    const spot = Number((latestState.quote && latestState.quote.price) || 77500.0);
+    const spot = Number((latestState.quote && latestState.quote.price) || 2500.0);
     const mock = {
       ...chosen,
       entry_price: spot,
-      take_profit: Number((spot + (chosen.id === 'comp_cons' ? 250.0 : 600.0)).toFixed(2)),
-      stop_loss: Number((spot - (chosen.id === 'comp_cons' ? 180.0 : 400.0)).toFixed(2)),
-      qty: chosen.qty > 0 ? chosen.qty : 0.1500,
+      take_profit: Number((spot + (chosen.id === 'comp_cons' ? 22.0 : 48.0)).toFixed(2)),
+      stop_loss: Number((spot - (chosen.id === 'comp_cons' ? 14.0 : 28.0)).toFixed(2)),
+      qty: chosen.qty > 0 ? chosen.qty : 8.5000,
       in_position: true
     };
     showPositionToast(mock);
@@ -716,6 +722,7 @@ let latestState = null;
       const roiClass = s.roi_pct >= 0 ? 'up' : 'down';
       const upnlClass = s.unrealized_pnl >= 0 ? 'up' : 'down';
       const isBlocked = s.intent && s.intent.indexOf('EV Gate Blocked') !== -1;
+      const isMacroVeto = s.intent && s.intent.indexOf('Macro Veto:') !== -1;
 
       let bracketHtml = '';
       if (s.in_position) {
@@ -748,6 +755,13 @@ let latestState = null;
               <span style="color:var(--text-secondary)">Entry ${fmtUsd(s.entry_price, 1)} <span style="color:var(--accent);font-size:9.5px;margin-left:4px;">(${evText})</span></span>
               <span class="up">${tpText}</span>
             </div>
+          </div>
+        `;
+      } else if (isMacroVeto) {
+        bracketHtml = `
+          <div class="strat-idle-bar" style="border-color:rgba(245,158,11,0.3);background:rgba(245,158,11,0.06);">
+            <span class="idle-dot" style="background:#F59E0B;box-shadow:0 0 6px #F59E0B;"></span>
+            <span style="color:#FCD34D;font-weight:600;">${escapeHtml(s.intent)}</span>
           </div>
         `;
       } else if (isBlocked) {
@@ -1211,8 +1225,8 @@ let latestState = null;
     }
 
     if (!isFinite(minP) || !isFinite(maxP) || minP <= 0) {
-      minP = targetSpot > 0 ? targetSpot - 250 : 77000;
-      maxP = targetSpot > 0 ? targetSpot + 250 : 78000;
+      minP = targetSpot > 0 ? targetSpot - 40 : 2450;
+      maxP = targetSpot > 0 ? targetSpot + 40 : 2550;
     }
 
     if (scaleMode === 'full') {
@@ -2133,7 +2147,7 @@ let latestState = null;
       const secNum = now.getSeconds();
       const nextCadence = (5 - (secNum % 5)) % 5 || 5;
       const feedPart = lastCadenceFeedTs ? `Feed Slot: ${lastCadenceFeedTs} | ` : '';
-      subEl.textContent = `UI Isochronous Time: ${timeStr} | ${feedPart}Next 5s Cadence in ${nextCadence}s | Baseline: $500,000.00 / Strategy ($3,000,000 Total)`;
+      subEl.textContent = `UI Isochronous Time: ${timeStr} | ${feedPart}Next 5s Cadence in ${nextCadence}s | Baseline: $100,000.00 / Strategy ($600,000 Total)`;
     }
   }
 

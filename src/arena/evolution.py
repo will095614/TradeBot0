@@ -131,7 +131,9 @@ class GeneticEvolver:
                     trailing_trigger_pct=old_g.trailing_trigger_pct,
                     trailing_distance_pct=old_g.trailing_distance_pct,
                     cooldown_bars=old_g.cooldown_bars,
-                    generation=next_gen
+                    generation=next_gen,
+                    leverage_enabled=old_g.leverage_enabled,
+                    leverage=old_g.leverage
                 )
                 action = "ELITE_CHAMPION_PRESERVED"
                 logs.append(
@@ -151,7 +153,9 @@ class GeneticEvolver:
                     trailing_trigger_pct=old_g.trailing_trigger_pct,
                     trailing_distance_pct=old_g.trailing_distance_pct,
                     cooldown_bars=old_g.cooldown_bars,
-                    generation=next_gen
+                    generation=next_gen,
+                    leverage_enabled=old_g.leverage_enabled,
+                    leverage=old_g.leverage
                 )
                 action = "ELITE_RUNNER_UP_PRESERVED"
                 logs.append(
@@ -170,6 +174,7 @@ class GeneticEvolver:
                 if comp.portfolio_id == "comp_agg":
                     new_g = CompetitorGenome(
                         position_ratio=cls._clamp_decimal(new_g.position_ratio * Decimal("1.15"), "0.45", "0.75", "0.01"),
+                        risk_per_trade_pct=new_g.risk_per_trade_pct,
                         stop_loss_pct=new_g.stop_loss_pct,
                         take_profit_pct=None,
                         atr_risk_pct=new_g.atr_risk_pct,
@@ -178,7 +183,9 @@ class GeneticEvolver:
                         trailing_trigger_pct=new_g.trailing_trigger_pct,
                         trailing_distance_pct=new_g.trailing_distance_pct,
                         cooldown_bars=new_g.cooldown_bars,
-                        generation=next_gen
+                        generation=next_gen,
+                        leverage_enabled=new_g.leverage_enabled,
+                        leverage=new_g.leverage
                     )
                 action = "CROSSOVER_MUTATED"
                 logs.append(

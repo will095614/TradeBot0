@@ -86,3 +86,14 @@ class FillEvent:
     @property
     def is_sell(self) -> bool:
         return self.side == OrderSide.SELL
+
+    @property
+    def is_closing_fill(self) -> bool:
+        return (
+            (self.position_side == PositionSide.LONG and self.side == OrderSide.SELL)
+            or (self.position_side == PositionSide.SHORT and self.side == OrderSide.BUY)
+        )
+
+    @property
+    def is_opening_fill(self) -> bool:
+        return not self.is_closing_fill

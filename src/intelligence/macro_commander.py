@@ -164,20 +164,24 @@ class MacroCommander:
         Triggers an AI-driven refresh of macro intelligence, fetching genuine live RSS feeds
         over HTTP and synthesizing through OmniRoute or local deterministic NLP.
         """
-        await self.client.check_health()
         try:
-            raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 3.5)
-            if raw_events:
-                structured = await self.harvester.process_batch(raw_events)
-                if structured:
-                    return await self.synthesize_regime(structured)
-        except Exception as ex:
-            logger.warning("Error harvesting live feeds in refresh_digest_async: %s", ex)
+            await self.client.check_health()
+            try:
+                raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 3.5)
+                if raw_events:
+                    structured = await self.harvester.process_batch(raw_events)
+                    if structured:
+                        return await self.synthesize_regime(structured)
+            except Exception as ex:
+                logger.warning("Error harvesting live feeds in refresh_digest_async: %s", ex)
 
-        recent = self.harvester.get_latest_events(10)
-        if recent:
-            return await self.synthesize_regime(recent)
-        return self.current_state
+            recent = self.harvester.get_latest_events(10)
+            if recent:
+                return await self.synthesize_regime(recent)
+            return self.current_state
+        finally:
+            if getattr(self.client, "_owns_session", False):
+                await self.client.close()
 
     def get_intel_hub_telemetry(self) -> Dict[str, Any]:
         """

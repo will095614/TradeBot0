@@ -98,3 +98,94 @@ def test_splash_logo_concentric_alignment_and_svg_zap():
     assert "animation: splashIconPulse" in css
     assert "animation: markerPulse" not in css.split(".splash-icon {")[1].split("}")[0]
 
+
+def test_bidirectional_short_win_rate_and_closing_fill():
+    from src.arena.order import FillEvent, OrderSide, PositionSide, ExecutionReason
+    from src.arena.leaderboard import Leaderboard
+
+    p = Portfolio(portfolio_id="p_short", name="ShortTest", initial_cash=Decimal("100000.00"))
+    # 1. Open SHORT at $2500 (SELL 10 ETH)
+    f_open = FillEvent(
+        order_id="o1",
+        portfolio_id="p_short",
+        symbol="ETH/USD",
+        side=OrderSide.SELL,
+        qty=Decimal("10.0"),
+        price=Decimal("2500.00"),
+        fee=Decimal("12.50"),
+        timestamp=1000.0,
+        reason=ExecutionReason.SIGNAL_ENTRY,
+    )
+    enriched_open = p.apply_fill(f_open)
+    assert enriched_open.position_side == PositionSide.SHORT
+    assert not enriched_open.is_closing_fill
+    assert enriched_open.is_opening_fill
+
+    # While open, closed_trades and win_rate must be 0
+    rankings_open = Leaderboard.get_rankings({"p_short": p})
+    assert rankings_open[0].closed_trades == 0
+    assert rankings_open[0].win_rate_pct == Decimal("0.00")
+
+    # 2. Cover SHORT at $2400 (BUY 10 ETH -> profit!)
+    f_close = FillEvent(
+        order_id="o2",
+        portfolio_id="p_short",
+        symbol="ETH/USD",
+        side=OrderSide.BUY,
+        qty=Decimal("10.0"),
+        price=Decimal("2400.00"),
+        fee=Decimal("12.00"),
+        timestamp=1060.0,
+        reason=ExecutionReason.TAKE_PROFIT,
+    )
+    enriched_close = p.apply_fill(f_close)
+    assert enriched_close.position_side == PositionSide.SHORT
+    assert enriched_close.is_closing_fill
+    assert not enriched_close.is_opening_fill
+    assert enriched_close.realized_pnl > Decimal("0")
+
+    rankings_closed = Leaderboard.get_rankings({"p_short": p})
+    assert rankings_closed[0].closed_trades == 1
+    assert rankings_closed[0].win_rate_pct == Decimal("100.00")
+
+
+def test_genetic_evolver_preserves_elite_leverage():
+    from src.arena.evolution import GeneticEvolver
+    from src.arena.leaderboard import Leaderboard
+    from src.competitors.aggressive import AggressiveCompetitor
+    from src.competitors.orb import ORBCompetitor
+    from src.competitors.conservative import ConservativeCompetitor
+
+    c1 = AggressiveCompetitor()  # 3.0x leverage enabled
+    c2 = ORBCompetitor()         # 2.5x leverage enabled
+    c3 = ConservativeCompetitor()
+    c1.portfolio.cash += Decimal("5000.00")
+    c2.portfolio.cash += Decimal("2500.00")
+
+    competitors = [c1, c2, c3]
+    rankings = Leaderboard.get_rankings({c.portfolio_id: c.portfolio for c in competitors})
+    GeneticEvolver.evolve_generation(competitors, rankings, preserve_portfolio=True, save_history=False)
+
+    assert c1.genome.leverage_enabled is True
+    assert c1.genome.leverage == Decimal("3.0")
+    assert c2.genome.leverage_enabled is True
+    assert c2.genome.leverage == Decimal("2.5")
+
+
+def test_macro_veto_intent_preserved_in_live_evaluation(monkeypatch):
+    monkeypatch.setenv("ARENA_FAST_TEST", "1")
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    # Set Macro Commander to SHORT_ONLY so LONG entries are vetoed
+    engine.macro_commander.current_state.directional_bias = "SHORT_ONLY"
+    engine.macro_commander.current_state.active_headline = "Bearish Macro Regime Test"
+    engine.live_ema_fast = Decimal("2510.00")
+    engine.live_ema_slow = Decimal("2500.00")
+    engine.live_rsi = Decimal("58.00")
+    engine.live_atr = Decimal("15.00")
+
+    # Trigger uptrend breakout condition for comp_agg (price > prev_price, uptrend, rsi < 68)
+    engine._evaluate_live_strategies(Decimal("2520.00"), Decimal("2510.00"), 2000.0)
+    intent = engine.strategy_telemetry["comp_agg"]["intent"]
+    assert intent.startswith("Macro Veto:"), f"Expected Macro Veto intent to be preserved, got: {intent}"
+
+

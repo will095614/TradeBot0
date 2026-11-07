@@ -415,10 +415,10 @@ class LiveArenaEngine:
                     open_price=bar.open
                 )
                 for f in fills:
-                    if f.side == OrderSide.SELL:
+                    if f.is_closing_fill:
                         self.strategy_cooldown[f.portfolio_id] = bar.timestamp + 60.0
                         self.position_entry_ts.pop(f.portfolio_id, None)
-                    pnl_str = f" | PnL: ${f.realized_pnl:+.2f}" if f.side == OrderSide.SELL else ""
+                    pnl_str = f" | PnL: ${f.realized_pnl:+.2f}" if f.is_closing_fill else ""
                     self.log_event(
                         f.reason.value,
                         f"{f.portfolio_id.upper()} {f.side.value} {f.qty} ETH @ ${f.price:,.2f}{pnl_str}",
@@ -461,7 +461,10 @@ class LiveArenaEngine:
             self.last_cadence_slot = int(self.last_cadence_ts // self.cadence_sec) * int(self.cadence_sec)
             self.is_bootstrapped = True
             try:
-                self.refresh_intel_digest()
+                if os.environ.get("ARENA_FAST_TEST") == "1":
+                    self.refresh_intel_digest()
+                else:
+                    threading.Thread(target=self.refresh_intel_digest, daemon=True).start()
             except Exception:
                 pass
 
@@ -483,13 +486,12 @@ class LiveArenaEngine:
         try:
             loop = None
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
             except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                loop = None
 
             if loop and loop.is_running():
-                asyncio.create_task(self.macro_commander.refresh_digest_async())
+                loop.create_task(self.macro_commander.refresh_digest_async())
             else:
                 asyncio.run(self.macro_commander.refresh_digest_async())
         except Exception as e:
@@ -607,7 +609,7 @@ class LiveArenaEngine:
                 tp = (price * (Decimal("1") - g_agg.take_profit_pct)).quantize(Decimal("0.01")) if g_agg.take_profit_pct else None
                 self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKDOWN_SHORT", side=OrderSide.SELL)
 
-            if p_agg.position_qty == Decimal("0") and not self.strategy_telemetry["comp_agg"]["intent"].startswith("EV Gate"):
+            if p_agg.position_qty == Decimal("0") and not self.strategy_telemetry["comp_agg"]["intent"].startswith(("EV Gate", "Macro Veto")):
                 self.strategy_telemetry["comp_agg"]["intent"] = f"Scanning breakout / breakdown near ${self.live_ema_fast:,.2f}"
         else:
             entry_p = p_agg.avg_entry_price
@@ -824,7 +826,7 @@ class LiveArenaEngine:
                 tp = (price - r_dist * Decimal("2.0")).quantize(Decimal("0.01"))
                 self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_SHORT", side=OrderSide.SELL)
 
-            if p_orb.position_qty == Decimal("0") and not self.strategy_telemetry["comp_orb"]["intent"].startswith("EV Gate"):
+            if p_orb.position_qty == Decimal("0") and not self.strategy_telemetry["comp_orb"]["intent"].startswith(("EV Gate", "Macro Veto")):
                 self.strategy_telemetry["comp_orb"]["intent"] = f"Watching ORB High ${orb_high:,.2f} / Low ${orb_low:,.2f} (Mid ${orb_mid:,.2f})"
         else:
             entry_p = p_orb.avg_entry_price
@@ -881,7 +883,7 @@ class LiveArenaEngine:
                 tp = (price - r_dist * Decimal("2.2")).quantize(Decimal("0.01"))
                 self._try_enter_bracket(self.comp_f, price, sl, tp, ts, "VWAP_SHORT", side=OrderSide.SELL)
 
-            if p_vwap.position_qty == Decimal("0") and not self.strategy_telemetry["comp_vwap"]["intent"].startswith("EV Gate"):
+            if p_vwap.position_qty == Decimal("0") and not self.strategy_telemetry["comp_vwap"]["intent"].startswith(("EV Gate", "Macro Veto")):
                 self.strategy_telemetry["comp_vwap"]["intent"] = f"Awaiting VWAP bounce / rejection near ${vwap_ref:,.2f}"
         else:
             entry_p = p_vwap.avg_entry_price
@@ -1275,21 +1277,22 @@ class LiveArenaEngine:
                                     open_price=prev_p
                                 )
                                 for f in fills:
-                                    if f.side == OrderSide.SELL:
+                                    if f.is_closing_fill:
                                         self.strategy_cooldown[f.portfolio_id] = float(current_slot) + 60.0
                                         self.position_entry_ts.pop(f.portfolio_id, None)
-                                    pnl_str = f" (PnL: ${f.realized_pnl:+.2f})" if f.side == OrderSide.SELL else ""
+                                    pnl_str = f" (PnL: ${f.realized_pnl:+.2f})" if f.is_closing_fill else ""
                                     self.log_event(
                                         f.reason.value,
                                         f"{f.portfolio_id.upper()} {f.side.value} {f.qty} ETH @ ${f.price:,.2f}{pnl_str}",
                                         "profit" if f.realized_pnl >= Decimal("0") else "loss"
                                     )
                                     strat_name = self.STRATEGY_SHORT.get(f.portfolio_id, f.portfolio_id)
-                                    if f.side == OrderSide.SELL:
+                                    if f.is_closing_fill:
+                                        close_verb = "Covered SHORT" if f.position_side == PositionSide.SHORT else "Closed LONG"
                                         self.macro_commander.record_strategy_action(
                                             f.portfolio_id,
                                             strat_name,
-                                            f"Closed {f.qty} ETH @ ${f.price:,.2f} ({f.reason.value}{pnl_str})",
+                                            f"{close_verb} {f.qty} ETH @ ${f.price:,.2f} ({f.reason.value}{pnl_str})",
                                             "profit" if f.realized_pnl >= Decimal("0") else "loss"
                                         )
 
@@ -1401,7 +1404,7 @@ class LiveArenaEngine:
 
         return logs
 
-    # High-contrast vibrant electric palette: vivid pop on ultra-deep dark #08090C
+    # High-contrast vibrant Stageshow palette: vivid pop on ultra-deep obsidian #060709
     STRATEGY_COLORS: Dict[str, str] = {
         "comp_agg": "#FF334B",    # Neon Coral (Aggressive Momentum)
         "comp_cons": "#38BDF8",   # Electric Sky Cyan (Conservative Scalper)
@@ -1596,7 +1599,7 @@ class LiveArenaEngine:
                     "action": f.side.value,
                     "qty": fz(f.qty),
                     "price": fz(f.price),
-                    "pnl": fz(f.realized_pnl) if f.side == OrderSide.SELL else None,
+                    "pnl": fz(f.realized_pnl) if f.is_closing_fill else None,
                     "status": "SIM_EXECUTED",
                 })
 
