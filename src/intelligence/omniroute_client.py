@@ -46,7 +46,12 @@ def extract_json(text: Optional[str]) -> Optional[Dict[str, Any]]:
         if isinstance(obj, dict):
             return obj
     except (json.JSONDecodeError, ValueError, TypeError):
-        pass
+        try:
+            arr = json.loads("[" + s[start : end + 1] + "]")
+            if isinstance(arr, list) and arr and all(isinstance(x, dict) for x in arr):
+                return {"events": arr}
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
 
     return None
 

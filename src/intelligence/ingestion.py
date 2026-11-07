@@ -4,11 +4,13 @@ import asyncio
 from collections import deque
 from dataclasses import dataclass, field
 import hashlib
+import html
 import json
 import logging
 import os
+import re
 import time
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Set
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
 import xml.etree.ElementTree as ET
 import aiohttp
 
@@ -66,6 +68,7 @@ class StructuredEvent:
     sentiment_score: float  # -1.0 to +1.0
     summary: str
     raw_title: str = ""
+    headline_zh: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -77,6 +80,7 @@ class StructuredEvent:
             "sentiment_score": round(self.sentiment_score, 2),
             "summary": self.summary,
             "raw_title": self.raw_title,
+            "headline_zh": self.headline_zh,
         }
 
 
@@ -109,6 +113,14 @@ class DeduplicationBuffer:
         return len(self.seen_hashes)
 
 
+def _clean_html_text(raw_html: str) -> str:
+    if not raw_html:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", raw_html)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def parse_rss_atom(xml_text: str, source_name: str, domain: str) -> List[RawEvent]:
     """
     Parses RSS 2.0 and Atom feeds into a standardized list of RawEvent items.
@@ -131,9 +143,9 @@ def parse_rss_atom(xml_text: str, source_name: str, domain: str) -> List[RawEven
         link_el = item.find("link")
         desc_el = item.find("description")
 
-        title = title_el.text.strip() if (title_el is not None and title_el.text) else ""
+        title = _clean_html_text(title_el.text) if (title_el is not None and title_el.text) else ""
         link = link_el.text.strip() if (link_el is not None and link_el.text) else ""
-        desc = desc_el.text.strip() if (desc_el is not None and desc_el.text) else ""
+        desc = _clean_html_text(desc_el.text) if (desc_el is not None and desc_el.text) else ""
 
         if title:
             events.append(RawEvent(
@@ -142,7 +154,7 @@ def parse_rss_atom(xml_text: str, source_name: str, domain: str) -> List[RawEven
                 title=title,
                 url=link or source_name,
                 timestamp=now,
-                raw_content=desc[:300]
+                raw_content=desc[:450]
             ))
 
     # Atom (<feed><entry>...</entry></feed>)
@@ -156,8 +168,12 @@ def parse_rss_atom(xml_text: str, source_name: str, domain: str) -> List[RawEven
         link_el = entry.find("atom:link", ns) if "atom" in ns else None
         if link_el is None:
             link_el = entry.find("link")
+        sum_el = entry.find("atom:summary", ns) if "atom" in ns else None
+        if sum_el is None:
+            sum_el = entry.find("summary") or entry.find("content")
 
-        title = title_el.text.strip() if (title_el is not None and title_el.text) else ""
+        title = _clean_html_text(title_el.text) if (title_el is not None and title_el.text) else ""
+        desc = _clean_html_text(sum_el.text) if (sum_el is not None and sum_el.text) else ""
         link = ""
         if link_el is not None:
             link = link_el.get("href") or link_el.text or ""
@@ -169,6 +185,7 @@ def parse_rss_atom(xml_text: str, source_name: str, domain: str) -> List[RawEven
                 title=title,
                 url=link or source_name,
                 timestamp=now,
+                raw_content=desc[:450],
             ))
 
     return events
@@ -397,33 +414,42 @@ class IntelligenceHarvester:
 
     async def process_batch(self, events: List[RawEvent]) -> List[StructuredEvent]:
         """
-        Processes a micro-batch of raw events with LLM_MODEL_INGEST to produce structured JSON events.
+        Processes a micro-batch of raw events with LLM_MODEL_INGEST to produce structured JSON events
+        with Traditional Chinese (繁體中文) headlines and summaries.
         """
         if not events:
             return []
 
-        # Build concise extraction prompt
+        # Build concise extraction prompt including article content snippet
         lines = []
         for idx, e in enumerate(events[:6], start=1):
-            lines.append(f"{idx}. [{e.source} | {e.domain}] {e.title}")
+            snippet = f" | 內容摘要: {e.raw_content[:220]}" if e.raw_content else ""
+            lines.append(f"{idx}. [{e.source} | {e.domain}] 標題: {e.title}{snippet}")
         news_block = "\n".join(lines)
 
         system_prompt = (
-            "You are an elite quantitative intelligence extractor. Analyze the financial/crypto/geopolitical news items.\n"
-            "Output a JSON object with key 'events' containing an array of objects with the following schema:\n"
-            "[\n"
-            "  {\n"
-            '    "index": 1,\n'
-            '    "entities_tickers": ["ETH", "FED"],\n'
-            '    "urgency_score": 1_to_10,\n'
-            '    "sentiment_score": -1.0_to_1.0,\n'
-            '    "summary": "Brief 15-word impact summary"\n'
-            "  }\n"
-            "]\n"
+            "You are an elite bilingual quantitative intelligence analyst. Analyze the financial/crypto/geopolitical news items.\n"
+            "Output a single JSON object with key 'events' containing an array of objects using this EXACT schema:\n"
+            "{\n"
+            '  "events": [\n'
+            "    {\n"
+            '      "index": 1,\n'
+            '      "entities_tickers": ["ETH", "FED"],\n'
+            '      "urgency_score": 6,\n'
+            '      "sentiment_score": 0.35,\n'
+            '      "headline_zh": "繁體中文新聞標題（精準翻譯並提煉核心事件，約15至28字）",\n'
+            '      "summary": "繁體中文內容總結（以繁體中文完整總結新聞內容要點、關鍵數據及對加密貨幣或宏觀市場的多空影響，約35至70字）"\n'
+            "    }\n"
+            "  ]\n"
+            "}\n"
+            "CRITICAL REQUIREMENT: Both 'headline_zh' and 'summary' MUST be written strictly in Traditional Chinese (繁體中文). Never output English in headline_zh or summary.\n"
             "Urgency rubric: 1-4=Routine noise, 5-7=Notable market mover, 8-10=Black Swan, Fed rate shock, election result, major war, or SEC enforcement."
         )
 
-        user_prompt = f"Extract structured intelligence for these events:\n\n{news_block}"
+        user_prompt = (
+            "請將以下即時外電新聞逐筆提取結構化情報，並務必以「繁體中文」撰寫每筆新聞的 headline_zh（繁體中文標題）與 summary（繁體中文內容與市場影響總結）：\n\n"
+            f"{news_block}"
+        )
 
         parsed_json = await self.client.chat_json(
             model=self.client.model_ingest,
@@ -444,7 +470,16 @@ class IntelligenceHarvester:
                     urgency = max(1, min(10, int(item.get("urgency_score", 5))))
                     sentiment = max(-1.0, min(1.0, float(item.get("sentiment_score", 0.0))))
                     tickers = [str(t).upper() for t in item.get("entities_tickers", [])]
-                    summary = str(item.get("summary", raw.title))
+
+                    raw_headline_zh = str(item.get("headline_zh", "")).strip()
+                    raw_summary = str(item.get("summary", "")).strip()
+
+                    fallback_head_zh, fallback_sum_zh = self._build_zh_headline_and_summary(
+                        raw.title, raw.raw_content, raw.source, raw.domain, urgency, sentiment, tickers
+                    )
+
+                    headline_zh = raw_headline_zh if self._contains_cjk(raw_headline_zh) else fallback_head_zh
+                    summary = raw_summary if self._contains_cjk(raw_summary) else fallback_sum_zh
 
                     se = StructuredEvent(
                         timestamp=iso_now,
@@ -455,6 +490,7 @@ class IntelligenceHarvester:
                         sentiment_score=sentiment,
                         summary=summary,
                         raw_title=raw.title,
+                        headline_zh=headline_zh,
                     )
                     structured_results.append(se)
                     self.recent_structured_events.append(se)
@@ -473,18 +509,18 @@ class IntelligenceHarvester:
                 except Exception as ex:
                     logger.debug("Failed parsing individual event extraction: %s", ex)
         else:
-            # Genuine Local Deterministic NLP Extraction on real news headlines
+            # Genuine Local Deterministic NLP Extraction on real news headlines & content
             for raw in events[:15]:
-                t_lower = raw.title.lower()
+                combined_text = f"{raw.title} {raw.raw_content}".lower()
                 urgency = 5
                 sentiment = 0.0
 
                 # Real financial vocabulary polarity scoring
-                bull_words = ["surge", "soar", "gain", "rally", "rise", "jump", "record", "ath", "inflow", "boost", "bull", "approve", "expand", "profit", "deal"]
-                bear_words = ["crash", "plunge", "drop", "fall", "dump", "hack", "exploit", "lawsuit", "sue", "ban", "freeze", "investigate", "fraud", "bear", "fine"]
+                bull_words = ["surge", "soar", "gain", "rally", "rise", "jump", "record", "ath", "inflow", "boost", "bull", "approve", "expand", "profit", "deal", "launch", "breakout", "adoption"]
+                bear_words = ["crash", "plunge", "drop", "fall", "dump", "hack", "exploit", "lawsuit", "sue", "ban", "freeze", "investigate", "fraud", "bear", "fine", "outflow", "liquidation", "slump"]
 
-                bull_cnt = sum(1 for w in bull_words if w in t_lower)
-                bear_cnt = sum(1 for w in bear_words if w in t_lower)
+                bull_cnt = sum(1 for w in bull_words if w in combined_text)
+                bear_cnt = sum(1 for w in bear_words if w in combined_text)
 
                 if bull_cnt > bear_cnt:
                     sentiment = min(0.85, 0.25 * (bull_cnt - bear_cnt) + 0.2)
@@ -492,32 +528,35 @@ class IntelligenceHarvester:
                     sentiment = max(-0.85, -0.25 * (bear_cnt - bull_cnt) - 0.2)
 
                 # Real urgency rubric
-                if any(w in t_lower for w in ["emergency", "black swan", "halt", "freeze", "war", "ban", "indict", "billion"]):
+                if any(w in combined_text for w in ["emergency", "black swan", "halt", "freeze", "war", "ban", "indict", "billion"]):
                     urgency = 9
-                elif any(w in t_lower for w in ["lawsuit", "sues", "sec", "fed", "rate", "subpoena", "hack"]):
-                    urgency = 8
-                elif any(w in t_lower for w in ["deal", "tax", "report", "policy", "million"]):
+                elif any(w in combined_text for w in ["lawsuit", "sues", "sec", "fed", "rate", "subpoena", "hack", "etf", "tariff"]):
+                    urgency = 7
+                elif any(w in combined_text for w in ["deal", "tax", "report", "policy", "million", "launch", "upgrade"]):
                     urgency = 6
 
                 # Ticker & Entity detection
                 tickers = []
-                if "eth" in t_lower or "ethereum" in t_lower or "ether" in t_lower:
+                if "eth" in combined_text or "ethereum" in combined_text or "ether" in combined_text:
                     tickers.append("ETH")
-                if "btc" in t_lower or "bitcoin" in t_lower:
+                if "btc" in combined_text or "bitcoin" in combined_text:
                     tickers.append("BTC")
-                if "sol" in t_lower or "solana" in t_lower:
+                if "sol" in combined_text or "solana" in combined_text:
                     tickers.append("SOL")
-                if "fed" in t_lower or "fomc" in t_lower or "rate" in t_lower:
+                if "xrp" in combined_text or "ripple" in combined_text:
+                    tickers.append("XRP")
+                if "fed" in combined_text or "fomc" in combined_text or "rate" in combined_text or "powell" in combined_text:
                     tickers.append("FED")
-                if "sec" in t_lower:
+                if "sec" in combined_text or "cftc" in combined_text:
                     tickers.append("SEC")
-                if "ai" in t_lower or "anthropic" in t_lower or "openai" in t_lower:
+                if "ai" in combined_text or "anthropic" in combined_text or "openai" in combined_text or "nvidia" in combined_text:
                     tickers.append("AI")
                 if not tickers:
                     tickers.append("ETH" if raw.domain == "crypto" else "MACRO")
 
-                # Localized headline summary in Traditional Chinese
-                summary_zh = self._localize_real_headline(raw.title, raw.source, domain=raw.domain)
+                headline_zh, summary_zh = self._build_zh_headline_and_summary(
+                    raw.title, raw.raw_content, raw.source, raw.domain, urgency, sentiment, tickers
+                )
 
                 se = StructuredEvent(
                     timestamp=iso_now,
@@ -528,6 +567,7 @@ class IntelligenceHarvester:
                     sentiment_score=round(sentiment, 2),
                     summary=summary_zh,
                     raw_title=raw.title,
+                    headline_zh=headline_zh,
                 )
                 structured_results.append(se)
                 self.recent_structured_events.append(se)
@@ -540,29 +580,134 @@ class IntelligenceHarvester:
         return structured_results
 
     @staticmethod
-    def _localize_real_headline(title: str, source: str, domain: str) -> str:
-        """
-        Synthesizes a clear, informative Traditional Chinese summary from real English financial wires.
-        """
-        t_low = title.lower()
-        if "anthropic" in t_low or ("miner" in t_low and "ai" in t_low):
-            return "比特幣礦商加速跨足 AI 高性能算力基礎設施，簽署大額電力與算力租賃協議。"
-        if "hong kong" in t_low and "tax" in t_low:
-            return "香港加強加密資產稅務合規申報，要求合規交易所提供客戶申報數據。"
-        if "linux" in t_low or "hack" in t_low or "exploit" in t_low:
-            return "重大網絡安全與底層開源系統漏洞通報，引發跨資產密碼安全體系關注。"
-        if "zcash" in t_low or "privacy" in t_low:
-            return "主流隱私幣網絡進行協議治理升級，針對歷史資金池實施凍結與資產保護。"
-        if "kalshi" in t_low or "lawsuit" in t_low or "sues" in t_low:
-            return "美國州級監管機關對預測市場發起新一輪訴訟，政策合規風險持續升溫。"
-        if "south korea" in t_low and "tax" in t_low:
-            return "韓國研議推遲虛擬資產課稅時程，為本地加密市場提供過渡適應期。"
-        if "etf" in t_low and ("inflow" in t_low or "record" in t_low):
-            return "現貨加密 ETF 機構資金維持加速流入，場外流動性供給呈現緊縮態勢。"
-        if "fed" in t_low or "rate" in t_low:
-            return "聯準會貨幣政策路徑備受市場關注，利率期貨定價隱含全球流動性擴張預期。"
+    def _contains_cjk(text: str) -> bool:
+        return bool(text and re.search(r"[\u4e00-\u9fff]", text))
 
-        return f"即時外網快訊：{title}"
+    @classmethod
+    def ensure_traditional_chinese(cls, event: StructuredEvent) -> Tuple[str, str]:
+        """
+        Guarantees that any StructuredEvent has a Traditional Chinese headline and Traditional Chinese summary.
+        """
+        has_zh_head = cls._contains_cjk(event.headline_zh)
+        has_zh_sum = cls._contains_cjk(event.summary)
+        if has_zh_head and has_zh_sum:
+            return event.headline_zh, event.summary
+
+        gen_head, gen_sum = cls._build_zh_headline_and_summary(
+            event.raw_title or event.summary,
+            "",
+            event.source,
+            event.domain,
+            event.urgency_score,
+            event.sentiment_score,
+            event.entities_tickers,
+        )
+        final_head = event.headline_zh if has_zh_head else (event.summary if (has_zh_sum and len(event.summary) <= 36) else gen_head)
+        final_sum = event.summary if has_zh_sum else gen_sum
+        return final_head, final_sum
+
+    @classmethod
+    def _build_zh_headline_and_summary(
+        cls,
+        title: str,
+        raw_content: str,
+        source: str,
+        domain: str,
+        urgency: int = 5,
+        sentiment: float = 0.0,
+        tickers: Optional[List[str]] = None,
+    ) -> Tuple[str, str]:
+        """
+        Synthesizes a Traditional Chinese headline and comprehensive Traditional Chinese content summary
+        from real English financial wires when LLM translation is unavailable or fallback is triggered.
+        """
+        clean_title = _clean_html_text(title)
+        clean_body = _clean_html_text(raw_content)
+        combined = f"{clean_title} {clean_body}".lower()
+
+        # Extract key numerical metrics (percentages, dollar amounts, bps)
+        nums = re.findall(r"(?:\$\d+(?:\.\d+)?\s*(?:billion|million|trillion|b|m|k)?|\d+(?:\.\d+)?%|\d+\s*bps)", f"{clean_title} {clean_body}", flags=re.IGNORECASE)
+        metrics_str = f"（關鍵數據：{', '.join(nums[:3])}）" if nums else ""
+
+        # Identify primary entities in Traditional Chinese
+        entities_zh: List[str] = []
+        entity_map = [
+            (("ethereum", "ether", "eth ", "eth's", "vitalik"), "以太坊 (ETH)"),
+            (("bitcoin", "btc"), "比特幣 (BTC)"),
+            (("solana", "sol "), "Solana (SOL)"),
+            (("xrp", "ripple"), "瑞波幣 (XRP)"),
+            (("dogecoin", "doge"), "狗狗幣 (DOGE)"),
+            (("stablecoin", "usdt", "usdc", "tether", "circle"), "穩定幣市場"),
+            (("etf", "blackrock", "fidelity", "grayscale"), "機構現貨 ETF"),
+            (("fed", "federal reserve", "fomc", "powell", "interest rate", "rate cut", "inflation", "cpi"), "聯準會與宏觀利率"),
+            (("sec", "cftc", "gensler", "regulation", "regulatory", "lawsuit", "sues", "court"), "美國金融監管機構"),
+            (("trump", "white house", "treasury", "tariff", "congress", "senate"), "美國政府與總經政策"),
+            (("binance", "coinbase", "kraken", "bybit", "robinhood", "exchange"), "主流加密交易所"),
+            (("defi", "layer 2", "l2", "rollup", "staking", "restaking", "airdrop"), "鏈上 DeFi 與二層擴容協議"),
+            (("ai", "artificial intelligence", "openai", "anthropic", "nvidia", "semiconductor", "chip"), "AI 算力與科技產業"),
+            (("hack", "exploit", "phishing", "stolen", "breach", "security"), "區塊鏈資安與防護"),
+            (("whale", "institutional", "microstrategy", "strategy", "treasury reserve"), "機構與巨鯨部位"),
+        ]
+        for keys, label_zh in entity_map:
+            if any(k in combined for k in keys) and label_zh not in entities_zh:
+                entities_zh.append(label_zh)
+
+        domain_label_map = {
+            "crypto": "加密資產市場",
+            "macro": "全球總體經濟",
+            "tech": "科技與算力產業",
+            "geopolitics": "地緣政治與局勢",
+            "corporate": "企業財報與治理",
+            "prediction": "預測市場共識",
+        }
+        primary_subject = "、".join(entities_zh[:2]) if entities_zh else domain_label_map.get(domain, "全球金融市場")
+
+        # Identify action / theme in Traditional Chinese
+        if any(w in combined for w in ["hack", "exploit", "stolen", "breach", "phishing"]):
+            action_head = "爆出資安漏洞與異常資金流動警報"
+            action_body = "鏈上監測顯示相關協議或平台出現安全事件，市場短線避險情緒升溫，建議留意資金外溢與波動風險"
+        elif any(w in combined for w in ["lawsuit", "sues", "sued", "indict", "probe", "subpoena", "ban", "crackdown", "fine"]):
+            action_head = "面臨監管審查與法律合規挑戰"
+            action_body = "監管機構針對相關業務展開合規調查或訴訟程序，政策不確定性可能引發相關板塊短線波動"
+        elif any(w in combined for w in ["etf", "inflow", "institutional", "blackrock", "fidelity", "accumulate", "buy", "purchases"]):
+            action_head = "機構資金配置與場外流動性動態更新"
+            action_body = "機構投資人與大型資金池持續調整數位資產部位，現貨市場籌碼結構與流動性深度出現顯著變化"
+        elif any(w in combined for w in ["fed", "fomc", "powell", "rate", "cpi", "inflation", "jobs", "payroll", "yield", "treasury", "dollar", "dxy"]):
+            action_head = "釋出最新總經政策與利率預期訊號"
+            action_body = "總體經濟指標與央行官員談話牽動美元流動性預期，跨市場風險資產與加密貨幣定價同步反應"
+        elif any(w in combined for w in ["tariff", "trade war", "sanction", "geopolit", "war", "red sea", "middle east"]):
+            action_head = "國際貿易政策與地緣局勢最新進展"
+            action_body = "跨國關稅政策與地緣局勢變動影響全球供應鏈與避險資金流向，市場密切評估通膨與風險溢價"
+        elif any(w in combined for w in ["surge", "soar", "rally", "jump", "breakout", "record", "ath", "gain", "bull"]):
+            action_head = "買盤動能強勁推動價格與活躍度攀升"
+            action_body = "受市場利多催化與資金流入帶動，相關資產買盤動能明顯轉強，短線多頭結構維持優勢"
+        elif any(w in combined for w in ["crash", "plunge", "drop", "fall", "dump", "slump", "liquidation", "outflow", "bear"]):
+            action_head = "遭遇獲利了結與短線回調修正壓力"
+            action_body = "市場出現階段性賣壓與槓桿部位清算，短線價格回測支撐區間，量化策略維持嚴格風控止損"
+        elif any(w in combined for w in ["launch", "upgrade", "partner", "expand", "integrate", "mainnet", "testnet", "adopt"]):
+            action_head = "宣布生態技術升級與重大策略合作"
+            action_body = "底層網路效能升級與跨平台機構合作持續推進，有助於提升鏈上結算效率與長期基本面價值"
+        else:
+            action_head = "最新市場動態與產業基本面快訊"
+            action_body = "外電快訊揭示最新產業政策與資金流向變化，量化引擎已將情緒權重納入多空風控評估"
+
+        sentiment_tag = "偏多利好" if sentiment > 0.15 else ("偏空警示" if sentiment < -0.15 else "中性觀望")
+        ticker_str = "、".join(tickers[:3]) if tickers else ("ETH" if domain == "crypto" else "MACRO")
+
+        headline_zh = f"【{source}】{primary_subject}{action_head}{metrics_str}"
+        summary_zh = (
+            f"綜合外電報導：{primary_subject}近期{action_head}{metrics_str}。"
+            f"{action_body}。目前情報情緒評估為「{sentiment_tag}」（關聯標的：{ticker_str}｜原文標題：{clean_title}）。"
+        )
+        return headline_zh, summary_zh
+
+    @classmethod
+    def _localize_real_headline(cls, title: str, source: str, domain: str) -> str:
+        """
+        Backward-compatible wrapper returning the Traditional Chinese summary.
+        """
+        _, summary_zh = cls._build_zh_headline_and_summary(title, "", source, domain)
+        return summary_zh
 
     def get_latest_events(self, count: int = 30) -> List[StructuredEvent]:
         """Returns the most recent structured events."""

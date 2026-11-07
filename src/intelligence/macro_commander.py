@@ -256,10 +256,16 @@ class MacroCommander:
                 self.current_state.status = "ONLINE" if self.client.is_gateway_online else "STANDBY"
                 return self.current_state
 
-            # Ingest structured events into curated timeline (newest first)
+            # Ingest structured events into curated timeline (newest first), ensuring Traditional Chinese headline & summary
             for e in recent_events:
-                evt_id = f"evt_{int(now)}_{abs(hash(e.raw_title or e.summary)) % 10000}"
-                if not any(x.get("headline") == (e.raw_title or e.summary) for x in self.curated_events):
+                zh_head, zh_sum = IntelligenceHarvester.ensure_traditional_chinese(e)
+                dedup_key = e.raw_title or zh_head
+                evt_id = f"evt_{int(now)}_{abs(hash(dedup_key)) % 10000}"
+                already_exists = any(
+                    (e.raw_title and x.get("raw_title") == e.raw_title) or x.get("headline") == zh_head
+                    for x in self.curated_events
+                )
+                if not already_exists:
                     self.curated_events.insert(0, {
                         "id": evt_id,
                         "time": time.strftime("%H:%M:%S"),
@@ -267,8 +273,9 @@ class MacroCommander:
                         "domain": e.domain,
                         "urgency": e.urgency_score,
                         "sentiment": round(e.sentiment_score, 2),
-                        "headline": e.raw_title or e.summary,
-                        "summary": e.summary,
+                        "headline": zh_head,
+                        "summary": zh_sum,
+                        "raw_title": e.raw_title,
                         "strategy_actions": [],
                     })
             if len(self.curated_events) > 60:

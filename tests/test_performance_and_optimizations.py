@@ -189,3 +189,51 @@ def test_macro_veto_intent_preserved_in_live_evaluation(monkeypatch):
     assert intent.startswith("Macro Veto:"), f"Expected Macro Veto intent to be preserved, got: {intent}"
 
 
+def test_newly_fetched_news_always_summarized_in_traditional_chinese():
+    import asyncio
+    from src.intelligence.ingestion import IntelligenceHarvester, RawEvent
+
+    async def _run():
+        mock_client = MagicMock()
+        mock_client.model_ingest = "auto"
+        mock_client.model_commander = "auto"
+        mock_client.is_gateway_online = False
+        mock_client.chat_json = AsyncMock(return_value=None)
+
+        harvester = IntelligenceHarvester(client=mock_client)
+        commander = MacroCommander(client=mock_client, harvester=harvester)
+
+        raw_items = [
+            RawEvent(
+                source="CoinDesk",
+                domain="crypto",
+                title="Ethereum Spot ETF Inflows Surge $250M as Institutional Staking Demand Rises 18%",
+                url="https://coindesk.com/eth-etf-inflows",
+                timestamp=2000.0,
+                raw_content="<p>BlackRock and Fidelity recorded $250M in net inflows as Ethereum L2 activity hits record highs.</p>",
+            ),
+            RawEvent(
+                source="ForexLive",
+                domain="macro",
+                title="Federal Reserve Signals Steady Interest Rate Path Amid Cooling Inflation Data",
+                url="https://forexlive.com/fed-rate-path",
+                timestamp=2005.0,
+                raw_content="FOMC officials noted inflation continues to moderate toward the 2% target.",
+            ),
+        ]
+
+        structured = await harvester.process_batch(raw_items)
+        assert len(structured) == 2
+        for se in structured:
+            assert re.search(r"[\u4e00-\u9fff]", se.headline_zh), f"headline_zh must be Chinese: {se.headline_zh}"
+            assert re.search(r"[\u4e00-\u9fff]", se.summary), f"summary must be Chinese: {se.summary}"
+
+        await commander.synthesize_regime(structured)
+        top_event = commander.curated_events[0]
+        assert re.search(r"[\u4e00-\u9fff]", top_event["headline"]), f"Curated headline must be Chinese: {top_event['headline']}"
+        assert re.search(r"[\u4e00-\u9fff]", top_event["summary"]), f"Curated summary must be Chinese: {top_event['summary']}"
+
+    asyncio.run(_run())
+
+
+
