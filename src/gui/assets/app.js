@@ -1,4 +1,3 @@
-
   // ==========================================================================
   // Splash Screen Initialization Controller (Strict Sequential Lifecycle)
   // 1. Replay & simulate 120m historical orderflow
@@ -33,6 +32,24 @@
     { threshold: 90, text: "Pre-rendering Fresh K-Line Depth & Tactical Tables..." },
     { threshold: 100, text: "Arena Reset Complete. Launching Fresh Arena..." }
   ];
+
+  // Stageshow Segmented Control Thumb Helper
+  function syncSegThumb(segId, activeIdx) {
+    const seg = document.getElementById(segId);
+    if (!seg) return;
+    seg.style.setProperty('--active-idx', String(activeIdx));
+    seg.dataset.activeIdx = String(activeIdx);
+    const buttons = seg.querySelectorAll('.ss-seg__option');
+    buttons.forEach((btn, idx) => {
+      if (idx === activeIdx) {
+        btn.classList.add('active');
+        btn.setAttribute('data-on', '');
+      } else {
+        btn.classList.remove('active');
+        btn.removeAttribute('data-on');
+      }
+    });
+  }
 
   function startSplashSequence(isReset = false) {
     if (splashLoop) {
@@ -108,7 +125,7 @@
       }
       if (sLbl) sLbl.textContent = activeStep;
 
-      // Strict exit condition: 100% reached AND minimum duration met AND left chart drawn AND right tables rendered!
+      // Strict exit condition: 100% reached AND minimum duration met AND left chart drawn AND right tables rendered
       if (splashProgress >= 99.5 && targetSplashProgress >= 100 && canComplete && hasFirstChartDrawn && hasFirstTableRendered) {
         splashProgress = 100;
         if (pLbl) pLbl.textContent = '100%';
@@ -166,7 +183,7 @@
   // Trigger initial splash sequence on application boot
   startSplashSequence(false);
 
-let latestState = null;
+  let latestState = null;
   let isPolling = false;
   let chartMode = 'candles'; // 'candles' or 'line'
   let scaleMode = 'auto';    // 'auto' (focus on visible candles) or 'full' (include all distant orders)
@@ -215,7 +232,7 @@ let latestState = null;
     }
   }
 
-  // Notification Toast Micro-Interactions (Motion Design System)
+  // Notification Toast Micro-Interactions (Stageshow Satellite Toast)
   function showPositionToast(strat) {
     const container = document.getElementById('chartNotificationContainer');
     if (!container || !strat) return;
@@ -249,24 +266,24 @@ let latestState = null;
     toast.innerHTML = `
       <div class="toast-body">
         <div class="toast-top-row">
-          <span class="toast-tag" style="color:${sColor};border-color:${sColor};background:${hexToRgba(sColor, 0.14)};">
-            <span class="toast-pulse-dot" style="background:${sColor};box-shadow:0 0 6px ${sColor};"></span>
+          <span class="toast-tag" style="color:${sColor};background:${hexToRgba(sColor, 0.14)};">
+            <span class="toast-pulse-dot" style="background:${sColor};"></span>
             ${stratName}
           </span>
           <span class="toast-action-badge">Order Placed</span>
           <span class="toast-clock num">${timeStr}</span>
-          <span class="toast-close" onclick="this.closest('.chart-toast').remove()" title="Close notification">×</span>
+          <span class="toast-close" onclick="this.closest('.chart-toast').remove()" title="Dismiss">×</span>
         </div>
         <div class="toast-main-row num">
           <span class="toast-qty">${sideVerb} <strong>${qty.toFixed(4)}</strong> ETH</span>
-          <span style="color:var(--text-muted);margin:0 2px;">|</span>
+          <span style="color:var(--ss-text-faint);margin:0 2px;">·</span>
           <span class="toast-entry">Entry <strong>$${entryP.toFixed(2)}</strong></span>
         </div>
         <div class="toast-bracket-row num">
           <span class="toast-bracket-item up">
             TP $${tpP > 0 ? tpP.toFixed(1) : '--'} ${tpPct ? `<small>(+${tpPct}%)</small>` : ''}
           </span>
-          <span class="toast-sep">|</span>
+          <span class="toast-sep">·</span>
           <span class="toast-bracket-item down">
             SL $${slP > 0 ? slP.toFixed(1) : '--'} ${slPct ? `<small>(-${slPct}%)</small>` : ''}
           </span>
@@ -287,7 +304,7 @@ let latestState = null;
         if (toast.parentNode) {
           toast.parentNode.removeChild(toast);
         }
-      }, 360);
+      }, 320);
     }, 4200);
   }
 
@@ -315,15 +332,17 @@ let latestState = null;
 
   function setChartMode(mode) {
     chartMode = mode;
-    document.getElementById('btnModeCandles').className = 'seg-btn ' + (mode === 'candles' ? 'active' : '');
-    document.getElementById('btnModeLine').className = 'seg-btn ' + (mode === 'line' ? 'active' : '');
+    syncSegThumb('chartModeSeg', mode === 'candles' ? 0 : 1);
+    const scrubEl = document.getElementById('chartScrubReadout');
+    if (scrubEl && !priceHoverPos) {
+      scrubEl.textContent = mode === 'candles' ? '1m Candles · Smooth Spline Indicators' : 'Trend Line · Smooth Spline Indicators';
+    }
     if (latestState) drawPriceChart(latestState);
   }
 
   function setScaleMode(mode) {
     scaleMode = mode;
-    document.getElementById('btnScaleAuto').className = 'seg-btn ' + (mode === 'auto' ? 'active' : '');
-    document.getElementById('btnScaleFull').className = 'seg-btn ' + (mode === 'full' ? 'active' : '');
+    syncSegThumb('scaleModeSeg', mode === 'auto' ? 0 : 1);
     if (latestState) drawPriceChart(latestState);
   }
 
@@ -363,27 +382,27 @@ let latestState = null;
         const state = await window.pywebview.api.get_state();
         if (state) {
           latestState = state;
-    if (!splashCompleted) {
-      const hasQuote = state.quote && (state.quote.price > 0 || state.quote.is_offline);
-      const candleCount = (state.candles && state.candles.length) || 0;
-      const isBootstrapped = Boolean(state.is_bootstrapped);
+          if (!splashCompleted) {
+            const hasQuote = state.quote && (state.quote.price > 0 || state.quote.is_offline);
+            const candleCount = (state.candles && state.candles.length) || 0;
+            const isBootstrapped = Boolean(state.is_bootstrapped);
 
-      if (hasQuote) {
-        setSplashTarget(35);
-      }
-      if (isBootstrapped) {
-        setSplashTarget(55);
-      }
-      if (isBootstrapped && candleCount >= 30) {
-        setSplashTarget(75);
-      }
-      if (isBootstrapped && candleCount >= 30 && hasFirstTableRendered) {
-        setSplashTarget(90);
-      }
-      if (isBootstrapped && candleCount >= 30 && hasFirstChartDrawn && hasFirstTableRendered) {
-        setSplashTarget(100);
-      }
-    }
+            if (hasQuote) {
+              setSplashTarget(35);
+            }
+            if (isBootstrapped) {
+              setSplashTarget(55);
+            }
+            if (isBootstrapped && candleCount >= 30) {
+              setSplashTarget(75);
+            }
+            if (isBootstrapped && candleCount >= 30 && hasFirstTableRendered) {
+              setSplashTarget(90);
+            }
+            if (isBootstrapped && candleCount >= 30 && hasFirstChartDrawn && hasFirstTableRendered) {
+              setSplashTarget(100);
+            }
+          }
 
           // Position change detector
           const currentStrats = state.strategies || [];
@@ -493,20 +512,16 @@ let latestState = null;
     }
   }
 
-  let rightTab = 'all'; // 'all', 'leaderboard', 'cards'
+  let rightTab = 'all'; // 'all', 'cards', 'leaderboard'
 
   function setRightTab(tab) {
     rightTab = tab;
-    const btnA = document.getElementById('btnTabAll');
-    const btnL = document.getElementById('btnTabLeaderboard');
-    const btnC = document.getElementById('btnTabCards');
+    const idx = tab === 'all' ? 0 : (tab === 'cards' ? 1 : 2);
+    syncSegThumb('rightTabSeg', idx);
     const vL = document.getElementById('tabLeaderboardWrap');
     const vC = document.getElementById('tabCardsView');
-    if (btnA) btnA.className = 'seg-btn ' + (tab === 'all' ? 'active' : '');
-    if (btnL) btnL.className = 'seg-btn ' + (tab === 'leaderboard' ? 'active' : '');
-    if (btnC) btnC.className = 'seg-btn ' + (tab === 'cards' ? 'active' : '');
     if (vC) vC.style.display = (tab === 'all' || tab === 'cards') ? 'grid' : 'none';
-    if (vL) vL.style.display = (tab === 'all' || tab === 'leaderboard') ? 'block' : 'none';
+    if (vL) vL.style.display = (tab === 'all' || tab === 'leaderboard') ? 'flex' : 'none';
   }
 
   function showTVConfigInfo() {
@@ -542,7 +557,6 @@ let latestState = null;
     }
   }
 
-
   function renderMacroRibbon(state) {
     const mc = state.macro_commander;
     if (!mc) return;
@@ -556,7 +570,7 @@ let latestState = null;
     const headline = document.getElementById('macroHeadlineText');
 
     if (badge && regimeTxt) {
-      badge.className = 'macro-badge';
+      badge.className = 'macro-badge ss-badge';
       if (mc.regime === 'BULLISH_SURGE') badge.classList.add('regime-bullish');
       else if (mc.regime === 'BEARISH_PANIC') badge.classList.add('regime-bearish');
       else if (mc.regime === 'HIGH_VOLATILITY_CHOP') badge.classList.add('regime-chop');
@@ -565,8 +579,8 @@ let latestState = null;
 
     if (biasTag) {
       biasTag.textContent = 'BIAS: ' + mc.directional_bias;
-      if (mc.directional_bias === 'LONG_ONLY') biasTag.style.color = '#00E676';
-      else if (mc.directional_bias === 'SHORT_ONLY') biasTag.style.color = '#FF334B';
+      if (mc.directional_bias === 'LONG_ONLY') biasTag.style.color = '#4ADE80';
+      else if (mc.directional_bias === 'SHORT_ONLY') biasTag.style.color = '#FB7185';
       else biasTag.style.color = '';
     }
 
@@ -580,7 +594,7 @@ let latestState = null;
 
     if (omniTag) {
       omniTag.textContent = 'OMNIROUTE: ' + (mc.status || 'ONLINE') + ' (24/7)';
-      omniTag.style.color = (mc.status === 'ONLINE') ? '#00E676' : '#FFB800';
+      omniTag.style.color = (mc.status === 'ONLINE') ? '#4ADE80' : '#FBBF24';
     }
 
     if (headline) {
@@ -629,14 +643,14 @@ let latestState = null;
 
     if (state.auto_evolve_enabled) {
       cdEl.textContent = fmtTimeSec(state.next_evolve_sec || 0);
-      cdEl.style.color = 'var(--terracotta)';
-      autoBtn.textContent = '[Active]';
-      autoBtn.style.color = 'var(--terracotta)';
+      cdEl.style.color = 'var(--ss-accent-text)';
+      autoBtn.textContent = 'Active';
+      autoBtn.style.color = 'var(--ss-accent-text)';
     } else {
-      cdEl.textContent = 'PAUSED';
-      cdEl.style.color = 'var(--text-muted)';
-      autoBtn.textContent = '[Click to Enable]';
-      autoBtn.style.color = 'var(--text-secondary)';
+      cdEl.textContent = 'Paused';
+      cdEl.style.color = 'var(--ss-text-faint)';
+      autoBtn.textContent = 'Resume';
+      autoBtn.style.color = 'var(--ss-text)';
     }
 
     lastCadenceFeedTs = (q && q.timestamp) || '';
@@ -649,22 +663,22 @@ let latestState = null;
     const isPaused = Boolean(state.paused);
     document.body.classList.toggle('arena-paused', isPaused);
     if (isPaused) {
-      badge.style.background = 'rgba(217, 101, 101, 0.15)';
-      badge.style.color = 'var(--down)';
-      badge.style.borderColor = 'rgba(217, 101, 101, 0.35)';
-      statusText.textContent = 'PAUSED';
+      badge.style.background = 'var(--ss-danger-soft)';
+      badge.style.color = 'var(--ss-danger-text)';
+      badge.style.borderColor = 'rgba(255, 51, 75, 0.28)';
+      statusText.textContent = 'Paused';
       pauseBtn.textContent = 'Resume Feed';
     } else if (isOffline) {
-      badge.style.background = 'rgba(217, 101, 101, 0.15)';
-      badge.style.color = 'var(--down)';
-      badge.style.borderColor = 'rgba(217, 101, 101, 0.35)';
-      statusText.textContent = 'FEED OFFLINE';
+      badge.style.background = 'var(--ss-danger-soft)';
+      badge.style.color = 'var(--ss-danger-text)';
+      badge.style.borderColor = 'rgba(255, 51, 75, 0.28)';
+      statusText.textContent = 'Feed Offline';
       pauseBtn.textContent = 'Pause Feed';
     } else {
-      badge.style.background = 'var(--terracotta-dim)';
-      badge.style.color = 'var(--terracotta)';
-      badge.style.borderColor = 'var(--terracotta-border)';
-      statusText.textContent = 'LIVE 24/7';
+      badge.style.background = 'var(--ss-accent-soft)';
+      badge.style.color = 'var(--ss-accent-text)';
+      badge.style.borderColor = 'rgba(56, 189, 248, 0.24)';
+      statusText.textContent = 'Live 24/7';
       pauseBtn.textContent = 'Pause Feed';
     }
 
@@ -673,16 +687,14 @@ let latestState = null;
     const srcEl = document.getElementById('omniSourceBadge');
     if (srcEl) {
       srcEl.textContent = 'Mode: Pure Math Local Core';
-      srcEl.style.background = 'var(--up-dim)';
-      srcEl.style.color = 'var(--up)';
-      srcEl.style.borderColor = 'rgba(106,168,122,0.35)';
+      srcEl.style.background = 'var(--ss-ink-2)';
+      srcEl.style.color = 'var(--ss-text-strong)';
     }
     const qEl = document.getElementById('omniQuotaBadge');
     if (qEl) {
       qEl.textContent = isOffline ? 'Feed: Offline' : 'Feed: Active';
-      qEl.style.background = isOffline ? 'rgba(217, 101, 101, 0.15)' : 'rgba(0,230,118,0.12)';
-      qEl.style.color = isOffline ? 'var(--down)' : 'var(--up)';
-      qEl.style.borderColor = isOffline ? 'rgba(217, 101, 101, 0.35)' : 'rgba(0,230,118,0.3)';
+      qEl.style.background = isOffline ? 'var(--ss-danger-soft)' : 'var(--ss-success-soft)';
+      qEl.style.color = isOffline ? 'var(--ss-danger-text)' : 'var(--ss-success-text)';
     }
   }
 
@@ -752,30 +764,30 @@ let latestState = null;
             </div>
             <div class="bracket-labels num">
               <span class="down">${slText}</span>
-              <span style="color:var(--text-secondary)">Entry ${fmtUsd(s.entry_price, 1)} <span style="color:var(--accent);font-size:9.5px;margin-left:4px;">(${evText})</span></span>
+              <span style="color:var(--ss-text)">Entry ${fmtUsd(s.entry_price, 1)} <span style="color:var(--ss-accent-text);font-size:9px;margin-left:4px;">(${evText})</span></span>
               <span class="up">${tpText}</span>
             </div>
           </div>
         `;
       } else if (isMacroVeto) {
         bracketHtml = `
-          <div class="strat-idle-bar" style="border-color:rgba(245,158,11,0.3);background:rgba(245,158,11,0.06);">
-            <span class="idle-dot" style="background:#F59E0B;box-shadow:0 0 6px #F59E0B;"></span>
-            <span style="color:#FCD34D;font-weight:600;">${escapeHtml(s.intent)}</span>
+          <div class="strat-idle-bar" style="border-color:rgba(245,158,11,0.28);background:rgba(245,158,11,0.08);">
+            <span class="idle-dot" style="background:#F59E0B;"></span>
+            <span style="color:#FBBF24;font-weight:550;">${escapeHtml(s.intent)}</span>
           </div>
         `;
       } else if (isBlocked) {
         bracketHtml = `
-          <div class="strat-idle-bar" style="border-color:rgba(239,68,68,0.25);background:rgba(239,68,68,0.05);">
-            <span class="idle-dot" style="background:#EF4444;box-shadow:0 0 6px #EF4444;"></span>
-            <span style="color:#FCA5A5;font-weight:600;">TimeMachine EV Gate · Blocked (${s.mc_verdict || 'Low EV'})</span>
+          <div class="strat-idle-bar" style="border-color:rgba(239,68,68,0.25);background:rgba(239,68,68,0.07);">
+            <span class="idle-dot" style="background:#EF4444;"></span>
+            <span style="color:#FB7185;font-weight:550;">TimeMachine EV Gate · Blocked (${s.mc_verdict || 'Low EV'})</span>
           </div>
         `;
       } else {
         bracketHtml = `
           <div class="strat-idle-bar">
             <span class="idle-dot"></span>
-            <span>Standby · TimeMachine EV Gate Active & R-Sizing</span>
+            <span>Standby · TimeMachine EV Gate Active &amp; R-Sizing</span>
           </div>
         `;
       }
@@ -799,7 +811,7 @@ let latestState = null;
         <div class="strat-top">
           <div class="strat-left">
             <span class="rank-badge num" style="color:${s.color}">#${s.rank}</span>
-            <span class="strat-title" style="color:${s.color}">${s.name}</span>
+            <span class="strat-title">${s.name}</span>
             <span class="strat-pill num">Gen #${s.generation} · ${s.genome}</span>
           </div>
           <div class="strat-right num">
@@ -823,7 +835,7 @@ let latestState = null;
           </div>
           <div class="kpi-cell">
             <span>Win / Max DD</span>
-            <span style="color:var(--text-secondary)">${s.win_rate_pct.toFixed(0)}% / ${s.max_dd_pct.toFixed(1)}%</span>
+            <span style="color:var(--ss-text)">${s.win_rate_pct.toFixed(0)}% / ${s.max_dd_pct.toFixed(1)}%</span>
           </div>
         </div>
 
@@ -865,7 +877,7 @@ let latestState = null;
         strategies.forEach(s => {
           const card = stratCardDomMap.get(s.id);
           if (!card) return;
-          card.style.transition = 'transform 0.45s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease';
+          card.style.transition = 'transform 0.42s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease';
           card.style.transform = '';
 
           const oldRank = prevRankRecord.get(s.id);
@@ -915,7 +927,7 @@ let latestState = null;
     const atr = Number(ind.atr !== undefined ? ind.atr : 2.5);
     const rsiEl = document.getElementById('hudRsiVal');
     if (rsiEl) {
-      const rsiMood = rsi >= 65 ? ' (Bullish)' : (rsi <= 35 ? ' (Oversold)' : ' (Neutral)');
+      const rsiMood = rsi >= 65 ? ' · Bullish' : (rsi <= 35 ? ' · Oversold' : ' · Neutral');
       rsiEl.textContent = `RSI ${rsi.toFixed(1)}${rsiMood}`;
       rsiEl.className = 'hud-value num ' + (rsi >= 55 ? 'up' : (rsi <= 45 ? 'down' : ''));
     }
@@ -969,15 +981,20 @@ let latestState = null;
       const roiCls = s.roi_pct >= 0 ? 'up' : 'down';
       const upnlCls = s.unrealized_pnl >= 0 ? 'up' : 'down';
       const rowInner = `
-        <td style="font-weight:700;color:${s.color}">#${s.rank}</td>
-        <td style="font-weight:600;color:${s.color}">${s.name}</td>
-        <td class="text-right" style="font-weight:700">${fmtUsd(s.equity, 2)}</td>
+        <td style="font-weight:650;color:${s.color}">#${s.rank}</td>
+        <td>
+          <span style="display:inline-flex;align-items:center;gap:6px;">
+            <i style="width:6px;height:6px;border-radius:50%;background:${s.color};display:inline-block;flex-shrink:0;"></i>
+            <span style="font-weight:600;color:var(--ss-text-strong);">${s.name}</span>
+          </span>
+        </td>
+        <td class="text-right" style="font-weight:650">${fmtUsd(s.equity, 2)}</td>
         <td class="text-right ${roiCls}">${fmtPct(s.roi_pct)}</td>
         <td class="text-right ${upnlCls}">${fmtSignedUsd(s.unrealized_pnl)}</td>
         <td class="text-right down">${s.max_dd_pct.toFixed(2)}%</td>
-        <td class="text-right">${s.win_rate_pct.toFixed(1)}% (${s.closed_trades})</td>
-        <td class="text-right">${s.sharpe.toFixed(2)}</td>
-        <td class="text-right" style="font-weight:700">${s.fitness >= 0 ? '+' : ''}${s.fitness.toFixed(2)}</td>
+        <td class="text-right" style="color:var(--ss-text)">${s.win_rate_pct.toFixed(1)}% (${s.closed_trades})</td>
+        <td class="text-right" style="color:var(--ss-text)">${s.sharpe.toFixed(2)}</td>
+        <td class="text-right" style="font-weight:650">${s.fitness >= 0 ? '+' : ''}${s.fitness.toFixed(2)}</td>
       `;
 
       let tr = leaderRowDomMap.get(s.id);
@@ -1012,7 +1029,7 @@ let latestState = null;
         strategies.forEach(s => {
           const tr = leaderRowDomMap.get(s.id);
           if (!tr) return;
-          tr.style.transition = 'transform 0.45s cubic-bezier(0.16, 1, 0.3, 1)';
+          tr.style.transition = 'transform 0.42s cubic-bezier(0.22, 1, 0.36, 1)';
           tr.style.transform = '';
         });
       });
@@ -1028,7 +1045,7 @@ let latestState = null;
     if (labelEl) {
       labelEl.innerHTML = `
         <span class="live-pulse-badge"><span class="live-dot"></span>Live Orderflow Active</span>
-        <span style="margin-left:8px;color:var(--text-secondary);font-size:10px;">(${liveCount} Live / ${warmupCount} Warmup)</span>
+        <span class="num" style="margin-left:8px;color:var(--ss-text-faint);font-size:10px;">${liveCount} Live · ${warmupCount} Warmup</span>
       `;
     }
     const tbody = document.getElementById('fillsBody');
@@ -1066,21 +1083,21 @@ let latestState = null;
 
       const seqStr = f.seq ? `#${f.seq}` : '';
       const priceSubHtml = (!f.is_entry && f.entry_price)
-        ? `<div style="font-size:8.5px;color:var(--text-muted);font-weight:400;">Cost $${Number(f.entry_price).toFixed(2)}</div>`
+        ? `<div style="font-size:8.5px;color:var(--ss-text-faint);font-weight:400;">Cost $${Number(f.entry_price).toFixed(2)}</div>`
         : '';
 
       const animCls = (idx === 0 && isNewTop) ? ' new-fill-row' : '';
 
       return `
         <tr class="num${animCls}">
-          <td style="color:var(--text-muted);font-size:9.5px;">${seqStr}</td>
-          <td style="color:var(--text-secondary)">${tagHtml}${f.time}</td>
-          <td style="font-weight:600">${f.strategy}</td>
+          <td style="color:var(--ss-text-faint);font-size:9.5px;">${seqStr}</td>
+          <td style="color:var(--ss-text)">${tagHtml}${f.time}</td>
+          <td style="font-weight:600;color:var(--ss-text-strong)">${f.strategy}</td>
           <td>${actionBadge}</td>
           <td class="text-right">${Number(f.qty).toFixed(4)}</td>
           <td class="text-right">${fmtUsd(f.price, 2)}${priceSubHtml}</td>
-          <td class="text-right ${pnlCls}" style="font-weight:700;">${pnlStr}</td>
-          <td style="color:var(--text-secondary)">${f.reason}</td>
+          <td class="text-right ${pnlCls}" style="font-weight:650;">${pnlStr}</td>
+          <td style="color:var(--ss-text)">${f.reason}</td>
         </tr>
       `;
     }).join('');
@@ -1101,12 +1118,34 @@ let latestState = null;
     return { ctx, w, h };
   }
 
+  function fillRoundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    if (typeof ctx.roundRect === 'function') {
+      ctx.roundRect(x, y, w, h, r);
+    } else {
+      ctx.rect(x, y, w, h);
+    }
+    ctx.fill();
+  }
+
+  function strokeRoundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    if (typeof ctx.roundRect === 'function') {
+      ctx.roundRect(x, y, w, h, r);
+    } else {
+      ctx.rect(x, y, w, h);
+    }
+    ctx.stroke();
+  }
+
   /* Catmull-Rom / Cardinal Cubic Bézier Smooth Spline Interpolator for Silky Trend Lines */
   function drawSmoothCurve(ctx, points, color, width, lineDash = []) {
     if (!points || points.length < 2) return;
     ctx.save();
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     if (lineDash.length > 0) ctx.setLineDash(lineDash);
     ctx.beginPath();
     ctx.moveTo(points[0].x, points[0].y);
@@ -1118,7 +1157,7 @@ let latestState = null;
       return;
     }
 
-    const tension = 0.28; // Optimal curve smoothness without overshooting or kink
+    const tension = 0.28;
     for (let i = 0; i < points.length - 1; i++) {
       const p0 = i > 0 ? points[i - 1] : points[i];
       const p1 = points[i];
@@ -1136,15 +1175,16 @@ let latestState = null;
     ctx.restore();
   }
 
-  /* Detailed Chart 1: Dynamic Auto-Scaled Price / Candles + Indicators + Levels (60 FPS Morphing & Pure OLED High Contrast) */
+  /* Detailed Chart 1: Dynamic Auto-Scaled Price / Candles + Indicators + Levels (Stageshow Crafted Canvas) */
   let priceHoverPos = null;
+  let hoveredCandleData = null;
   let chartAnimRaf = null;
 
   // Real-time interpolated animation coordinates (Lerp State)
   let animSpot = 0, targetSpot = 0;
   let animMinP = 0, targetMinP = 0;
   let animMaxP = 0, targetMaxP = 0;
-  let animCandles = []; // Array of { o, h, l, c, t }
+  let animCandles = [];
   let targetCandles = [];
 
   // Smooth Horizontal Kinetic Slide Offset when new bars arrive
@@ -1164,12 +1204,11 @@ let latestState = null;
 
     const canvas = document.getElementById('priceCanvas');
     const canvasW = canvas ? (canvas.clientWidth || 800) : 800;
-    const padLeft = 10;
-    const padRight = 96; // generous price scale axis for ETH badges
+    const padLeft = 12;
+    const padRight = 98;
     const plotW = Math.max(50, canvasW - padLeft - padRight);
-    const candleRightOffset = 80; // dedicated breathing space between newest candle and price axis
+    const candleRightOffset = 80;
     const candlePlotW = Math.max(50, plotW - candleRightOffset);
-    // Dynamic high-density candle count: ~9.5px to 11.5px per candle so wide monitors remain dense
     const optimalCount = Math.max(45, Math.min(rawCandles.length, Math.floor(candlePlotW / 9.5)));
     targetCandles = rawCandles.slice(-optimalCount);
 
@@ -1187,10 +1226,8 @@ let latestState = null;
         lastNewestCandleTime = newestTime;
       } else if (newestTime > lastNewestCandleTime) {
         lastNewestCandleTime = newestTime;
-        // Slide smoothly from +step to 0 (shifting all existing bars to the left)
         candleSlideOffset = Math.min(step * 2.5, candleSlideOffset + step);
 
-        // Map existing candles by timestamp so heights morph smoothly without index jump
         if (animCandles.length > 0) {
           const oldMap = new Map();
           animCandles.forEach(c => oldMap.set(c.t, c));
@@ -1267,10 +1304,9 @@ let latestState = null;
     chartAnimRaf = null;
     if (!latestState) return;
 
-    const ease = 0.08; // Silky smooth 60 FPS damping matched to 5s cadence
+    const ease = 0.08;
     let needsMore = false;
 
-    // Smooth Horizontal Kinetic Slide Offset Decay (Silky Leftward Glide)
     if (Math.abs(candleSlideOffset) > 0.05) {
       candleSlideOffset += (0 - candleSlideOffset) * 0.05;
       needsMore = true;
@@ -1278,7 +1314,7 @@ let latestState = null;
       candleSlideOffset = 0;
     }
 
-    // 1. Lerp Spot Price (Smooth Glide)
+    // 1. Lerp Spot Price
     const dSpot = targetSpot - animSpot;
     if (Math.abs(dSpot) > 0.02) {
       animSpot += dSpot * ease;
@@ -1287,7 +1323,7 @@ let latestState = null;
       animSpot = targetSpot;
     }
 
-    // 2. Lerp Price Bounds (Smooth Dynamic Scale)
+    // 2. Lerp Price Bounds
     const dMin = targetMinP - animMinP;
     if (Math.abs(dMin) > 0.02) {
       animMinP += dMin * ease;
@@ -1304,7 +1340,7 @@ let latestState = null;
       animMaxP = targetMaxP;
     }
 
-    // 3. Lerp Candle Heights & Wicks (Dynamic Morphing Transition)
+    // 3. Lerp Candle Heights & Wicks
     if (animCandles.length !== targetCandles.length) {
       animCandles = targetCandles.map(c => ({ o: c.o, h: c.h, l: c.l, c: c.c, t: c.t }));
       needsMore = true;
@@ -1352,32 +1388,39 @@ let latestState = null;
     const strategies = state.strategies || [];
     const useCandles = chartMode === 'candles' && visibleCandles.length >= 2;
 
-    const padLeft = 10;
-    const padRight = 96; // generous price scale axis for ETH badges
+    const padLeft = 12;
+    const padRight = 98;
     const padTop = 16;
     const padBottom = 22;
     const plotW = Math.max(50, w - padLeft - padRight);
     const plotH = Math.max(40, h - padTop - padBottom);
-    const candleRightOffset = 80; // dedicated breathing corridor between newest candle and price scale
+    const candleRightOffset = 80;
     const candlePlotW = Math.max(50, plotW - candleRightOffset);
 
     const toY = (v) => padTop + (1 - (v - minP) / (maxP - minP)) * plotH;
 
-    // Horizontal Grid Lines with Price Labels (Ultra-Crisp Minimalist Lines)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+    // 1. Stageshow Hairline Grid & Tabular Price Axis
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.045)';
     ctx.lineWidth = 1;
-    ctx.font = '9.5px "Cascadia Mono", Consolas, monospace';
-    ctx.fillStyle = '#8391A7';
+    ctx.font = '500 9.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
+    ctx.fillStyle = '#666A73';
     const gridCount = plotH > 380 ? 6 : 4;
     for (let g = 0; g <= gridCount; g++) {
       const gv = minP + ((maxP - minP) * (gridCount - g)) / gridCount;
-      const gy = toY(gv);
+      const gy = Math.round(toY(gv)) + 0.5;
       ctx.beginPath();
       ctx.moveTo(padLeft, gy);
       ctx.lineTo(padLeft + plotW, gy);
       ctx.stroke();
-      ctx.fillText('$' + gv.toFixed(0), padLeft + plotW + 6, gy + 3.5);
+      ctx.fillText('$' + gv.toFixed(0), padLeft + plotW + 8, gy + 3);
     }
+
+    // Right Price Axis Divider Hairline
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+    ctx.beginPath();
+    ctx.moveTo(Math.round(padLeft + plotW) + 0.5, padTop);
+    ctx.lineTo(Math.round(padLeft + plotW) + 0.5, padTop + plotH);
+    ctx.stroke();
 
     const tagMap = {
       'comp_agg': 'AGG',
@@ -1388,7 +1431,7 @@ let latestState = null;
       'comp_vwap': 'VWAP'
     };
 
-    // NOTE: Shaded Corridors REMOVED -> PURE OLED OBSIDIAN HIGH CONTRAST (ZERO MUDDY GRADIENT)
+    let activeHeadX = padLeft + candlePlotW;
 
     // 2. Candlesticks or Smooth Line Chart
     if (useCandles && visibleCandles.length > 0) {
@@ -1399,18 +1442,15 @@ let latestState = null;
         }
       }
       const n = visibleCandles.length;
-      // Caps maximum center-to-center distance to avoid wide horizontal gaps on fullscreen or sparse data
       const maxStep = 13.0;
       const minStep = 5.5;
       const naturalStep = candlePlotW / Math.max(1, n);
       const step = Math.min(maxStep, Math.max(minStep, naturalStep));
-      const bodyW = Math.max(3.5, Math.min(10, Math.round(step * 0.72))); // 72% body, 28% crisp gap
+      const bodyW = Math.max(3.5, Math.min(9.5, Math.round(step * 0.7)));
 
-      // If candles do not fill the whole width (e.g. startup or sparse data), right-align at the candlePlotW boundary
       const totalCandleW = n * step;
       const startX = totalCandleW < candlePlotW ? (padLeft + candlePlotW - totalCandleW) : padLeft;
 
-      // Viewport Clipping for Clean Horizontal Sliding Boundary
       ctx.save();
       ctx.beginPath();
       ctx.rect(padLeft, padTop - 6, candlePlotW + 4, plotH + 12);
@@ -1425,35 +1465,32 @@ let latestState = null;
         if (c.l < minC.l) { minC = c; minIdx = i; }
 
         const cx = startX + (i + 0.5) * step + shiftX;
+        if (i === n - 1) activeHeadX = cx;
+
         const isUp = c.c >= c.o;
         const bodyColor = isUp ? '#00E676' : '#FF334B';
-        const wickColor = isUp ? '#00FF88' : '#FF5E73';
+        const wickColor = isUp ? 'rgba(0, 230, 118, 0.85)' : 'rgba(255, 51, 75, 0.85)';
         const yOpen = toY(c.o);
         const yClose = toY(c.c);
         const yHigh = toY(c.h);
         const yLow = toY(c.l);
 
-        // Wick Shadow
+        // Wick
         ctx.strokeStyle = wickColor;
-        ctx.lineWidth = 1.3;
+        ctx.lineWidth = 1.25;
         ctx.beginPath();
         ctx.moveTo(cx, yHigh);
         ctx.lineTo(cx, yLow);
         ctx.stroke();
 
-        // Real Body (Smoothly morphing height)
+        // Rounded Candle Body
         ctx.fillStyle = bodyColor;
         const topY = Math.min(yOpen, yClose);
         const bHeight = Math.max(2.5, Math.abs(yClose - yOpen));
-        ctx.fillRect(cx - bodyW / 2, topY, bodyW, bHeight);
-
-        // Fine Outline for definition
-        ctx.strokeStyle = isUp ? 'rgba(0, 255, 136, 0.75)' : 'rgba(255, 94, 115, 0.75)';
-        ctx.lineWidth = 0.8;
-        ctx.strokeRect(cx - bodyW / 2, topY, bodyW, bHeight);
+        fillRoundRect(ctx, cx - bodyW / 2, topY, bodyW, bHeight, 1.5);
       });
 
-      // Overlay Silky Smooth Bézier Spline EMA lines on candlesticks
+      // Overlay Silky Smooth Bézier Spline EMA lines
       const drawCandleEma = (emaArr, color, width = 1.6, lineDash = []) => {
         if (!emaArr || emaArr.length < 2) return;
         const sliceEma = emaArr.slice(-n);
@@ -1468,27 +1505,26 @@ let latestState = null;
         drawSmoothCurve(ctx, pts, color, width, lineDash);
       };
 
-      drawCandleEma(ema21, '#FFB800', 1.5);
+      drawCandleEma(ema21, '#FFB800', 1.4);
       drawCandleEma(ema9, '#38BDF8', 1.6);
 
-      // High / Low Markers
+      // Session High / Low Callout Pills
       ctx.save();
-      ctx.font = '9px "Cascadia Mono", Consolas, monospace';
-      ctx.fillStyle = '#CBD5E1';
+      ctx.font = '500 9px "SF Mono", "JetBrains Mono", Consolas, monospace';
+      ctx.fillStyle = '#9A9EA7';
       const maxCx = startX + (maxIdx + 0.5) * step + shiftX;
       const minCx = startX + (minIdx + 0.5) * step + shiftX;
-      ctx.fillText(`H $${maxC.h.toFixed(1)}`, Math.max(padLeft, Math.min(padLeft + candlePlotW - 35, maxCx - 18)), toY(maxC.h) - 4);
-      ctx.fillText(`L $${minC.l.toFixed(1)}`, Math.max(padLeft, Math.min(padLeft + candlePlotW - 35, minCx - 18)), toY(minC.l) + 12);
+      ctx.fillText(`H $${maxC.h.toFixed(1)}`, Math.max(padLeft + 2, Math.min(padLeft + candlePlotW - 42, maxCx - 18)), toY(maxC.h) - 5);
+      ctx.fillText(`L $${minC.l.toFixed(1)}`, Math.max(padLeft + 2, Math.min(padLeft + candlePlotW - 42, minCx - 18)), toY(minC.l) + 12);
       ctx.restore();
 
-      ctx.restore(); // Restore Viewport Clipping
-
+      ctx.restore();
     } else if (rawPrices.length >= 2) {
       const n = Math.min(80, rawPrices.length);
       const visiblePrices = rawPrices.slice(-n);
       const toX = (i) => padLeft + (i / (n - 1)) * candlePlotW;
+      activeHeadX = toX(n - 1);
 
-      // Pure High-Contrast Bézier Spline Lines
       const drawLine = (arr, color, width, lineDash = []) => {
         if (!arr || arr.length < 2) return;
         const sliceArr = arr.slice(-n);
@@ -1503,12 +1539,12 @@ let latestState = null;
         drawSmoothCurve(ctx, pts, color, width, lineDash);
       };
 
-      drawLine(ema21, '#FFB800', 1.5);
-      drawLine(ema9, '#38BDF8', 1.6);
-      drawLine(visiblePrices, '#FFFFFF', 2.2);
+      drawLine(ema21, '#FFB800', 1.4);
+      drawLine(ema9, '#38BDF8', 1.5);
+      drawLine(visiblePrices, '#F2F3F5', 2.0);
     }
 
-    // 3. Strategy Levels, Brackets & Spot Price Badges (Crisp Lines on Pure Obsidian Black)
+    // 3. Strategy Levels, Brackets & Spot Price Badges
     const rightBadges = [];
     const offscreenTop = [];
     const offscreenBot = [];
@@ -1525,9 +1561,9 @@ let latestState = null;
         if (s.take_profit >= minP && s.take_profit <= maxP) {
           yTP = toY(s.take_profit);
           ctx.save();
-          ctx.strokeStyle = sColor;
+          ctx.strokeStyle = hexToRgba(sColor, 0.72);
           ctx.setLineDash([4, 4]);
-          ctx.lineWidth = 1.3;
+          ctx.lineWidth = 1.15;
           ctx.beginPath();
           ctx.moveTo(padLeft, yTP);
           ctx.lineTo(padLeft + plotW, yTP);
@@ -1540,16 +1576,16 @@ let latestState = null;
             stratTag: sTag,
             subTag: 'TP',
             label: `$${s.take_profit.toFixed(0)}`,
-            color: '#00E676',
+            color: '#4ADE80',
             stratColor: sColor,
             type: 'tp'
           });
         } else if (s.take_profit > maxP) {
           const diffPct = spot > 0 ? (((s.take_profit - spot) / spot) * 100).toFixed(1) : '0';
-          offscreenTop.push({ label: `[${sTag}] TP $${s.take_profit.toFixed(0)} (+${diffPct}%)`, color: sColor });
+          offscreenTop.push({ label: `${sTag} TP $${s.take_profit.toFixed(0)} (+${diffPct}%)`, color: sColor });
         } else if (s.take_profit < minP) {
           const diffPct = spot > 0 ? (((spot - s.take_profit) / spot) * 100).toFixed(1) : '0';
-          offscreenBot.push({ label: `[${sTag}] TP $${s.take_profit.toFixed(0)} (-${diffPct}%)`, color: sColor });
+          offscreenBot.push({ label: `${sTag} TP $${s.take_profit.toFixed(0)} (-${diffPct}%)`, color: sColor });
         }
       }
 
@@ -1558,9 +1594,9 @@ let latestState = null;
         if (s.entry_price >= minP && s.entry_price <= maxP) {
           yEntry = toY(s.entry_price);
           ctx.save();
-          ctx.strokeStyle = sColor;
+          ctx.strokeStyle = hexToRgba(sColor, 0.85);
           ctx.setLineDash([2, 3]);
-          ctx.lineWidth = 1.4;
+          ctx.lineWidth = 1.25;
           ctx.beginPath();
           ctx.moveTo(padLeft, yEntry);
           ctx.lineTo(padLeft + plotW, yEntry);
@@ -1573,7 +1609,7 @@ let latestState = null;
             stratTag: sTag,
             subTag: 'IN',
             label: `$${s.entry_price.toFixed(0)}`,
-            color: '#FFFFFF',
+            color: '#F2F3F5',
             stratColor: sColor,
             type: 'entry'
           });
@@ -1585,9 +1621,9 @@ let latestState = null;
         if (s.stop_loss >= minP && s.stop_loss <= maxP) {
           ySL = toY(s.stop_loss);
           ctx.save();
-          ctx.strokeStyle = sColor;
+          ctx.strokeStyle = hexToRgba(sColor, 0.72);
           ctx.setLineDash([4, 4]);
-          ctx.lineWidth = 1.3;
+          ctx.lineWidth = 1.15;
           ctx.beginPath();
           ctx.moveTo(padLeft, ySL);
           ctx.lineTo(padLeft + plotW, ySL);
@@ -1600,30 +1636,29 @@ let latestState = null;
             stratTag: sTag,
             subTag: 'SL',
             label: `$${s.stop_loss.toFixed(0)}`,
-            color: '#FF334B',
+            color: '#FB7185',
             stratColor: sColor,
             type: 'sl'
           });
         } else if (s.stop_loss < minP) {
           const diffPct = spot > 0 ? (((spot - s.stop_loss) / spot) * 100).toFixed(1) : '0';
-          offscreenBot.push({ label: `[${sTag}] SL $${s.stop_loss.toFixed(0)} (-${diffPct}%)`, color: sColor });
+          offscreenBot.push({ label: `${sTag} SL $${s.stop_loss.toFixed(0)} (-${diffPct}%)`, color: sColor });
         } else if (s.stop_loss > maxP) {
           const diffPct = spot > 0 ? (((s.stop_loss - spot) / spot) * 100).toFixed(1) : '0';
-          offscreenTop.push({ label: `[${sTag}] SL $${s.stop_loss.toFixed(0)} (+${diffPct}%)`, color: sColor });
+          offscreenTop.push({ label: `${sTag} SL $${s.stop_loss.toFixed(0)} (+${diffPct}%)`, color: sColor });
         }
       }
 
-      // Vertical Bracket Connector (bidirectional)
+      // Vertical Bracket Connector in Corridor
       const validYs = [yTP, yEntry, ySL].filter(y => y !== null);
       if (validYs.length >= 2) {
         const bracketTop = Math.min(...validYs);
         const bracketBot = Math.max(...validYs);
         if (bracketBot > bracketTop + 2) {
-          // Positioned neatly in the open corridor between newest candle and right badges
           const bx = padLeft + candlePlotW + 12 + (idx * 10);
           ctx.save();
-          ctx.strokeStyle = sColor;
-          ctx.lineWidth = 1.6;
+          ctx.strokeStyle = hexToRgba(sColor, 0.85);
+          ctx.lineWidth = 1.5;
           ctx.beginPath();
           ctx.moveTo(bx, bracketTop);
           ctx.lineTo(bx, bracketBot);
@@ -1647,9 +1682,9 @@ let latestState = null;
     if (vwapVal >= minP && vwapVal <= maxP) {
       const vy = toY(vwapVal);
       ctx.save();
-      ctx.strokeStyle = 'rgba(20, 241, 149, 0.75)';
+      ctx.strokeStyle = 'rgba(20, 241, 149, 0.65)';
       ctx.setLineDash([4, 4]);
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 1.25;
       ctx.beginPath();
       ctx.moveTo(padLeft, vy);
       ctx.lineTo(padLeft + plotW, vy);
@@ -1673,9 +1708,9 @@ let latestState = null;
     if (orbHigh > 0 && orbHigh >= minP && orbHigh <= maxP) {
       const ohy = toY(orbHigh);
       ctx.save();
-      ctx.strokeStyle = 'rgba(168, 85, 247, 0.65)';
+      ctx.strokeStyle = 'rgba(168, 85, 247, 0.58)';
       ctx.setLineDash([3, 3]);
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.15;
       ctx.beginPath();
       ctx.moveTo(padLeft, ohy);
       ctx.lineTo(padLeft + plotW, ohy);
@@ -1688,7 +1723,7 @@ let latestState = null;
         stratTag: 'ORB',
         subTag: 'H',
         label: `$${orbHigh.toFixed(0)}`,
-        color: '#A855F7',
+        color: '#C084FC',
         stratColor: '#A855F7',
         type: 'orb'
       });
@@ -1696,9 +1731,9 @@ let latestState = null;
     if (orbLow > 0 && orbLow >= minP && orbLow <= maxP) {
       const oly = toY(orbLow);
       ctx.save();
-      ctx.strokeStyle = 'rgba(168, 85, 247, 0.65)';
+      ctx.strokeStyle = 'rgba(168, 85, 247, 0.58)';
       ctx.setLineDash([3, 3]);
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.15;
       ctx.beginPath();
       ctx.moveTo(padLeft, oly);
       ctx.lineTo(padLeft + plotW, oly);
@@ -1711,22 +1746,32 @@ let latestState = null;
         stratTag: 'ORB',
         subTag: 'L',
         label: `$${orbLow.toFixed(0)}`,
-        color: '#A855F7',
+        color: '#C084FC',
         stratColor: '#A855F7',
         type: 'orb'
       });
     }
 
-    // Spot Price Line & Right Badge (Smooth gliding position)
+    // Spot Price Line, Live Head Dot & Right Badge
     if (spot >= minP && spot <= maxP) {
       const sy = toY(spot);
       ctx.save();
-      ctx.strokeStyle = 'rgba(255, 107, 53, 0.95)';
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
       ctx.setLineDash([3, 3]);
-      ctx.lineWidth = 1.3;
+      ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.moveTo(padLeft, sy);
       ctx.lineTo(padLeft + plotW, sy);
+      ctx.stroke();
+
+      // Stageshow .ss-chart__dot at active candle/curve head
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#38BDF8';
+      ctx.strokeStyle = '#0C0D10';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(Math.min(padLeft + candlePlotW, activeHeadX), sy, 4, 0, Math.PI * 2);
+      ctx.fill();
       ctx.stroke();
       ctx.restore();
 
@@ -1737,14 +1782,14 @@ let latestState = null;
         subTag: '',
         label: '$' + spot.toFixed(1),
         color: '#FFFFFF',
-        stratColor: '#FF6B35',
+        stratColor: '#0284C7',
         type: 'spot',
         isSpot: true
       });
     }
 
-    // 4. Collision-Free Right Badges Layout (Enhanced Spacing & Boundary Safety)
-    const badgeH = 15;
+    // 4. Collision-Free Right Badges Layout (Stageshow Rounded Pills)
+    const badgeH = 16;
     rightBadges.forEach(b => { b.drawY = b.rawY; });
     rightBadges.sort((a, b) => a.drawY - b.drawY);
 
@@ -1772,7 +1817,7 @@ let latestState = null;
 
     rightBadges.forEach(b => {
       const by = b.drawY;
-      const rx = padLeft + plotW + 2;
+      const rx = padLeft + plotW + 3;
 
       ctx.save();
       if (Math.abs(by - b.rawY) > 2) {
@@ -1786,105 +1831,101 @@ let latestState = null;
       }
 
       if (b.isSpot) {
-        ctx.font = 'bold 10px "Cascadia Mono", Consolas, monospace';
+        ctx.font = '600 10px "SF Mono", "JetBrains Mono", Consolas, monospace';
         const txtW = ctx.measureText(b.label).width;
-        const rw = Math.max(88, txtW + 14);
+        const rw = Math.max(88, txtW + 16);
 
-        ctx.fillStyle = '#FF6B35';
-        ctx.fillRect(rx, by - 8, rw, 16);
+        ctx.fillStyle = '#0284C7';
+        fillRoundRect(ctx, rx, by - 8, rw, 16, 5);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+        ctx.lineWidth = 1;
+        strokeRoundRect(ctx, rx, by - 8, rw, 16, 5);
+
         ctx.fillStyle = '#FFFFFF';
         ctx.fillText(b.label, rx + (rw - txtW) / 2, by + 3.5);
       } else {
-        ctx.font = 'bold 8px "Cascadia Mono", Consolas, monospace';
+        ctx.font = '600 8.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
         const tagText = b.subTag ? `${b.stratTag}·${b.subTag}` : b.stratTag;
         const tagW = ctx.measureText(tagText).width;
 
-        ctx.font = '8.5px "Cascadia Mono", Consolas, monospace';
+        ctx.font = '500 8.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
         const valW = ctx.measureText(b.label).width;
+        const rw = Math.max(88, tagW + valW + 20);
 
-        // Auto-fit box width so numbers and text NEVER overflow the bounding box
-        const rw = Math.max(88, tagW + valW + 14);
+        // Stageshow Raised Pill
+        ctx.fillStyle = '#1D2027';
+        fillRoundRect(ctx, rx, by - 7.5, rw, 15, 4.5);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.09)';
+        ctx.lineWidth = 1;
+        strokeRoundRect(ctx, rx, by - 7.5, rw, 15, 4.5);
 
-        // Bounding box with clean background and border
-        ctx.fillStyle = 'rgba(14, 17, 24, 0.95)';
-        ctx.fillRect(rx, by - 7, rw, 14);
-        ctx.strokeStyle = hexToRgba(b.stratColor, 0.7);
-        ctx.strokeRect(rx, by - 7, rw, 14);
-
-        // Colored left accent bar
+        // Strategy Color Dot inside Pill
         ctx.fillStyle = b.stratColor;
-        ctx.fillRect(rx, by - 7, 3, 14);
+        ctx.beginPath();
+        ctx.arc(rx + 6.5, by, 2.5, 0, Math.PI * 2);
+        ctx.fill();
 
-        // Clip region to strictly guarantee zero pixel spills outside
         ctx.save();
         ctx.beginPath();
-        ctx.rect(rx + 3, by - 7, rw - 4, 14);
+        ctx.rect(rx + 10, by - 7.5, rw - 12, 15);
         ctx.clip();
 
-        // Strategy Tag
-        ctx.font = 'bold 8px "Cascadia Mono", Consolas, monospace';
+        ctx.font = '600 8px "SF Mono", "JetBrains Mono", Consolas, monospace';
         ctx.fillStyle = b.stratColor;
-        ctx.fillText(tagText, rx + 6, by + 3.5);
+        ctx.fillText(tagText, rx + 12, by + 3);
 
-        // Price Label (placed dynamically after tagText to prevent any text collision)
-        ctx.font = '8.5px "Cascadia Mono", Consolas, monospace';
+        ctx.font = '500 8.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
         ctx.fillStyle = b.color;
-        ctx.fillText(b.label, rx + 6 + tagW + 4, by + 3.5);
+        ctx.fillText(b.label, rx + 12 + tagW + 4, by + 3);
 
         ctx.restore();
       }
       ctx.restore();
     });
 
-    // 5. Draw Off-Screen Order Indicators (top & bottom edges in Auto mode)
+    // 5. Off-Screen Order Indicator Pills (Auto Scale Mode)
     if (scaleMode === 'auto') {
       const maxPillX = padLeft + plotW - 12;
       if (offscreenTop.length > 0) {
         ctx.save();
-        ctx.font = '9px "Cascadia Mono", Consolas, monospace';
+        ctx.font = '500 9px "SF Mono", "JetBrains Mono", Consolas, monospace';
         let tx = padLeft + 6;
         for (const item of offscreenTop.slice(0, 4)) {
-          const tw = ctx.measureText(item.label).width + 8;
+          const tw = ctx.measureText(item.label).width + 12;
           if (tx + tw > maxPillX) break;
-          ctx.fillStyle = hexToRgba(item.color, 0.16);
-          ctx.strokeStyle = hexToRgba(item.color, 0.6);
-          ctx.fillRect(tx, padTop + 2, tw, 15);
-          ctx.strokeRect(tx, padTop + 2, tw, 15);
+          ctx.fillStyle = '#1D2027';
+          fillRoundRect(ctx, tx, padTop + 2, tw, 16, 5);
+          ctx.strokeStyle = hexToRgba(item.color, 0.45);
+          strokeRoundRect(ctx, tx, padTop + 2, tw, 16, 5);
           ctx.fillStyle = item.color;
-          ctx.fillText(item.label, tx + 4, padTop + 13);
-          tx += tw + 5;
+          ctx.fillText(item.label, tx + 6, padTop + 13);
+          tx += tw + 6;
         }
         ctx.restore();
       }
 
       if (offscreenBot.length > 0) {
         ctx.save();
-        ctx.font = '9px "Cascadia Mono", Consolas, monospace';
+        ctx.font = '500 9px "SF Mono", "JetBrains Mono", Consolas, monospace';
         let sx = padLeft + 6;
         for (const item of offscreenBot.slice(0, 4)) {
-          const tw = ctx.measureText(item.label).width + 8;
+          const tw = ctx.measureText(item.label).width + 12;
           if (sx + tw > maxPillX) break;
-          ctx.fillStyle = hexToRgba(item.color, 0.16);
-          ctx.strokeStyle = hexToRgba(item.color, 0.6);
-          ctx.fillRect(sx, padTop + plotH - 18, tw, 15);
-          ctx.strokeRect(sx, padTop + plotH - 18, tw, 15);
+          ctx.fillStyle = '#1D2027';
+          fillRoundRect(ctx, sx, padTop + plotH - 18, tw, 16, 5);
+          ctx.strokeStyle = hexToRgba(item.color, 0.45);
+          strokeRoundRect(ctx, sx, padTop + plotH - 18, tw, 16, 5);
           ctx.fillStyle = item.color;
-          ctx.fillText(item.label, sx + 4, padTop + plotH - 7);
-          sx += tw + 5;
+          ctx.fillText(item.label, sx + 6, padTop + plotH - 7);
+          sx += tw + 6;
         }
         ctx.restore();
       }
     }
 
-    // 6. Active Strategy Entry Beacon Waves (Sonar Wave / Radar Ping)
+    // 6. Active Strategy Entry Beacon Waves
     if (chartBeacons && chartBeacons.length > 0) {
       const now = Date.now();
-      const n = useCandles ? visibleCandles.length : rawPrices.length;
-      const step = candlePlotW / Math.max(1, n);
-      const totalCandleW = n * step;
-      const startX = totalCandleW < candlePlotW ? (padLeft + candlePlotW - totalCandleW) : padLeft;
-      const activeHeadX = startX + (Math.max(0, n - 1) + 0.5) * step + (useCandles ? candleSlideOffset : 0);
-
       chartBeacons.forEach(b => {
         const elapsed = now - b.startTime;
         if (elapsed >= b.duration) return;
@@ -1893,58 +1934,67 @@ let latestState = null;
         const bx = Math.min(padLeft + candlePlotW + 4, Math.max(padLeft + 12, activeHeadX));
 
         ctx.save();
-        // Ring 1
-        const r1 = 4 + p * 32;
-        const a1 = Math.max(0, (1 - p) * 0.9);
+        const r1 = 4 + p * 30;
+        const a1 = Math.max(0, (1 - p) * 0.85);
         ctx.strokeStyle = b.color;
         ctx.globalAlpha = a1;
-        ctx.lineWidth = 2.0 * (1 - p);
-        ctx.shadowColor = b.color;
-        ctx.shadowBlur = 10;
+        ctx.lineWidth = 1.8 * (1 - p);
         ctx.beginPath();
         ctx.arc(bx, by, r1, 0, Math.PI * 2);
         ctx.stroke();
 
-        // Ring 2
         const p2 = (p + 0.38) % 1;
-        const r2 = 4 + p2 * 32;
-        const a2 = Math.max(0, (1 - p2) * 0.65);
+        const r2 = 4 + p2 * 30;
+        const a2 = Math.max(0, (1 - p2) * 0.6);
         ctx.globalAlpha = a2;
-        ctx.lineWidth = 1.6 * (1 - p2);
+        ctx.lineWidth = 1.4 * (1 - p2);
         ctx.beginPath();
         ctx.arc(bx, by, r2, 0, Math.PI * 2);
         ctx.stroke();
 
-        // Pulsing Core
         const pulse = Math.sin(p * Math.PI * 8);
         ctx.globalAlpha = 0.95;
         ctx.fillStyle = b.color;
         ctx.beginPath();
-        ctx.arc(bx, by, 3.2 + pulse * 1.3, 0, Math.PI * 2);
+        ctx.arc(bx, by, 3.2 + pulse * 1.1, 0, Math.PI * 2);
         ctx.fill();
 
-        // Beacon Flag Badge (placed above/left of pulse without overlapping price scale)
         ctx.fillStyle = b.color;
-        ctx.font = 'bold 8.5px "Cascadia Mono", Consolas, monospace';
-        ctx.fillText(`[${b.stratTag}] ENTRY`, Math.max(padLeft + 6, bx - 35), by - 10);
+        ctx.font = '600 8.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
+        ctx.fillText(`${b.stratTag} ENTRY`, Math.max(padLeft + 6, bx - 35), by - 10);
         ctx.restore();
       });
     }
 
-    // 7. Interactive Hover Crosshair
+    // 7. Stageshow Interactive Scrub Hairline & Intersection Dot (examples/chart-scrub)
     if (priceHoverPos && priceHoverPos.x >= padLeft && priceHoverPos.x <= padLeft + plotW) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(243, 239, 230, 0.35)';
-      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(priceHoverPos.x, padTop);
-      ctx.lineTo(priceHoverPos.x, padTop + plotH);
+      const hx = hoveredCandleData ? hoveredCandleData.cx : priceHoverPos.x;
+      ctx.moveTo(hx, padTop);
+      ctx.lineTo(hx, padTop + plotH);
       ctx.stroke();
+
       if (priceHoverPos.y >= padTop && priceHoverPos.y <= padTop + plotH) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.setLineDash([3, 3]);
         ctx.beginPath();
         ctx.moveTo(padLeft, priceHoverPos.y);
         ctx.lineTo(padLeft + plotW, priceHoverPos.y);
+        ctx.stroke();
+      }
+
+      if (hoveredCandleData) {
+        const cy = toY(hoveredCandleData.c);
+        ctx.setLineDash([]);
+        ctx.fillStyle = hoveredCandleData.c >= hoveredCandleData.o ? '#00E676' : '#FF334B';
+        ctx.strokeStyle = '#121418';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(hoveredCandleData.cx, cy, 4.5, 0, Math.PI * 2);
+        ctx.fill();
         ctx.stroke();
       }
       ctx.restore();
@@ -1969,6 +2019,7 @@ let latestState = null;
     if (!latestState) return;
     const wrap = document.getElementById('priceCanvasWrap');
     const tip = document.getElementById('priceTooltip');
+    const scrubEl = document.getElementById('chartScrubReadout');
     if (!wrap || !tip) return;
 
     const rect = wrap.getBoundingClientRect();
@@ -1981,7 +2032,7 @@ let latestState = null;
 
       const candles = (animCandles && animCandles.length > 0) ? animCandles : (latestState.candles || []);
       const useCandles = chartMode === 'candles' && candles.length >= 2;
-      const padLeft = 10, padRight = 96;
+      const padLeft = 12, padRight = 98;
       const candleRightOffset = 80;
       const plotW = Math.max(50, rect.width - padLeft - padRight);
       const candlePlotW = Math.max(50, plotW - candleRightOffset);
@@ -1998,26 +2049,39 @@ let latestState = null;
         const idx = Math.floor((mouseX - startX - shiftX) / step);
         if (idx >= 0 && idx < n) {
           const c = candles[idx];
+          const cx = startX + (idx + 0.5) * step + shiftX;
+          hoveredCandleData = { o: c.o, h: c.h, l: c.l, c: c.c, cx };
           const isUp = c.c >= c.o;
           const chg = c.o > 0 ? (((c.c - c.o) / c.o) * 100).toFixed(2) : '0.00';
           const tStr = new Date(c.t * 1000).toTimeString().split(' ')[0];
+
+          if (scrubEl) {
+            scrubEl.textContent = `${tStr} · O $${c.o.toFixed(1)} · H $${c.h.toFixed(1)} · L $${c.l.toFixed(1)} · C $${c.c.toFixed(1)} (${isUp ? '+' : ''}${chg}%)`;
+          }
+
           tip.style.display = 'block';
-          tip.style.left = Math.min(rect.width - 190, Math.max(10, mouseX + 12)) + 'px';
-          tip.style.top = Math.max(10, mouseY - 55) + 'px';
+          tip.style.left = Math.min(rect.width - 195, Math.max(10, mouseX + 14)) + 'px';
+          tip.style.top = Math.max(10, mouseY - 58) + 'px';
           tip.innerHTML = `
-            <div style="font-weight:700;color:var(--text-secondary);">${tStr} (1m Candle)</div>
-            <div>O: <strong>$${c.o.toFixed(1)}</strong> H: <strong>$${c.h.toFixed(1)}</strong></div>
-            <div>L: <strong>$${c.l.toFixed(1)}</strong> C: <strong class="${isUp ? 'up' : 'down'}">$${c.c.toFixed(1)} (${chg}%)</strong></div>
+            <div style="font-weight:600;color:var(--ss-text);margin-bottom:2px;">${tStr} · 1m Candle</div>
+            <div>O <strong>$${c.o.toFixed(1)}</strong> · H <strong>$${c.h.toFixed(1)}</strong></div>
+            <div>L <strong>$${c.l.toFixed(1)}</strong> · C <strong class="${isUp ? 'up' : 'down'}">$${c.c.toFixed(1)} (${isUp ? '+' : ''}${chg}%)</strong></div>
           `;
         } else {
+          hoveredCandleData = null;
           tip.style.display = 'none';
         }
       } else {
+        hoveredCandleData = null;
         tip.style.display = 'none';
       }
     } else {
       priceHoverPos = null;
+      hoveredCandleData = null;
       tip.style.display = 'none';
+      if (scrubEl) {
+        scrubEl.textContent = chartMode === 'candles' ? '1m Candles · Smooth Spline Indicators' : 'Trend Line · Smooth Spline Indicators';
+      }
     }
     drawPriceChart(latestState);
   }
@@ -2027,10 +2091,8 @@ let latestState = null;
     const wrap = document.getElementById('priceCanvasWrap');
     if (!wrap) return;
 
-    // 1. Force layout resize & canvas buffer update
     triggerSmoothResize();
 
-    // 2. Auto-locate mouse position and refresh crosshair/tooltip
     const isHovered = document.querySelector('#priceCanvasWrap:hover') !== null;
     if (isHovered && lastGlobalPointerX >= 0 && lastGlobalPointerY >= 0) {
       updateChartMouseHover(lastGlobalPointerX, lastGlobalPointerY);
@@ -2041,18 +2103,20 @@ let latestState = null;
         updateChartMouseHover(lastGlobalPointerX, lastGlobalPointerY);
       } else {
         priceHoverPos = null;
+        hoveredCandleData = null;
         drawPriceChart(latestState);
       }
     } else {
       priceHoverPos = null;
+      hoveredCandleData = null;
       drawPriceChart(latestState);
     }
   }
 
-  // Interactive Hover Tooltip for Price Chart
   function setupChartInteraction() {
     const wrap = document.getElementById('priceCanvasWrap');
     const tip = document.getElementById('priceTooltip');
+    const scrubEl = document.getElementById('chartScrubReadout');
     if (!wrap || !tip) return;
 
     wrap.addEventListener('mousemove', (e) => {
@@ -2069,7 +2133,11 @@ let latestState = null;
 
     wrap.addEventListener('mouseleave', () => {
       priceHoverPos = null;
+      hoveredCandleData = null;
       tip.style.display = 'none';
+      if (scrubEl) {
+        scrubEl.textContent = chartMode === 'candles' ? '1m Candles · Smooth Spline Indicators' : 'Trend Line · Smooth Spline Indicators';
+      }
       if (latestState) drawPriceChart(latestState);
     });
   }
@@ -2108,7 +2176,6 @@ let latestState = null;
     }
   }
 
-  // Handle F11 keypress across entire window for Fullscreen Toggle
   window.addEventListener('keydown', function(e) {
     if (e.key === 'F11' || e.code === 'F11' || e.keyCode === 122) {
       e.preventDefault();
@@ -2146,8 +2213,8 @@ let latestState = null;
     if (subEl) {
       const secNum = now.getSeconds();
       const nextCadence = (5 - (secNum % 5)) % 5 || 5;
-      const feedPart = lastCadenceFeedTs ? `Feed Slot: ${lastCadenceFeedTs} | ` : '';
-      subEl.textContent = `UI Isochronous Time: ${timeStr} | ${feedPart}Next 5s Cadence in ${nextCadence}s | Baseline: $100,000.00 / Strategy ($600,000 Total)`;
+      const feedPart = lastCadenceFeedTs ? `Feed ${lastCadenceFeedTs} · ` : '';
+      subEl.textContent = `Isochronous ${timeStr} · ${feedPart}Next 5s Cadence in ${nextCadence}s · Baseline $100,000.00 / Strategy ($600,000 Total)`;
     }
   }
 
@@ -2162,20 +2229,15 @@ let latestState = null;
     currentMainView = viewName;
     const arenaEl = document.querySelector('.workspace-grid');
     const intelEl = document.getElementById('intelHubMainView');
-    const btnArena = document.getElementById('btnViewArena');
-    const btnIntel = document.getElementById('btnViewIntel');
+    syncSegThumb('mainViewSeg', viewName === 'intel' ? 1 : 0);
 
     if (viewName === 'intel') {
       if (arenaEl) arenaEl.style.display = 'none';
       if (intelEl) intelEl.style.display = 'flex';
-      if (btnArena) btnArena.classList.remove('active');
-      if (btnIntel) btnIntel.classList.add('active');
       if (latestState) renderIntelHub(latestState);
     } else {
       if (intelEl) intelEl.style.display = 'none';
       if (arenaEl) arenaEl.style.display = 'grid';
-      if (btnIntel) btnIntel.classList.remove('active');
-      if (btnArena) btnArena.classList.add('active');
       triggerSmoothResize();
     }
   }
@@ -2199,7 +2261,7 @@ let latestState = null;
     } finally {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = '\u21BB Refresh AI Digest';
+        btn.textContent = 'Refresh AI Digest';
       }
     }
   }
@@ -2215,8 +2277,8 @@ let latestState = null;
     const statusPill = document.getElementById('omniGatewayStatusPill');
     if (statusPill) {
       const isOnline = omni.status === 'ONLINE';
-      statusPill.className = `intel-status-pill ${isOnline ? 'online' : 'standby'}`;
-      statusPill.innerHTML = isOnline ? '&#x25CF; ONLINE (24/7)' : '&#x25CF; STANDBY / LOCAL NLP';
+      statusPill.className = `intel-status-pill ss-badge ${isOnline ? 'online' : 'standby'}`;
+      statusPill.innerHTML = `<span class="ss-badge__dot"></span><span class="ss-badge__label">${isOnline ? 'ONLINE (24/7)' : 'STANDBY / LOCAL NLP'}</span>`;
     }
 
     const epEl = document.getElementById('omniEndpointVal');
@@ -2262,7 +2324,7 @@ let latestState = null;
       let cls = 'neutral';
       if (reg.includes('SURGE')) cls = 'surge';
       else if (reg.includes('PANIC') || reg.includes('CHOP')) cls = 'standby';
-      regBadge.className = `intel-status-pill ${cls}`;
+      regBadge.className = `intel-status-pill ss-badge ${cls}`;
       regBadge.textContent = reg;
     }
 
@@ -2302,7 +2364,7 @@ let latestState = null;
       if (currentMainView !== 'intel' && listContainer.children.length > 0) {
         // Hub panel is hidden; preserve existing DOM nodes to save rendering cycles
       } else if (events.length === 0) {
-        listContainer.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center;">Synchronizing multi-domain live intelligence stream...</div>';
+        listContainer.innerHTML = '<div style="color:var(--ss-text-faint);font-size:12px;padding:24px;text-align:center;">Synchronizing multi-domain live intelligence stream...</div>';
       } else {
         listContainer.innerHTML = events.map(evt => {
           const sent = Number(evt.sentiment || 0);
@@ -2311,9 +2373,9 @@ let latestState = null;
           else if (sent < -0.2) { sentCls = 'bearish'; sentTxt = `${sent.toFixed(2)} Bearish`; }
 
           const urg = Number(evt.urgency || 5);
-          const urgBadge = urg >= 8 
-            ? `<span class="intel-urgency-badge">URG ${urg}/10 CRITICAL</span>`
-            : `<span class="intel-domain-badge">URG ${urg}/10</span>`;
+          const urgBadge = urg >= 8
+            ? `<span class="intel-urgency-badge num">URG ${urg}/10 CRITICAL</span>`
+            : `<span class="intel-domain-badge num">URG ${urg}/10</span>`;
 
           const actions = evt.strategy_actions || [];
           let actionsHtml = '';
@@ -2340,7 +2402,7 @@ let latestState = null;
               <div class="intel-card-headline">${escapeHtml(evt.headline || '')}</div>
               <div class="intel-card-summary">${escapeHtml(evt.summary || '')}</div>
               <div class="intel-strategy-actions-box">
-                <div class="intel-strategy-box-title">Arena Competitor Impact (Strategies 1 ~ 6):</div>
+                <div class="intel-strategy-box-title">Arena Competitor Impact (Strategies 1 ~ 6)</div>
                 <div class="strat-actions-wrap">
                   ${actionsHtml}
                 </div>
@@ -2364,8 +2426,8 @@ let latestState = null;
     setInterval(pollBackend, 1000);
   });
 
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && !isPolling) {
-    pollBackend();
-  }
-});
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !isPolling) {
+      pollBackend();
+    }
+  });

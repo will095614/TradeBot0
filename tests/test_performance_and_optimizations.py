@@ -236,4 +236,27 @@ def test_newly_fetched_news_always_summarized_in_traditional_chinese():
     asyncio.run(_run())
 
 
+def test_stageshow_ui_design_system_integrity():
+    from pathlib import Path
+    assets_dir = Path(__file__).resolve().parent.parent / "src" / "gui" / "assets"
+    html = (assets_dir / "index.html").read_text(encoding="utf-8")
+    css = (assets_dir / "app.css").read_text(encoding="utf-8")
+    js = (assets_dir / "app.js").read_text(encoding="utf-8")
+
+    # Stageshow tokens & surface ladder
+    for token in ["--ss-well", "--ss-canvas", "--ss-surface", "--ss-chrome", "--ss-raised", "--ss-line", "--ss-shadow-window"]:
+        assert token in css, f"Missing Stageshow token {token} in app.css"
+
+    # Balanced CSS braces check (prevents dangling closing braces)
+    assert css.count("{") == css.count("}"), f"Unbalanced braces in app.css: {css.count('{')} open vs {css.count('}')} close"
+
+    # Stageshow components in HTML & JS
+    for marker in ["ss-window-lights", "ss-seg__thumb", "ss-badge", "ss-meter", "chartScrubReadout", "rightTabSeg"]:
+        assert marker in html, f"Missing Stageshow element {marker} in index.html"
+
+    assert "function syncSegThumb" in js
+    assert "chartScrubReadout" in js
+
+
+
 
