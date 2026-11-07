@@ -404,7 +404,7 @@ class IntelligenceHarvester:
 
         # Build concise extraction prompt
         lines = []
-        for idx, e in enumerate(events[:12], start=1):
+        for idx, e in enumerate(events[:6], start=1):
             lines.append(f"{idx}. [{e.source} | {e.domain}] {e.title}")
         news_block = "\n".join(lines)
 
@@ -430,7 +430,7 @@ class IntelligenceHarvester:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=0.0,
-            max_tokens=1500,
+            max_tokens=2500,
         )
 
         structured_results: List[StructuredEvent] = []
