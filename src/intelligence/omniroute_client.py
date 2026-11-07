@@ -114,6 +114,8 @@ class OmniRouteClient:
         self.successful_requests: int = 0
         self.failed_requests: int = 0
         self.retried_requests: int = 0
+        self.total_tokens_used: int = 0
+        self.total_tokens_saved: int = 0
 
     async def get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -186,6 +188,9 @@ class OmniRouteClient:
                             body = await resp.json()
                             self.is_gateway_online = True
                             self.successful_requests += 1
+                            usage = body.get("usage", {})
+                            if isinstance(usage, dict):
+                                self.total_tokens_used += int(usage.get("total_tokens", 0))
                             choices = body.get("choices", [])
                             if choices and "message" in choices[0]:
                                 content = choices[0]["message"].get("content", "")
@@ -210,6 +215,11 @@ class OmniRouteClient:
                         logger.warning("OmniRoute request terminated with HTTP %d (attempt %d)", status, attempt)
                         return None
 
+            except aiohttp.ClientConnectorError as exc:
+                self.failed_requests += 1
+                self.is_gateway_online = False
+                logger.debug("OmniRoute gateway offline (connection refused): %s", exc)
+                return None
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt < self.max_retries:
                     self.retried_requests += 1

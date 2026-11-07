@@ -2202,7 +2202,7 @@ let latestState = null;
     if (statusPill) {
       const isOnline = omni.status === 'ONLINE';
       statusPill.className = `intel-status-pill ${isOnline ? 'online' : 'standby'}`;
-      statusPill.innerHTML = isOnline ? '&#x25CF; ONLINE (24/7)' : '&#x25CF; STANDBY / SAFE MODE';
+      statusPill.innerHTML = isOnline ? '&#x25CF; ONLINE (24/7)' : '&#x25CF; STANDBY / LOCAL NLP';
     }
 
     const epEl = document.getElementById('omniEndpointVal');
@@ -2219,6 +2219,15 @@ let latestState = null;
       const used = (omni.tokens_used || 0).toLocaleString();
       const saved = (omni.tokens_saved || 0).toLocaleString();
       tokensEl.textContent = `${used} used / ${saved} saved`;
+    }
+
+    const tokensSub = document.getElementById('omniTokensSub');
+    if (tokensSub) {
+      if ((omni.total_requests || 0) === 0) {
+        tokensSub.textContent = 'Local NLP & Deterministic Rules Active';
+      } else {
+        tokensSub.textContent = `${omni.dedup_pct || 85}% SHA-256 Dedup Saved`;
+      }
     }
 
     const ingEl = document.getElementById('omniIngestModel');

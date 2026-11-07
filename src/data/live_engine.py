@@ -518,7 +518,8 @@ class LiveArenaEngine:
             self.macro_commander.record_strategy_action(
                 pid, competitor.base_name.split(' ')[0],
                 f"{side.value} Blocked by Macro Veto ({self.macro_commander.current_state.directional_bias})",
-                "loss"
+                "loss",
+                is_macro_action=True,
             )
             return False
 
