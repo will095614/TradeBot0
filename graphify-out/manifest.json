@@ -1200,9 +1200,9 @@
     "semantic_hash": ""
   },
   "src/gui/assets/app.js": {
-    "mtime": 1794051116.247935,
-    "seen": 1794051237.6479604,
-    "ast_hash": "6e2e676541600cd0ec2f9afca07290ed",
+    "mtime": 1794064285.6297119,
+    "seen": 1794064324.299458,
+    "ast_hash": "fa6ba081f027083bcb8808401bfce002",
     "semantic_hash": ""
   },
   "src/gui/dashboard.py": {
@@ -1266,9 +1266,9 @@
     "semantic_hash": ""
   },
   "tests/test_performance_and_optimizations.py": {
-    "mtime": 1794051231.9212897,
-    "seen": 1794051237.6479604,
-    "ast_hash": "61e9f9ea6138d9b8393a2d73ab951847",
+    "mtime": 1794064234.497751,
+    "seen": 1794064269.6457775,
+    "ast_hash": "eccc7178b86224b32658290ba4b4f935",
     "semantic_hash": ""
   },
   "tests/test_phase1_cadence_and_ranking.py": {
@@ -1572,9 +1572,9 @@
     "semantic_hash": ""
   },
   "src/gui/assets/index.html": {
-    "mtime": 1794050659.144982,
-    "seen": 1794051237.6479604,
-    "ast_hash": "8812af01aef32ad287a4a5ca599ff40b",
+    "mtime": 1794063955.4518216,
+    "seen": 1794064269.6694887,
+    "ast_hash": "b1d5cfe0a0ecd6002a5400b13b2c7f44",
     "semantic_hash": ""
   },
   "tradebot0_arena_audit_and_remediation_plan.md": {
@@ -1857,6 +1857,120 @@
     "mtime": 1794044703.6820502,
     "seen": 1794045297.5179214,
     "ast_hash": "6a70cd18c51a4cd669c26f93af523291",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/buttons.json": {
+    "mtime": 1794063068.4372196,
+    "seen": 1794063196.0929444,
+    "ast_hash": "0afe1fd910ae8c669d877ab00b216ecb",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/cards.json": {
+    "mtime": 1794063068.447232,
+    "seen": 1794063196.0929444,
+    "ast_hash": "90b7d3ef0dbd18c64cae90bb9718d13d",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/checkboxes.json": {
+    "mtime": 1794063068.4645462,
+    "seen": 1794063196.0929444,
+    "ast_hash": "acbaf9ab38dd5eea927e5437ed505db5",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/filters.json": {
+    "mtime": 1794063068.4414775,
+    "seen": 1794063196.0929444,
+    "ast_hash": "9768d03343b8194edc9cfacd6b3b7e1a",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/inputs.json": {
+    "mtime": 1794063068.4445717,
+    "seen": 1794063196.0929444,
+    "ast_hash": "503d52f21bd5b20a0ebd9f62a26826e7",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/liquid-glass.json": {
+    "mtime": 1794063068.4322257,
+    "seen": 1794063196.0929444,
+    "ast_hash": "c852b0645f4edec0aa59a00e31c3f324",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/loaders.json": {
+    "mtime": 1794063068.4348803,
+    "seen": 1794063196.0929444,
+    "ast_hash": "27faa4b8d9f6fad2cd626b99ce6c7a3d",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/microinteractions.json": {
+    "mtime": 1794063068.463041,
+    "seen": 1794063196.0929444,
+    "ast_hash": "dbd1fcc9feb0a66349a9a04d887d48f0",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/navigation.json": {
+    "mtime": 1794063068.4535615,
+    "seen": 1794063196.0929444,
+    "ast_hash": "175975a44b3750baf4ced327c4e54b57",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/overlays.json": {
+    "mtime": 1794063068.4582076,
+    "seen": 1794063196.0929444,
+    "ast_hash": "4589a42dfcc3130d795669ce1c60412e",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/patterns.json": {
+    "mtime": 1794063068.4766886,
+    "seen": 1794063196.0929444,
+    "ast_hash": "d2c0f9dcc2a130a7cab4142d12bccbcb",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/radios.json": {
+    "mtime": 1794063068.4736898,
+    "seen": 1794063196.0929444,
+    "ast_hash": "686e947879903d3ef0e2694f5844a083",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/text-scroll.json": {
+    "mtime": 1794063068.4600358,
+    "seen": 1794063196.0929444,
+    "ast_hash": "417fe24504cbae1bd314ca36b4271581",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/toasts.json": {
+    "mtime": 1794063068.4503503,
+    "seen": 1794063196.0929444,
+    "ast_hash": "374b67dbcc2ee1cdb4261122151154ab",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/toggles.json": {
+    "mtime": 1794063068.4670296,
+    "seen": 1794063196.0929444,
+    "ast_hash": "3cc7f559903bf995b7ce473edd27d29d",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/components/tooltips.json": {
+    "mtime": 1794063068.469689,
+    "seen": 1794063196.0929444,
+    "ast_hash": "cbe42eed310179d7ef5b7c4af02b5c8e",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/references/index.json": {
+    "mtime": 1794063068.4791958,
+    "seen": 1794063196.0929444,
+    "ast_hash": "756ae433e95e96e9ddc6f2e3d0fbce98",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/scripts/search_components.py": {
+    "mtime": 1794063237.8950353,
+    "seen": 1794064269.5383296,
+    "ast_hash": "bf730bd0ee26867f6f72f094da495d40",
+    "semantic_hash": ""
+  },
+  ".agent/skills/aimran-library/SKILL.md": {
+    "mtime": 1794063237.8481512,
+    "seen": 1794064269.6502876,
+    "ast_hash": "451b8a8ef08351e2df673bb358a44c6e",
     "semantic_hash": ""
   },
   ".agent/skills/stageshow/package-lock.json": {

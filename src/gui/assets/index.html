@@ -8,11 +8,23 @@
 /* __APP_CSS__ */
 </style>
 </head>
-<body class="ss-stage-host">
-  <!-- Stageshow Dark Hero Initialization Splash Screen -->
+<body class="ss-stage-host lg-stage">
+  <!-- Ambient Specular Refraction Field (Unified AIMRAN Liquid Glass Backdrop) -->
+  <div class="lg-ambient-field" aria-hidden="true">
+    <div class="lg-ambient-blob lg-ambient-blob--cyan"></div>
+    <div class="lg-ambient-blob lg-ambient-blob--emerald"></div>
+    <div class="lg-ambient-grain"></div>
+  </div>
+
+  <!-- Unified AIMRAN Orbits + Stageshow Dark Hero Initialization Splash Screen -->
   <div id="splashOverlay" class="splash-overlay">
-    <div class="splash-container">
+    <div class="splash-container lg-glass lg-spot-card">
       <div class="splash-radar-beacon">
+        <div class="lg-orbits" aria-hidden="true">
+          <span class="lg-orbit-ring lg-orbit-ring--1"></span>
+          <span class="lg-orbit-ring lg-orbit-ring--2"></span>
+          <span class="lg-orbit-ring lg-orbit-ring--3"></span>
+        </div>
         <div class="splash-icon">
           <svg class="splash-svg-icon" viewBox="0 0 24 24" width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg">
             <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="url(#splashZapGrad)" stroke="#38BDF8" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
@@ -48,19 +60,22 @@
   </div>
 
   <div class="app-shell">
-    <!-- Top Window Chrome & Live Ticker Bar -->
-    <header class="top-ribbon">
+    <!-- Top Window Chrome & Live Ticker Bar (Unified Specular Liquid Glass) -->
+    <header class="top-ribbon lg-glass">
       <div class="brand-cluster">
         <div class="ss-window-lights" aria-hidden="true">
           <span class="ss-window-dot"></span>
           <span class="ss-window-dot"></span>
           <span class="ss-window-dot"></span>
         </div>
-        <div id="liveBadge" class="brand-badge ss-badge" data-lead>
+        <div id="liveBadge" class="brand-badge ss-badge lg-island-pill" data-lead>
           <span class="pulse-dot ss-badge__dot"></span>
           <span id="liveStatusText" class="ss-badge__label">Live 24/7</span>
+          <span class="lg-wave-bars" aria-hidden="true">
+            <i></i><i></i><i></i><i></i>
+          </span>
         </div>
-        <div class="iso-clock-pill num" id="isoClockPill" title="Isochronous UI Master Clock (5.0s Cadenced Output)">
+        <div class="iso-clock-pill lg-pill num" id="isoClockPill" title="Isochronous UI Master Clock (5.0s Cadenced Output)">
           <svg class="ss-svg-icon clock-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="8" cy="8.5" r="5.5"></circle>
             <path d="M8 5.5v3l2 1.2"></path>
@@ -100,12 +115,12 @@
           <span class="stat-val num" id="highLow24h">$0.00 / $0.00</span>
         </div>
 
-        <!-- Evolution Countdown & Cycle Control Pill -->
-        <div class="auto-evolve-pill num">
+        <!-- Evolution Countdown & Unified Liquid Glass Switch Pill -->
+        <div class="auto-evolve-pill lg-pill num">
           <span class="evolve-gen-tag" id="genLabel">Gen #1</span>
           <span class="evolve-sep" aria-hidden="true"></span>
           <span class="evolve-lbl">Cycle</span>
-          <select class="interval-select" id="evolveIntervalSelect" onchange="changeEvolveInterval(this.value)" title="Change auto evolution cycle">
+          <select class="interval-select lg-select" id="evolveIntervalSelect" onchange="changeEvolveInterval(this.value)" title="Change auto evolution cycle">
             <option value="3600">1h</option>
             <option value="7200">2h</option>
             <option value="14400">4h</option>
@@ -116,16 +131,17 @@
           <span class="evolve-sep" aria-hidden="true"></span>
           <span class="evolve-lbl">Next</span>
           <strong id="countdownLabel" class="evolve-timer">06:00:00</strong>
-          <button class="auto-evolve-btn" onclick="toggleAutoEvolve()" id="autoEvolveToggleBtn" title="Click to toggle auto evolution">
-            Active
+          <button class="auto-evolve-btn lg-switch" data-on="true" onclick="toggleAutoEvolve()" id="autoEvolveToggleBtn" title="Click to toggle auto evolution">
+            <span class="lg-switch__thumb" aria-hidden="true"></span>
+            <span class="lg-switch__label" id="autoEvolveLabelText">Active</span>
           </button>
         </div>
       </div>
 
-      <!-- Stageshow Controls & View Switcher -->
+      <!-- Unified AIMRAN Liquid Glass Segmented Bar & Capsule Buttons -->
       <div class="action-cluster">
-        <div class="view-switcher ss-seg" style="--n:2;" data-active-idx="0" id="mainViewSeg">
-          <span class="ss-seg__thumb" aria-hidden="true"></span>
+        <div class="view-switcher ss-seg lg-seg" style="--n:2;" data-active-idx="0" id="mainViewSeg">
+          <span class="ss-seg__thumb lg-seg__thumb" aria-hidden="true"></span>
           <button class="view-btn ss-seg__option active" id="btnViewArena" data-on onclick="switchMainView('arena')" title="Live Candlestick Battleground">
             <svg class="ss-svg-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M2 13.5h12"></path>
@@ -144,19 +160,19 @@
             <span>Intel Hub</span>
           </button>
         </div>
-        <button class="btn btn-primary" onclick="triggerEvolution()" title="Trigger tournament selection and crossover mutation now">
+        <button class="btn btn-primary lg-btn lg-btn--primary" onclick="triggerEvolution()" title="Trigger tournament selection and crossover mutation now">
           <svg class="ss-svg-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 1.5L3.5 9h4.5l-1 5.5L12.5 7H8l1-5.5z"></path>
           </svg>
           <span>Evolve Gen</span>
         </button>
-        <button class="btn" id="pauseBtn" onclick="togglePause()">
-          Pause Feed
+        <button class="btn lg-btn" id="pauseBtn" onclick="togglePause()">
+          <span>Pause Feed</span>
         </button>
-        <button class="btn" onclick="resetArena()" title="Reset all competitor portfolios to $100,000.00 cash">
-          Reset Arena
+        <button class="btn lg-btn" onclick="resetArena()" title="Reset all competitor portfolios to $100,000.00 cash">
+          <span>Reset Arena</span>
         </button>
-        <button class="btn btn-icon-only" onclick="toggleFullscreen()" title="Toggle Fullscreen Mode (F11)">
+        <button class="btn btn-icon-only lg-btn" onclick="toggleFullscreen()" title="Toggle Fullscreen Mode (F11)">
           <svg class="ss-svg-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M2.5 6V2.5H6"></path>
             <path d="M10 2.5h3.5V6"></path>
@@ -168,9 +184,9 @@
       </div>
     </header>
 
-    <!-- Macro Commander Intelligence & Strict Veto Status Ribbon -->
-    <div class="macro-ribbon" id="macroRibbon" onclick="switchMainView('intel')" title="Click to open Macro Intelligence Hub &amp; OmniRoute telemetry">
-      <div class="macro-badge ss-badge" id="macroRegimeBadge" data-lead>
+    <!-- Macro Commander Intelligence & Strict Veto Status Ribbon (Dynamic Island Glass Strip) -->
+    <div class="macro-ribbon lg-glass lg-spot-card" id="macroRibbon" onclick="switchMainView('intel')" title="Click to open Macro Intelligence Hub &amp; OmniRoute telemetry">
+      <div class="macro-badge ss-badge lg-island-pill" id="macroRegimeBadge" data-lead>
         <span class="macro-dot ss-badge__dot" id="macroDot"></span>
         <span id="macroRegimeText" class="ss-badge__label">MACRO: NORMAL</span>
       </div>
@@ -201,7 +217,7 @@
     <main class="workspace-grid">
       <!-- Left Column: Full-Height ETH/USD Tactical Candlestick Stage -->
       <section class="left-column">
-        <div class="panel ss-window-panel">
+        <div class="panel ss-window-panel lg-glass">
           <div class="panel-header">
             <div class="panel-title">
               <span class="panel-title-dot" aria-hidden="true"></span>
@@ -209,17 +225,17 @@
               <span class="panel-subtitle num" id="chartScrubReadout">1m Candles · Smooth Spline Indicators</span>
             </div>
             <div class="panel-tools">
-              <div class="seg-control ss-seg" style="--n:2;" data-active-idx="0" id="scaleModeSeg">
-                <span class="ss-seg__thumb" aria-hidden="true"></span>
+              <div class="seg-control ss-seg lg-seg" style="--n:2;" data-active-idx="0" id="scaleModeSeg">
+                <span class="ss-seg__thumb lg-seg__thumb" aria-hidden="true"></span>
                 <button class="seg-btn ss-seg__option active" id="btnScaleAuto" data-on onclick="setScaleMode('auto')" title="Focus on visible candle action">Focus</button>
                 <button class="seg-btn ss-seg__option" id="btnScaleFull" onclick="setScaleMode('full')" title="Include distant bracket orders">Full Range</button>
               </div>
-              <div class="seg-control ss-seg" style="--n:2;" data-active-idx="0" id="chartModeSeg">
-                <span class="ss-seg__thumb" aria-hidden="true"></span>
+              <div class="seg-control ss-seg lg-seg" style="--n:2;" data-active-idx="0" id="chartModeSeg">
+                <span class="ss-seg__thumb lg-seg__thumb" aria-hidden="true"></span>
                 <button class="seg-btn ss-seg__option active" id="btnModeCandles" data-on onclick="setChartMode('candles')">Candles</button>
                 <button class="seg-btn ss-seg__option" id="btnModeLine" onclick="setChartMode('line')">Trend Line</button>
               </div>
-              <div class="chart-legend-strip">
+              <div class="chart-legend-strip lg-pill">
                 <span class="legend-item"><i class="legend-swatch" style="background:var(--c-cons)"></i>EMA 9</span>
                 <span class="legend-item"><i class="legend-swatch" style="background:var(--c-atr)"></i>EMA 21</span>
                 <span class="legend-item"><i class="legend-swatch" style="background:var(--c-vwap)"></i>VWAP</span>
@@ -236,7 +252,7 @@
           <div class="canvas-wrap" id="priceCanvasWrap" data-cursor="crosshair">
             <canvas id="priceCanvas"></canvas>
             <div id="chartNotificationContainer" class="chart-notification-container"></div>
-            <div id="priceTooltip" class="chart-tooltip num"></div>
+            <div id="priceTooltip" class="chart-tooltip lg-glass num"></div>
           </div>
         </div>
       </section>
@@ -244,15 +260,15 @@
       <!-- Right Column: Quant Arena Tactical Desk + Live Execution Tape -->
       <section class="right-column">
         <!-- Right Panel 1: Stageshow Ruled Bento HUD + Strategy Matrix + Leaderboard -->
-        <div class="panel ss-window-panel">
+        <div class="panel ss-window-panel lg-glass">
           <div class="panel-header">
             <div class="panel-title">
               <span>Quant Arena Tactical Desk</span>
               <span class="panel-subtitle num">6 Autonomous Competitors</span>
             </div>
             <div class="panel-tools">
-              <div class="seg-control ss-seg" style="--n:3;" data-active-idx="0" id="rightTabSeg">
-                <span class="ss-seg__thumb" aria-hidden="true"></span>
+              <div class="seg-control ss-seg lg-seg" style="--n:3;" data-active-idx="0" id="rightTabSeg">
+                <span class="ss-seg__thumb lg-seg__thumb" aria-hidden="true"></span>
                 <button class="seg-btn ss-seg__option active" id="btnTabAll" data-on onclick="setRightTab('all')">Split</button>
                 <button class="seg-btn ss-seg__option" id="btnTabCards" onclick="setRightTab('cards')">Cards</button>
                 <button class="seg-btn ss-seg__option" id="btnTabLeaderboard" onclick="setRightTab('leaderboard')">Ledger</button>
@@ -260,24 +276,24 @@
             </div>
           </div>
           <div class="top-right-body">
-            <!-- Tactical HUD: Stageshow Ruled Bento 4-Cell Strip -->
+            <!-- Tactical HUD: Stageshow Ruled Bento 4-Cell Strip with Unified Spotlight Refraction -->
             <div class="tactical-hud">
-              <div class="hud-card" data-accent="cyan">
+              <div class="hud-card lg-spot-card" data-accent="cyan">
                 <div class="hud-title" id="hudChampTitle">6H Arena Champion</div>
                 <div class="hud-value" id="hudChampName">Evaluating...</div>
                 <div class="hud-sub num" id="hudChampStats">ROI +0.00% · Next --:--</div>
               </div>
-              <div class="hud-card" data-accent="rose">
+              <div class="hud-card lg-spot-card" data-accent="rose">
                 <div class="hud-title">Momentum &amp; Volatility</div>
                 <div class="hud-value num" id="hudRsiVal">RSI 50.0</div>
                 <div class="hud-sub num" id="hudAtrVal">ATR $0.00 (0.00%)</div>
               </div>
-              <div class="hud-card" data-accent="emerald">
+              <div class="hud-card lg-spot-card" data-accent="emerald">
                 <div class="hud-title">Gross Exposure</div>
                 <div class="hud-value num" id="hudExposureQty">0.0000 ETH</div>
                 <div class="hud-sub num" id="hudExposureVal">$0.00 · Cash 100%</div>
               </div>
-              <div class="hud-card" data-accent="amber">
+              <div class="hud-card lg-spot-card" data-accent="amber">
                 <div class="hud-title">Genetic Engine</div>
                 <div class="hud-value num" id="hudGenVal">Gen #1</div>
                 <div class="hud-sub num" id="hudGenSub">EV Gate &amp; R-Sizing</div>
@@ -288,7 +304,7 @@
             <div id="tabCardsView" class="strategies-grid-compact"></div>
 
             <!-- View B: Quantitative Leaderboard Table -->
-            <div id="tabLeaderboardWrap" class="leaderboard-wrap">
+            <div id="tabLeaderboardWrap" class="leaderboard-wrap lg-spot-card">
               <div class="sub-section-header">
                 <span class="sub-section-title">Strategy Performance Ledger</span>
                 <span class="sub-section-meta num">Baseline Capital: $100,000 / Strategy ($600,000 Total)</span>
@@ -316,7 +332,7 @@
         </div>
 
         <!-- Right Panel 2: Live Execution Tape & Console Status Bar -->
-        <div class="panel ss-window-panel">
+        <div class="panel ss-window-panel lg-glass">
           <div class="panel-header">
             <div class="panel-title">
               <span class="console-sigil num">&gt;_</span>
@@ -361,12 +377,12 @@
       </section>
     </main>
 
-    <!-- Dedicated Macro Intelligence Hub & OmniRoute Monitor View (Stageshow Ruled Bento) -->
+    <!-- Dedicated Macro Intelligence Hub & OmniRoute Monitor View (Unified Liquid Glass + Ruled Bento) -->
     <main class="intel-hub-grid" id="intelHubMainView" style="display:none;">
       <!-- Top Deck: Two Stageshow Ruled Bento Cards -->
       <section class="intel-top-deck">
         <!-- Card 1: OmniRoute Gateway & Quota Monitor -->
-        <div class="panel intel-panel ss-window-panel">
+        <div class="panel intel-panel ss-window-panel lg-glass">
           <div class="panel-header">
             <div class="panel-title">
               <span class="console-sigil num">&gt;_</span>
@@ -378,41 +394,41 @@
           </div>
           <div class="intel-panel-body">
             <div class="intel-metrics-row">
-              <div class="intel-metric">
+              <div class="intel-metric lg-spot-card">
                 <span class="intel-metric-lbl">Gateway Endpoint</span>
                 <span class="intel-metric-val mono num" id="omniEndpointVal">http://localhost:20128/v1</span>
                 <span class="intel-metric-sub">Local Multi-Provider Router</span>
               </div>
-              <div class="intel-metric">
+              <div class="intel-metric lg-spot-card">
                 <span class="intel-metric-lbl">Remaining Quota</span>
                 <div class="quota-meter-wrap ss-meter">
                   <div class="quota-meter-bar ss-meter__fill" id="omniQuotaBar" style="width:100%;"></div>
                 </div>
                 <span class="intel-metric-sub num" id="omniQuotaPct">100.0% Available Quota</span>
               </div>
-              <div class="intel-metric">
+              <div class="intel-metric lg-spot-card">
                 <span class="intel-metric-lbl">Token Utilization</span>
                 <span class="intel-metric-val num" id="omniTokensVal">0 / 0</span>
                 <span class="intel-metric-sub" id="omniTokensSub">85% SHA-256 Dedup Saved</span>
               </div>
-              <div class="intel-metric">
+              <div class="intel-metric lg-spot-card">
                 <span class="intel-metric-lbl">Async Concurrency</span>
                 <span class="intel-metric-val num" id="omniConcurrencyVal">25 Semaphores</span>
                 <span class="intel-metric-sub num" id="omniReqCounters">Reqs: 0 | OK: 0 | Fail: 0</span>
               </div>
             </div>
             <div class="intel-meta-subrow">
-              <span class="intel-tag num">Stage-1 Ingest: <strong id="omniIngestModel">auto</strong></span>
-              <span class="intel-tag num">Stage-2 Commander: <strong id="omniCommanderModel">auto</strong></span>
-              <button class="btn btn-primary" onclick="requestAiIntelDigest()" id="btnRefreshDigest" style="margin-left:auto;">
-                Refresh AI Digest
+              <span class="intel-tag lg-pill num">Stage-1 Ingest: <strong id="omniIngestModel">auto</strong></span>
+              <span class="intel-tag lg-pill num">Stage-2 Commander: <strong id="omniCommanderModel">auto</strong></span>
+              <button class="btn btn-primary lg-btn lg-btn--primary" onclick="requestAiIntelDigest()" id="btnRefreshDigest" style="margin-left:auto;">
+                <span>Refresh AI Digest</span>
               </button>
             </div>
           </div>
         </div>
 
         <!-- Card 2: Macro Regime Commander Weather & Directive -->
-        <div class="panel intel-panel ss-window-panel">
+        <div class="panel intel-panel ss-window-panel lg-glass">
           <div class="panel-header">
             <div class="panel-title">
               <span class="panel-title-dot" aria-hidden="true"></span>
@@ -424,22 +440,22 @@
           </div>
           <div class="intel-panel-body">
             <div class="intel-metrics-row">
-              <div class="intel-metric">
+              <div class="intel-metric lg-spot-card">
                 <span class="intel-metric-lbl">Directional Bias</span>
                 <span class="intel-metric-val highlight num" id="macroHubBias">BIDIRECTIONAL</span>
                 <span class="intel-metric-sub" id="macroHubBiasSub">All 6 Strategies Permitted</span>
               </div>
-              <div class="intel-metric">
+              <div class="intel-metric lg-spot-card">
                 <span class="intel-metric-lbl">Risk Multiplier</span>
                 <span class="intel-metric-val num" id="macroHubRiskMult">1.00x</span>
                 <span class="intel-metric-sub">Dynamic De-leverage Guard</span>
               </div>
-              <div class="intel-metric">
+              <div class="intel-metric lg-spot-card">
                 <span class="intel-metric-lbl">Commander Confidence</span>
                 <span class="intel-metric-val num" id="macroHubConfidence">85%</span>
                 <span class="intel-metric-sub num" id="macroHubLastEval">Last Eval: Continuous</span>
               </div>
-              <div class="intel-metric">
+              <div class="intel-metric lg-spot-card">
                 <span class="intel-metric-lbl">Vetoes Enforced Today</span>
                 <span class="intel-metric-val num" id="macroHubVetoCount" style="color:var(--c-cons);">0</span>
                 <span class="intel-metric-sub">Counter-trend entries blocked</span>
@@ -454,7 +470,7 @@
       </section>
 
       <!-- Bottom Section: Curated Real-World Intelligence Stream & Competitor Action Matrix -->
-      <section class="intel-events-section panel ss-window-panel">
+      <section class="intel-events-section panel ss-window-panel lg-glass">
         <div class="panel-header">
           <div class="panel-title">
             <span>Curated Real-World Intelligence Stream &amp; Strategy Impact Matrix</span>

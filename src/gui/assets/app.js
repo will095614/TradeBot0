@@ -33,12 +33,17 @@
     { threshold: 100, text: "Arena Reset Complete. Launching Fresh Arena..." }
   ];
 
-  // Stageshow Segmented Control Thumb Helper
+  // Unified AIMRAN Liquid Glass + Stageshow Segmented Control Thumb Helper
   function syncSegThumb(segId, activeIdx) {
     const seg = document.getElementById(segId);
     if (!seg) return;
+    const prevIdx = seg.dataset.activeIdx;
     seg.style.setProperty('--active-idx', String(activeIdx));
     seg.dataset.activeIdx = String(activeIdx);
+    if (prevIdx !== undefined && String(prevIdx) !== String(activeIdx)) {
+      seg.classList.add('lg-seg--stretching');
+      setTimeout(() => seg.classList.remove('lg-seg--stretching'), 210);
+    }
     const buttons = seg.querySelectorAll('.ss-seg__option');
     buttons.forEach((btn, idx) => {
       if (idx === activeIdx) {
@@ -551,7 +556,7 @@
 
     // Verify right-side tables are mounted and populated with data
     const lbBody = document.getElementById('leaderboardBody');
-    const stratGrid = document.getElementById('tabCardsView') || document.getElementById('strategiesGrid');
+    const stratGrid = document.getElementById('tabCardsView');
     if (lbBody && lbBody.children.length >= 6 && stratGrid && stratGrid.children.length >= 6) {
       hasFirstTableRendered = true;
     }
@@ -641,16 +646,19 @@
       }
     }
 
+    const autoLbl = document.getElementById('autoEvolveLabelText');
     if (state.auto_evolve_enabled) {
       cdEl.textContent = fmtTimeSec(state.next_evolve_sec || 0);
       cdEl.style.color = 'var(--ss-accent-text)';
-      autoBtn.textContent = 'Active';
-      autoBtn.style.color = 'var(--ss-accent-text)';
+      if (autoBtn) autoBtn.dataset.on = 'true';
+      if (autoLbl) autoLbl.textContent = 'Active';
+      else if (autoBtn) autoBtn.textContent = 'Active';
     } else {
       cdEl.textContent = 'Paused';
       cdEl.style.color = 'var(--ss-text-faint)';
-      autoBtn.textContent = 'Resume';
-      autoBtn.style.color = 'var(--ss-text)';
+      if (autoBtn) autoBtn.dataset.on = 'false';
+      if (autoLbl) autoLbl.textContent = 'Resume';
+      else if (autoBtn) autoBtn.textContent = 'Resume';
     }
 
     lastCadenceFeedTs = (q && q.timestamp) || '';
@@ -667,19 +675,19 @@
       badge.style.color = 'var(--ss-danger-text)';
       badge.style.borderColor = 'rgba(255, 51, 75, 0.28)';
       statusText.textContent = 'Paused';
-      pauseBtn.textContent = 'Resume Feed';
+      pauseBtn.innerHTML = '<span>Resume Feed</span>';
     } else if (isOffline) {
       badge.style.background = 'var(--ss-danger-soft)';
       badge.style.color = 'var(--ss-danger-text)';
       badge.style.borderColor = 'rgba(255, 51, 75, 0.28)';
       statusText.textContent = 'Feed Offline';
-      pauseBtn.textContent = 'Pause Feed';
+      pauseBtn.innerHTML = '<span>Pause Feed</span>';
     } else {
       badge.style.background = 'var(--ss-accent-soft)';
       badge.style.color = 'var(--ss-accent-text)';
       badge.style.borderColor = 'rgba(56, 189, 248, 0.24)';
       statusText.textContent = 'Live 24/7';
-      pauseBtn.textContent = 'Pause Feed';
+      pauseBtn.innerHTML = '<span>Pause Feed</span>';
     }
 
     document.getElementById('omniSummary').textContent = state.omni_summary || '';
@@ -715,7 +723,7 @@
   const prevRankRecord = new Map();
 
   function renderStrategies(state) {
-    const grid = document.getElementById('tabCardsView') || document.getElementById('strategiesGrid');
+    const grid = document.getElementById('tabCardsView');
     if (!grid) return;
     const strategies = (state.strategies || []).slice().sort((a, b) => (b.equity - a.equity) || (a.rank - b.rank));
     const spot = Number((state.quote && state.quote.price) || 0);
@@ -2001,13 +2009,24 @@
     }
   }
 
-  // Global Mouse Coordinate Tracking for Instant Chart Positioning
+  // Global Mouse Coordinate Tracking & Unified AIMRAN Specular Spotlight Tracker
   let lastGlobalPointerX = -1;
   let lastGlobalPointerY = -1;
+
+  function trackLgSpotlight(e) {
+    if (!e || !e.target || typeof e.target.closest !== 'function') return;
+    const spotTarget = e.target.closest('.lg-spot-card, .strat-card-mini, .intel-event-card, .btn');
+    if (spotTarget) {
+      const r = spotTarget.getBoundingClientRect();
+      spotTarget.style.setProperty('--x', `${Math.round(e.clientX - r.left)}px`);
+      spotTarget.style.setProperty('--y', `${Math.round(e.clientY - r.top)}px`);
+    }
+  }
 
   window.addEventListener('pointermove', (e) => {
     lastGlobalPointerX = e.clientX;
     lastGlobalPointerY = e.clientY;
+    trackLgSpotlight(e);
   }, { passive: true });
 
   window.addEventListener('mousemove', (e) => {
@@ -2246,7 +2265,7 @@
     const btn = document.getElementById('btnRefreshDigest');
     if (btn) {
       btn.disabled = true;
-      btn.textContent = 'Synthesizing...';
+      btn.innerHTML = '<span>Synthesizing...</span>';
     }
     try {
       if (window.pywebview && window.pywebview.api && window.pywebview.api.refresh_intel_digest) {
@@ -2261,7 +2280,7 @@
     } finally {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = 'Refresh AI Digest';
+        btn.innerHTML = '<span>Refresh AI Digest</span>';
       }
     }
   }

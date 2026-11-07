@@ -243,19 +243,34 @@ def test_stageshow_ui_design_system_integrity():
     css = (assets_dir / "app.css").read_text(encoding="utf-8")
     js = (assets_dir / "app.js").read_text(encoding="utf-8")
 
-    # Stageshow tokens & surface ladder
-    for token in ["--ss-well", "--ss-canvas", "--ss-surface", "--ss-chrome", "--ss-raised", "--ss-line", "--ss-shadow-window"]:
-        assert token in css, f"Missing Stageshow token {token} in app.css"
+    # Unified Stageshow + AIMRAN Liquid Glass tokens & surface ladder
+    for token in [
+        "--ss-well", "--ss-canvas", "--ss-surface", "--ss-chrome", "--ss-raised",
+        "--ss-line", "--ss-shadow-window", "--lg-blur", "--lg-spring"
+    ]:
+        assert token in css, f"Missing unified UI token {token} in app.css"
 
     # Balanced CSS braces check (prevents dangling closing braces)
     assert css.count("{") == css.count("}"), f"Unbalanced braces in app.css: {css.count('{')} open vs {css.count('}')} close"
 
-    # Stageshow components in HTML & JS
-    for marker in ["ss-window-lights", "ss-seg__thumb", "ss-badge", "ss-meter", "chartScrubReadout", "rightTabSeg"]:
-        assert marker in html, f"Missing Stageshow element {marker} in index.html"
+    # Unified Stageshow + AIMRAN Liquid Glass components in HTML & JS
+    for marker in [
+        "ss-window-lights", "ss-seg__thumb", "ss-badge", "ss-meter",
+        "chartScrubReadout", "rightTabSeg", "lg-glass", "lg-spot-card",
+        "lg-seg", "lg-switch", "lg-orbits"
+    ]:
+        assert marker in html, f"Missing unified UI element {marker} in index.html"
 
     assert "function syncSegThumb" in js
+    assert "function trackLgSpotlight" in js
     assert "chartScrubReadout" in js
+
+    # 100% DOM ID parity check: every static getElementById in app.js must exist in index.html
+    html_ids = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', html))
+    js_ids = set(re.findall(r"getElementById\(['\"]([a-zA-Z0-9_-]+)['\"]\)", js))
+    missing_ids = js_ids - html_ids
+    assert not missing_ids, f"DOM IDs referenced in app.js but missing in index.html: {missing_ids}"
+
 
 
 
