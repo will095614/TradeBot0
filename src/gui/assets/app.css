@@ -5008,6 +5008,50 @@ body:not(.arena-ready) .lg-glass {
   .lg-dock-pod--island .stat-divider { display: none; }
   .auto-evolve-pill select { display: none; }
 }
+/* ==========================================================================
+   TOP DOCK OVERFLOW FIX (2026-11-14): the dock's natural width (2082px)
+   exceeded the viewport at 2K / 125% scaling (2048px logical), clipping
+   the rightmost Exit button by ~60px. All three pods are flex-shrink: 0,
+   so nothing could give, and the existing responsive guards only kick in
+   at <=1650px. Progressive collapse, dock-scoped only, reusing the
+   existing responsive-guard pattern and tokens -- no new palette, no new
+   components, no behaviour change.
+   ========================================================================== */
+@media (max-width: 2150px) {
+  /* L1 compact: brand 531 -> 482, tighter island/controls padding + gaps,
+     dock buttons 13px -> 9px. Fits viewports >= ~1987px. */
+  .spatial-dock-bar { gap: 6px; }
+  .spatial-dock-bar .lg-dock-pod { padding: 0 10px; gap: 6px; }
+  .spatial-dock-bar .lg-dock-pod--brand { width: 482px !important; min-width: 482px !important; max-width: 482px !important; }
+  .spatial-dock-bar .title-group, .spatial-dock-bar .title-sub { width: 140px !important; min-width: 140px !important; max-width: 140px !important; }
+  .spatial-dock-bar .lg-dock-pod--island { padding: 0 20px 0 16px !important; gap: 8px; }
+  .spatial-dock-bar .btn, .spatial-dock-bar .lg-btn { padding: 0 9px; }
+}
+
+@media (max-width: 1986px) {
+  /* L2: hide the clock pill, brand 482 -> 380. Bid/ask + 24h high/low
+     stay visible. Fits viewports >= ~1885px. */
+  .spatial-dock-bar #isoClockPill { display: none !important; }
+  .spatial-dock-bar .lg-dock-pod--brand { width: 380px !important; min-width: 380px !important; max-width: 380px !important; }
+}
+
+@media (max-width: 1884px) {
+  /* L3: hide island micro-metrics (bid/ask, 24h high/low) + dividers,
+     brand 380 -> 320, island padding tighter. Fits viewports >= ~1529px. */
+  .spatial-dock-bar .lg-dock-pod--island .island-micro-metrics { display: none; }
+  .spatial-dock-bar .lg-dock-pod--island .stat-divider { display: none; }
+  .spatial-dock-bar .lg-dock-pod--brand { width: 320px !important; min-width: 320px !important; max-width: 320px !important; }
+  .spatial-dock-bar .lg-dock-pod--island { padding: 0 12px !important; }
+}
+
+@media (max-width: 1530px) {
+  /* L4 wrap fallback: below ~1530px the dock can no longer fit on one row,
+     so it wraps to two rows instead of clipping the Exit button. */
+  .app-shell { grid-template-rows: auto 1fr; }
+  .spatial-dock-bar { flex-wrap: wrap; height: auto; row-gap: 6px; }
+  .spatial-dock-bar .lg-dock-pod--controls { flex-wrap: wrap; height: auto; min-height: 54px; }
+}
+
 
 /* ==========================================================================
    P2 (2026-11-13): classes that were referenced but undefined.
