@@ -593,28 +593,15 @@ def test_pause_time_freezing_and_arena_transitions():
     assert "arenaFadeIn" in css
 
 
-def test_window_on_top_configuration():
-    """Validates that pywebview window is configured with on_top=True and bridge exposes topmost controls."""
-    from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
+def test_window_startup_foreground_configuration():
+    """Validates that the pywebview window is created maximized (not
+    always-on-top) and the startup foreground-activation logic exists in
+    dashboard.run. (The Pin / always-on-top toggle was removed 2026-11-14;
+    the startup pop-to-front-then-release logic is separate and stays.)"""
+    from src.gui.dashboard import ArenaDashboard
     import inspect
 
     dash = ArenaDashboard(initial_cash=Decimal("100000.00"))
-    bridge = _ArenaBridgeApi(dash)
-
-    # Bridge method verification
-    assert hasattr(bridge, "toggle_on_top")
-    assert hasattr(bridge, "is_on_top")
-    assert bridge.is_on_top() is False
-
-    # Mock window instance
-    mock_win = MagicMock()
-    mock_win.on_top = True
-    dash.window = mock_win
-
-    assert bridge.is_on_top() is True
-    res = bridge.toggle_on_top()
-    assert res is False
-    assert mock_win.on_top is False
 
     # Verify dashboard.py source contains maximized=True, on_top=False, and startup foreground maximize logic
     dash_src = inspect.getsource(dash.run)

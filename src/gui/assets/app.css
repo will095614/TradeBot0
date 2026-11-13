@@ -5131,7 +5131,7 @@ body:not(.arena-ready) .lg-glass {
 }
 
 /* Liquid-glass switch label: the state word inside an .lg-switch
-   (auto-evolve "Active"/"Paused", on-top "Pin"/"Pinned"). */
+   (auto-evolve "Active"/"Paused"). */
 .lg-switch__label {
   display: inline-block;
   text-align: center;
@@ -5181,23 +5181,4 @@ body:not(.arena-ready) .lg-glass {
   background: rgba(192, 132, 252, 0.16);
   color: #DDD6FE;
   border-color: rgba(192, 132, 252, 0.45);
-}
-
-/* On-top toggle button: same fixed geometry as the auto-evolve switch so
-   the two switches in the dock read as a pair ("Pinned" is 6 chars, like
-   "Active"). */
-#onTopToggleBtn {
-  width: 68px !important;
-  min-width: 68px !important;
-  max-width: 68px !important;
-  justify-content: center !important;
-  box-sizing: border-box !important;
-}
-
-#onTopLabelText {
-  display: inline-block !important;
-  width: 38px !important;
-  min-width: 38px !important;
-  max-width: 38px !important;
-  text-align: center !important;
 }

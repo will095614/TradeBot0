@@ -208,55 +208,6 @@ class _ArenaBridgeApi:
             return True
         return False
 
-    def toggle_on_top(self) -> bool:
-        """Flips always-on-top.
-
-        The old version only set pywebview's `on_top` attribute, which does
-        not reliably change the real window Z-order on Windows, so the button
-        could report success without the window actually staying on top. Now
-        the Win32 topmost flag is also set directly on the native handle
-        (item 7).
-        """
-        if self._dashboard.window is None:
-            return False
-        new_val = not self.is_on_top()
-        self._apply_on_top(new_val)
-        self._dashboard._on_top = new_val
-        return new_val
-
-    def _apply_on_top(self, value: bool) -> None:
-        window = self._dashboard.window
-        if window is None:
-            return
-        try:
-            window.on_top = value
-        except Exception as e:
-            logger.debug("pywebview on_top set failed: %s", e)
-        if sys.platform == "win32":
-            hwnd = _get_native_hwnd(window)
-            if hwnd:
-                try:
-                    import ctypes
-                    user32 = ctypes.windll.user32
-                    HWND_TOPMOST = -1
-                    HWND_NOTOPMOST = -2
-                    SWP_NOSIZE = 0x0001
-                    SWP_NOMOVE = 0x0002
-                    SWP_SHOWWINDOW = 0x0040
-                    user32.SetWindowPos(
-                        hwnd,
-                        HWND_TOPMOST if value else HWND_NOTOPMOST,
-                        0, 0, 0, 0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                    )
-                except Exception as e:
-                    logger.debug("SetWindowPos topmost failed: %s", e)
-
-    def is_on_top(self) -> bool:
-        if self._dashboard.window:
-            return bool(getattr(self._dashboard.window, "on_top", False)) or bool(self._dashboard._on_top)
-        return bool(self._dashboard._on_top)
-
     def save_session_state(self) -> Dict[str, Any]:
         saved = self._dashboard.engine.save_session_state()
         return {"status": "ok", "saved": saved}
@@ -546,7 +497,6 @@ class ArenaDashboard:
         self.closing_prompt_active = False
         self._evolution_running = False
         self._evolution_lock = threading.Lock()
-        self._on_top = False
         self._bridge = _ArenaBridgeApi(self)
 
     def reset_engine(self) -> None:

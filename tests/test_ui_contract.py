@@ -422,8 +422,8 @@ def test_no_dead_bridge_methods_or_documented():
     # Live = called from JS, plus anything reachable from a live method
     # via self.<other>() inside the bridge, plus anything called through
     # the bridge object (self._bridge.<m>()) in dashboard.py. The
-    # fixpoint matters: is_on_top is called by toggle_on_top, but
-    # toggle_on_top is itself dead, so is_on_top stays dead.
+    # fixpoint matters: a method reachable only from a dead method is
+    # itself dead, so the closure is computed to a fixpoint.
     live = set(js_called)
     self_calls = _bridge_self_calls()
     obj_calls = _bridge_obj_calls()
