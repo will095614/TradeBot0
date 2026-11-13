@@ -100,7 +100,7 @@ class OmniRouteClient:
         else:
             self.root_url = self.base_url
 
-        self.api_key = api_key or os.getenv("LLM_API_KEY", "sk-omni-local-gateway-key")
+        self.api_key = api_key or os.getenv("LLM_API_KEY")
         self.model_ingest = model_ingest or os.getenv("LLM_MODEL_INGEST", "auto")
         self.model_commander = model_commander or os.getenv("LLM_MODEL_COMMANDER", "auto")
 
@@ -233,10 +233,11 @@ class OmniRouteClient:
                 {"role": "user", "content": user_prompt},
             ],
         }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        # Item 10 A3: never send a placeholder key. With no key configured
+        # the request goes out without an Authorization header at all.
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         endpoint = f"{self.base_url}/chat/completions"
         self.total_requests += 1
 

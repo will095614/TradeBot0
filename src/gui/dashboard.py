@@ -63,6 +63,50 @@ def _build_html_template() -> str:
 HTML_TEMPLATE = _build_html_template()
 
 
+def _copy_text_to_clipboard_windows(text: str) -> bool:
+    """Best-effort copy of text to the Windows clipboard via ctypes.
+
+    Returns False on non-Windows or any failure; never raises and never
+    logs the text (it may be a password). The clipboard takes ownership
+    of the allocated memory on success, so it is freed only on failure.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        CF_UNICODETEXT = 13
+        GMEM_MOVEABLE = 0x0002
+        data = text.encode("utf-16-le") + b"\x00\x00"
+        hglobal = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not hglobal:
+            return False
+        locked = kernel32.GlobalLock(hglobal)
+        if not locked:
+            kernel32.GlobalFree(hglobal)
+            return False
+        try:
+            ctypes.memmove(locked, data, len(data))
+        finally:
+            kernel32.GlobalUnlock(hglobal)
+        if not user32.OpenClipboard(None):
+            kernel32.GlobalFree(hglobal)
+            return False
+        try:
+            user32.EmptyClipboard()
+            if not user32.SetClipboardData(CF_UNICODETEXT, hglobal):
+                kernel32.GlobalFree(hglobal)
+                return False
+        finally:
+            user32.CloseClipboard()
+        return True
+    except Exception as e:
+        logger.debug("Clipboard copy failed: %s", e)
+        return False
+
+
 class _ArenaBridgeApi:
     """
     Native Python <-> WebView2 GPU Frontend Bridge.
@@ -219,7 +263,11 @@ class _ArenaBridgeApi:
     def open_omniroute_console(self) -> Dict[str, Any]:
         """Launches the OmniRoute local web console dashboard in default system browser."""
         import webbrowser
-        url = "http://127.0.0.1:20128"
+        # Console URL follows the configured gateway port (item 10 A2).
+        url = (
+            f"http://{self._dashboard.gateway_supervisor.host}"
+            f":{self._dashboard.gateway_supervisor.port}"
+        )
         try:
             webbrowser.open(url)
             logger.info("Launched OmniRoute console in system browser: %s", url)
@@ -227,6 +275,31 @@ class _ArenaBridgeApi:
         except Exception as e:
             logger.error("Failed to open OmniRoute console: %s", e)
             return {"status": "error", "message": str(e)}
+
+    def copy_omniroute_password(self) -> Dict[str, Any]:
+        """Copies the OmniRoute admin password to the OS clipboard.
+
+        The password value never enters the frontend (item 7): it is read
+        from INITIAL_PASSWORD in ~/.omniroute/.env server-side, copied
+        via the OS clipboard, and only the success status is returned
+        so the frontend can show "copied!". The value is never logged.
+        """
+        try:
+            env_map = self._dashboard.config_manager.read_omniroute_env()
+        except Exception as e:
+            logger.error("Failed to read omniroute env for password copy: %s", e)
+            return {"status": "error", "message": "could not read password store"}
+        password = (env_map.get("INITIAL_PASSWORD") or "").strip()
+        if not password:
+            return {"status": "error", "message": "password not configured"}
+        try:
+            ok = _copy_text_to_clipboard_windows(password)
+        except Exception as e:
+            logger.error("Failed to copy OmniRoute password to clipboard: %s", e)
+            return {"status": "error", "message": str(e)}
+        if not ok:
+            return {"status": "error", "message": "clipboard unavailable"}
+        return {"status": "ok"}
 
     def get_setup_status(self) -> Dict[str, Any]:
         """
@@ -261,6 +334,11 @@ class _ArenaBridgeApi:
                 "cli_available": bool(cli_avail),
                 "gateway_port": int(cfg.get("gateway_port", 20128)),
                 "omniroute_password_configured": pw_configured,
+                "admin_password_required": bool((not cfg.get("skip_ai_mode", False)) and not pw_configured),
+                "node_available": bool(self._dashboard.gateway_supervisor.node_available()),
+                "omniroute_installed": bool(self._dashboard.gateway_supervisor.omniroute_installed()),
+                "gateway_unavailable_reason": self._dashboard.gateway_supervisor.gateway_unavailable_reason(),
+                "runtime_install_status": self._dashboard.gateway_supervisor.install_runtime_status(),
             }
         except Exception as e:
             logger.error("Error reading setup status: %s", e)
@@ -276,6 +354,11 @@ class _ArenaBridgeApi:
                 "cli_available": False,
                 "gateway_port": 20128,
                 "omniroute_password_configured": False,
+                "admin_password_required": False,
+                "node_available": False,
+                "omniroute_installed": False,
+                "gateway_unavailable_reason": None,
+                "runtime_install_status": {"status": "idle", "message": ""},
             }
 
     def test_api_key(self, provider: str, key: str) -> Dict[str, Any]:
@@ -289,12 +372,28 @@ class _ArenaBridgeApi:
             logger.error("Error testing API key (%s): %s", provider, e)
             return {"ok": False, "message": f"Verification failed: {e}", "latency_ms": 0}
 
-    def save_and_launch_gateway(self, keys: Dict[str, str], auto_spawn: bool = True) -> Dict[str, Any]:
+    def save_and_launch_gateway(
+        self, keys: Dict[str, str], auto_spawn: bool = True, admin_password: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Persists API keys into ~/.omniroute/.env and launches gateway if requested.
         Marks onboarding as completed in system_config.json.
+        admin_password (item 10 A1): a user-chosen gateway admin password. It is
+        required on first run and for installs that still rely on OmniRoute's
+        built-in default password; the value is never logged or returned.
         """
         try:
+            # 0. Admin password (item 10 A1): no shared default password may
+            # survive. A password must be supplied or already configured before
+            # onboarding can complete (pure-math mode is the password-free path).
+            _cm = self._dashboard.config_manager
+            if admin_password is not None:
+                _pw_res = _cm.set_admin_password(admin_password)
+                if not _pw_res.get("ok"):
+                    return {"status": "error", "ok": False, "message": _pw_res.get("error", "Invalid admin password."), "gateway_online": False}
+            elif not _cm.is_admin_password_configured():
+                return {"status": "error", "ok": False, "message": "Please set an admin password for the local gateway console before launching the arena.", "gateway_online": False}
+
             # 1. Sync keys into ~/.omniroute/.env
             sync_res = self._dashboard.config_manager.sync_omniroute_keys(keys or {})
 
@@ -307,6 +406,18 @@ class _ArenaBridgeApi:
                 "configured_providers": configured,
                 "last_setup_ts": time.time(),
             })
+
+            # 2b. If the password was just set and our own gateway is already
+            # running, restart it so the new password takes effect immediately.
+            # (A gateway the user started themselves is left alone; it picks
+            # the new password up on its next manual restart.)
+            if admin_password is not None:
+                _sup = self._dashboard.gateway_supervisor
+                if _sup.is_self_spawned and _sup.child_process is not None:
+                    try:
+                        _sup.shutdown()
+                    except Exception as e:
+                        logger.debug("Gateway restart after password change failed: %s", e)
 
             # 3. Check gateway and spawn if requested
             is_open = self._dashboard.gateway_supervisor.is_port_open(timeout=0.3)
@@ -336,6 +447,17 @@ class _ArenaBridgeApi:
             logger.error("Error saving credentials & launching gateway: %s", e)
             return {"status": "error", "ok": False, "message": str(e), "gateway_online": False}
 
+    def install_gateway_runtime(self) -> Dict[str, Any]:
+        """
+        Starts the one-click Node.js + OmniRoute install in the background
+        (item 10 B3). The wizard polls get_setup_status for progress.
+        """
+        try:
+            return self._dashboard.gateway_supervisor.start_runtime_install()
+        except Exception as e:
+            logger.error("Error starting gateway runtime install: %s", e)
+            return {"ok": False, "message": str(e)}
+
     def skip_to_pure_math(self) -> Dict[str, Any]:
         """
         Bypasses external LLM gateway requirements entirely.
@@ -364,7 +486,16 @@ class ArenaDashboard:
         self.initial_cash = initial_cash
         self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=initial_cash)
         self.config_manager = ConfigManager()
-        self.gateway_supervisor = GatewaySupervisor()
+        # Gateway host/port come from the user's own config (item 10 A2):
+        # the console button and the supervisor must follow gateway_port
+        # instead of the hardcoded 20128.
+        try:
+            _gw_cfg = self.config_manager.load_config()
+            _gw_port = int(_gw_cfg.get("gateway_port", 20128) or 20128)
+            _gw_host = str(_gw_cfg.get("gateway_host", "127.0.0.1") or "127.0.0.1")
+        except Exception:
+            _gw_host, _gw_port = "127.0.0.1", 20128
+        self.gateway_supervisor = GatewaySupervisor(host=_gw_host, port=_gw_port)
         self.window = None
         self.allow_exit = False
         self.closing_prompt_active = False
@@ -478,6 +609,10 @@ class ArenaDashboard:
                 cfg.get("has_completed_onboarding")
                 and not cfg.get("skip_ai_mode")
                 and cfg.get("gateway_auto_spawn", True)
+                # Item 10 A1: never auto-start a gateway whose console is still
+                # protected only by OmniRoute's built-in default password; the
+                # setup wizard forces the user to set one first.
+                and self.config_manager.is_admin_password_configured()
             ):
                 if not self.gateway_supervisor.is_port_open(timeout=0.25):
                     logger.info("Auto-spawning background OmniRoute gateway daemon...")

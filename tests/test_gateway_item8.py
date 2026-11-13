@@ -37,7 +37,7 @@ def test_save_and_launch_gateway_waits_30_seconds(tmp_path):
     try:
         with patch.object(dash.gateway_supervisor, "is_port_open", return_value=False), \
              patch.object(dash.gateway_supervisor, "start_daemon", return_value=(True, "ok")) as mock_start:
-            res = bridge.save_and_launch_gateway({"deepseek": "<redacted>"}, auto_spawn=True)
+            res = bridge.save_and_launch_gateway({"deepseek": "sk-test-item8-000000000000000000000000"}, auto_spawn=True, admin_password="TestAdmin123")
         assert res["status"] == "ok"
         assert res["gateway_online"] is True
         mock_start.assert_called_once_with(max_wait_sec=30.0)
@@ -91,6 +91,8 @@ def test_run_auto_spawn_waits_30_seconds(tmp_path, monkeypatch):
         "skip_ai_mode": False,
         "gateway_auto_spawn": True,
     })
+    # Item 10 A1: auto-spawn now requires a configured admin password.
+    dash.config_manager.set_admin_password("TestAdmin123")
     fake_supervisor = MagicMock()
     fake_supervisor.is_port_open.return_value = False
     fake_supervisor.start_daemon.return_value = (True, "ok")
@@ -103,6 +105,33 @@ def test_run_auto_spawn_waits_30_seconds(tmp_path, monkeypatch):
         dash.engine.stop()
     assert fake_webview.started is True
     fake_supervisor.start_daemon.assert_called_once_with(max_wait_sec=30.0)
+
+
+def test_run_skips_auto_spawn_without_admin_password(tmp_path, monkeypatch):
+    """run() never auto-spawns a gateway whose console is still on OmniRoute's
+    built-in default password (item 10 A1); the wizard forces one first."""
+    dash = ArenaDashboard()
+    dash.config_manager = ConfigManager(
+        data_dir=tmp_path / "data",
+        omni_env_path=tmp_path / ".omniroute" / ".env",
+    )
+    dash.config_manager.save_config({
+        "has_completed_onboarding": True,
+        "skip_ai_mode": False,
+        "gateway_auto_spawn": True,
+    })
+    fake_supervisor = MagicMock()
+    fake_supervisor.is_port_open.return_value = False
+    fake_supervisor.start_daemon.return_value = (True, "ok")
+    dash.gateway_supervisor = fake_supervisor
+    fake_webview = _FakeWebview()
+    monkeypatch.setitem(sys.modules, "webview", fake_webview)
+    try:
+        dash.run()
+    finally:
+        dash.engine.stop()
+    assert fake_webview.started is True
+    fake_supervisor.start_daemon.assert_not_called()
 
 
 def test_no_14_second_gateway_wait_remains():

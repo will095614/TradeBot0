@@ -608,16 +608,9 @@
                 </button>
                 <span class="intel-metric-sub" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" onclick="copyOmniPassword()" title="Admin password is stored in ~/.omniroute/.env"><span>********</span><svg class="pwd-copy-icon" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code></span>
               </div>
-              <div class="intel-metric lg-glass lg-spot-card">
-                <span class="intel-metric-lbl">Remaining Quota</span>
-                <div class="quota-meter-wrap ss-meter">
-                  <div class="quota-meter-bar ss-meter__fill" id="omniQuotaBar" style="width:100%;"></div>
-                </div>
-                <span class="intel-metric-sub num" id="omniQuotaPct">100.0% Available Quota</span>
-              </div>
-              <div class="intel-metric lg-glass lg-spot-card">
+              <div class="intel-metric lg-glass lg-spot-card intel-metric--wide">
                 <span class="intel-metric-lbl">Token Utilization</span>
-                <span class="intel-metric-val num" id="omniTokensVal">0 / 0</span>
+                <span class="intel-metric-val num intel-metric-val--wrap" id="omniTokensVal">0 / 0</span>
                 <span class="intel-metric-sub num" id="omniTokensSub">0.0% SHA-256 Dedup Saved</span>
               </div>
               <div class="intel-metric lg-glass lg-spot-card">
@@ -805,6 +798,29 @@
           </div>
         </div>
 
+        <!-- Admin Password -->
+        <div class="setup-provider-card">
+          <div class="setup-provider-meta">
+            <span class="setup-provider-name">Gateway Admin Password</span>
+            <span class="setup-provider-hint">Protects the local OmniRoute console (min 8 characters)</span>
+          </div>
+          <div class="setup-input-group">
+            <input type="password" id="keyAdminPassword" class="setup-key-input num" placeholder="New admin password" autocomplete="new-password" spellcheck="false" />
+            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyAdminPassword', this)" title="Show / Hide Password">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
+            </button>
+          </div>
+          <div class="setup-input-group">
+            <input type="password" id="keyAdminPasswordConfirm" class="setup-key-input num" placeholder="Confirm admin password" autocomplete="new-password" spellcheck="false" />
+            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyAdminPasswordConfirm', this)" title="Show / Hide Password">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
+            </button>
+          </div>
+          <div class="setup-provider-status" id="statusAdminPassword">
+            <span class="setup-status-pill neutral">Not Set</span>
+          </div>
+        </div>
+
         <!-- Gateway Toggle Options -->
         <div class="setup-gateway-options">
           <label class="setup-checkbox-row">
@@ -817,6 +833,10 @@
           <div class="setup-gateway-note">
             Models are auto-routed by OmniRoute (auto) across your configured providers.
           </div>
+          <div class="setup-gateway-note" id="gatewayUnavailableNote" style="display:none;"></div>
+          <button type="button" class="btn lg-btn lg-btn--primary" id="btnInstallGatewayRuntime" onclick="installGatewayRuntime()" style="display:none;">
+            <span>Install Node.js &amp; OmniRoute</span>
+          </button>
         </div>
 
         <!-- Status Notification Banner -->

@@ -339,7 +339,10 @@ async function initAppBoot() {
     try {
       const res = await window.pywebview.api.get_setup_status();
       if (res && res.status === 'ok') {
-        if (!res.onboarding_completed && !res.skip_ai_mode) {
+        if (typeof res.gateway_port === 'number') {
+          window.__tradebotGatewayPort = res.gateway_port;
+        }
+        if ((!res.onboarding_completed && !res.skip_ai_mode) || res.admin_password_required) {
           needsOnboarding = true;
         } else {
           hasCompletedSetup = true;
@@ -3135,12 +3138,31 @@ function updateUiClockDisplay() {
   }
 
   function openOmniRouteConsole() {
+    // Console URL follows the configured gateway port (item 10 A2): the
+    // bridge is the primary path; the fallback reuses the last port the
+    // setup status reported (20128 until the first status call).
+    const btn = document.getElementById('btnOpenOmniConsole');
+    // No feedback used to make repeated clicks open a new tab each time:
+    // show "opening..." immediately and ignore re-clicks until it settles.
+    if (btn && btn.dataset.opening === '1') return;
+    const labelEl = btn ? btn.querySelector('span') : null;
+    const prevLabel = labelEl ? labelEl.textContent : '';
+    if (btn) { btn.dataset.opening = '1'; btn.disabled = true; }
+    if (labelEl) labelEl.textContent = 'opening...';
+    const done = () => {
+      if (btn) { delete btn.dataset.opening; btn.disabled = false; }
+      if (labelEl) labelEl.textContent = prevLabel || 'Launch Console';
+    };
+    const port = (typeof window.__tradebotGatewayPort === 'number') ? window.__tradebotGatewayPort : 20128;
+    const fallbackUrl = `http://127.0.0.1:${port}`;
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.open_omniroute_console === 'function') {
-      window.pywebview.api.open_omniroute_console().catch(() => {
-        window.open('http://127.0.0.1:20128', '_blank');
+      window.pywebview.api.open_omniroute_console().then(done, () => {
+        window.open(fallbackUrl, '_blank');
+        done();
       });
     } else {
-      window.open('http://127.0.0.1:20128', '_blank');
+      window.open(fallbackUrl, '_blank');
+      setTimeout(done, 1200);
     }
   }
 
@@ -3248,26 +3270,6 @@ function updateUiClockDisplay() {
     const epEl = document.getElementById('omniEndpointVal');
     if (epEl) epEl.textContent = omni.endpoint || 'http://localhost:20128/v1';
 
-    const quotaBar = document.getElementById('omniQuotaBar');
-    const quotaPct = document.getElementById('omniQuotaPct');
-    // Unknown quota stays unknown: the old fallback fabricated 100.0%
-    // whenever the backend sent no number (item 7).
-    const qPct = typeof omni.quota_pct === 'number' ? omni.quota_pct : null;
-    if (quotaBar) quotaBar.style.width = qPct === null ? '0%' : `${Math.max(5, Math.min(100, qPct))}%`;
-    if (quotaPct) {
-      if (qPct === null) {
-        quotaPct.textContent = 'Quota unknown';
-      } else {
-        const remTokens = Math.max(0, 100000 - (omni.tokens_used || 0)).toLocaleString();
-        quotaPct.textContent = `${qPct.toFixed(1)}% Available (${remTokens} rem)`;
-        // Item 12 / A4-4: when the daily quota is exceeded the digest slows
-        // down; say so instead of silently showing a normal quota bar.
-        if (omni.quota_throttled === true) {
-          quotaPct.textContent += ' — Digest throttled';
-        }
-      }
-    }
-
     const tokensEl = document.getElementById('omniTokensVal');
     if (tokensEl) {
       const used = (omni.tokens_used || 0).toLocaleString();
@@ -3287,6 +3289,11 @@ function updateUiClockDisplay() {
       tokensSub.textContent = (typeof hits === 'number' && hits > 0)
         ? `${hits.toLocaleString()} dupes skipped (SHA-256)`
         : `${pct}% SHA-256 Dedup Saved`;
+      // The Remaining Quota cell was removed (2026-11-13); the digest
+      // throttle note (item 12 / A4-4) moves here so it stays visible.
+      if (omni.quota_throttled === true) {
+        tokensSub.textContent += ' — Digest throttled';
+      }
     }
 
     const ingEl = document.getElementById('omniIngestModel');
@@ -3587,8 +3594,26 @@ function updateUiClockDisplay() {
             pwdSpan.textContent = '********';
             pwdEl.title = res.omniroute_password_configured
               ? 'Custom admin password configured in ~/.omniroute/.env'
-              : 'Default admin password in effect - see ~/.omniroute/.env';
+              : 'No admin password set - set one below to protect the gateway console';
           }
+
+          if (typeof res.gateway_port === 'number') {
+            window.__tradebotGatewayPort = res.gateway_port;
+          }
+
+          // Admin password card (item 10 A1): required on first run and for
+          // installs still on the built-in default password; blank keeps the
+          // existing password when one is already configured.
+          window.__adminPasswordRequired = !!res.admin_password_required;
+          const adminStatus = document.getElementById('statusAdminPassword');
+          if (adminStatus) {
+            adminStatus.innerHTML = res.omniroute_password_configured
+              ? '<span class="setup-status-pill valid">Configured in .env</span>'
+              : '<span class="setup-status-pill neutral">Not Set - Required</span>';
+          }
+
+          applyGatewayAvailability(res);
+          updateRuntimeInstallBanner(res.runtime_install_status);
         }
       }).catch((e) => console.debug('get_setup_status err:', e));
     }
@@ -3637,11 +3662,25 @@ function updateUiClockDisplay() {
   }
 
   function copyOmniPassword() {
-    // The password is never exposed to the frontend (item 7): clicking the
-    // badge only points at where it lives instead of copying it.
-    if (typeof showChartToast === 'function') {
-      showChartToast('Admin password is stored in ~/.omniroute/.env', '#F59E0B');
+    // The password value never enters the frontend (item 7): the bridge
+    // copies it to the OS clipboard server-side and only reports success,
+    // so the button can truthfully show "copied!" again.
+    const showEnvHint = () => {
+      if (typeof showChartToast === 'function') {
+        showChartToast('Admin password is stored in ~/.omniroute/.env', '#F59E0B');
+      }
+    };
+    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.copy_omniroute_password === 'function') {
+      window.pywebview.api.copy_omniroute_password().then((res) => {
+        if (res && res.status === 'ok') {
+          if (typeof showChartToast === 'function') showChartToast('copied!', '#10F5A0');
+        } else {
+          showEnvHint();
+        }
+      }, showEnvHint);
+      return;
     }
+    showEnvHint();
   }
 
   window.copyOmniPassword = copyOmniPassword;
@@ -3666,6 +3705,86 @@ function updateUiClockDisplay() {
     b.className = `setup-wizard-banner ${type}`;
     b.textContent = message;
     b.style.display = 'block';
+  }
+
+  let runtimeInstallPollTimer = null;
+
+  // Gateway availability (item 10 A4): show the reason + one-click install
+  // button when Node.js / OmniRoute is missing; hide both when available.
+  function applyGatewayAvailability(res) {
+    if (!res) return;
+    if (typeof res.gateway_port === 'number') {
+      window.__tradebotGatewayPort = res.gateway_port;
+    }
+    const gwNote = document.getElementById('gatewayUnavailableNote');
+    const gwBtn = document.getElementById('btnInstallGatewayRuntime');
+    if (gwNote) {
+      if (res.gateway_unavailable_reason) {
+        gwNote.textContent = res.gateway_unavailable_reason + ' The arena still works in Pure Math mode meanwhile.';
+        gwNote.style.display = 'block';
+      } else {
+        gwNote.style.display = 'none';
+        gwNote.textContent = '';
+      }
+    }
+    if (gwBtn) {
+      gwBtn.style.display = res.gateway_unavailable_reason ? 'inline-flex' : 'none';
+    }
+  }
+
+  function updateRuntimeInstallBanner(statusObj) {
+    if (!statusObj) return;
+    const st = statusObj.status || 'idle';
+    const msg = statusObj.message || '';
+    if (st === 'idle') return;
+    if (st === 'done') {
+      setWizardBanner(msg || 'OmniRoute installed.', 'success');
+      if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+      refreshGatewayAvailability();
+    } else if (st === 'failed') {
+      setWizardBanner(msg || 'Installation failed.', 'error');
+      if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+      const btn = document.getElementById('btnInstallGatewayRuntime');
+      if (btn) btn.disabled = false;
+    } else {
+      setWizardBanner(msg || 'Installing...', 'info');
+    }
+  }
+
+  function refreshGatewayAvailability() {
+    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
+      window.pywebview.api.get_setup_status().then((res) => {
+        if (res && res.status === 'ok') applyGatewayAvailability(res);
+      }).catch((e) => console.debug('refresh gateway availability err:', e));
+    }
+  }
+
+  async function installGatewayRuntime() {
+    const btn = document.getElementById('btnInstallGatewayRuntime');
+    if (btn) btn.disabled = true;
+    setWizardBanner('Starting installation in the background...', 'info');
+    try {
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.install_gateway_runtime === 'function') {
+        const res = await window.pywebview.api.install_gateway_runtime();
+        if (res && res.ok) {
+          setWizardBanner(res.message || 'Installation started in the background.', 'info');
+          if (runtimeInstallPollTimer) clearInterval(runtimeInstallPollTimer);
+          runtimeInstallPollTimer = setInterval(() => {
+            if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
+              window.pywebview.api.get_setup_status().then((r) => {
+                if (r && r.status === 'ok') updateRuntimeInstallBanner(r.runtime_install_status);
+              }).catch((e) => console.debug('install poll err:', e));
+            }
+          }, 5000);
+        } else {
+          setWizardBanner((res && res.message) ? res.message : 'Could not start the installation.', 'error');
+          if (btn) btn.disabled = false;
+        }
+      }
+    } catch (err) {
+      setWizardBanner(`Encountered error: ${err}`, 'error');
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function testProviderKey(provider) {
@@ -3723,6 +3842,22 @@ function updateUiClockDisplay() {
       openrouter: (document.getElementById('keyOpenRouter')?.value || '').trim(),
     };
 
+    // Admin password (item 10 A1): required when the backend says so, or
+    // whenever the user typed one (changing it). Blank keeps the existing
+    // password when one is already configured.
+    const adminPw = (document.getElementById('keyAdminPassword')?.value || '');
+    const adminPwConfirm = (document.getElementById('keyAdminPasswordConfirm')?.value || '');
+    if (window.__adminPasswordRequired || adminPw || adminPwConfirm) {
+      if (adminPw.length < 8) {
+        setWizardBanner('Admin password must be at least 8 characters.', 'error');
+        return;
+      }
+      if (adminPw !== adminPwConfirm) {
+        setWizardBanner('Admin password and confirmation do not match.', 'error');
+        return;
+      }
+    }
+
     if (saveBtn) {
       saveBtn.disabled = true;
       saveBtn.innerHTML = '<span>Saving &amp; Launching...</span>';
@@ -3731,7 +3866,7 @@ function updateUiClockDisplay() {
 
     try {
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.save_and_launch_gateway === 'function') {
-        const res = await window.pywebview.api.save_and_launch_gateway(keys, autoSpawn);
+        const res = await window.pywebview.api.save_and_launch_gateway(keys, autoSpawn, adminPw || null);
         if (res && res.ok) {
           hasCompletedSetup = true;
           setWizardBanner(res.message || 'Credentials saved successfully!', 'success');
@@ -3802,7 +3937,7 @@ function updateUiClockDisplay() {
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
       window.pywebview.api.get_setup_status().then((res) => {
         if (res && res.status === 'ok') {
-          if (!res.onboarding_completed && !res.skip_ai_mode) {
+          if ((!res.onboarding_completed && !res.skip_ai_mode) || res.admin_password_required) {
             openSetupWizardModal(false);
           }
         }

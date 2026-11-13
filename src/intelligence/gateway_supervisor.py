@@ -14,9 +14,11 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("tradebot0.gateway_supervisor")
@@ -31,6 +33,14 @@ PROVIDER_ENDPOINTS = {
 DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB: rotate before the daemon log grows without bound
 DAEMON_LOG_FILENAME = "omniroute_daemon.log"
 
+# One-click runtime install (item 10 B3): the official Node.js zip for the
+# app-local runtime, and the install log name. OmniRoute itself is installed
+# with npm (no standalone binary exists); the 2.6 GB package is far too big
+# to bundle in the installer, so it is downloaded once on first run.
+RUNTIME_NODE_VERSION = "24.21.0"
+RUNTIME_NODE_ZIP_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
+RUNTIME_INSTALL_LOG_FILENAME = "omniroute_install.log"
+
 
 def _default_daemon_log_path() -> Path:
     """Default daemon log path, mirroring ConfigManager's data-dir layout:
@@ -41,6 +51,12 @@ def _default_daemon_log_path() -> Path:
     else:
         base = Path(__file__).resolve().parent.parent.parent
     return base / "logs" / DAEMON_LOG_FILENAME
+
+
+def _default_install_log_path() -> Path:
+    """Same base as the daemon log; the install log records the one-click
+    Node.js / OmniRoute install (item 10 B3)."""
+    return _default_daemon_log_path().with_name(RUNTIME_INSTALL_LOG_FILENAME)
 
 
 class GatewaySupervisor:
@@ -54,6 +70,7 @@ class GatewaySupervisor:
         host: str = "127.0.0.1",
         port: int = 20128,
         daemon_log_path: Optional[Path] = None,
+        install_log_path: Optional[Path] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -66,6 +83,15 @@ class GatewaySupervisor:
             Path(daemon_log_path) if daemon_log_path is not None else _default_daemon_log_path()
         )
         self._daemon_log_file = None
+        self.install_log_path: Path = (
+            Path(install_log_path) if install_log_path is not None else _default_install_log_path()
+        )
+        # One-click runtime install state (item 10 B3); guarded by a lock
+        # because the worker thread and the bridge read it concurrently.
+        self._install_lock = threading.Lock()
+        self._install_thread: Optional[threading.Thread] = None
+        self.install_status: str = "idle"  # idle | downloading-node | installing-omniroute | done | failed
+        self.install_message: str = ""
 
         # Register exit hook to clean up child process on application termination
         atexit.register(self.shutdown)
@@ -77,8 +103,15 @@ class GatewaySupervisor:
         On Windows, directly uses `node.exe <path_to_omniroute.mjs> serve --no-open --port <port>`
         to bypass `cmd.exe` and `omniroute.cmd` batch scripts which trigger Windows Terminal popups.
         """
-        node_bin = shutil.which("node") or shutil.which("node.exe")
+        node_bin = cls._resolve_node_bin()
         if node_bin:
+            # 0. App-local runtime install first (item 10 B3): the app's own
+            # Node.js + OmniRoute live under the per-user runtime folder,
+            # never in the global npm tree.
+            local_mjs = cls._runtime_base() / "omniroute" / "node_modules" / "omniroute" / "bin" / "omniroute.mjs"
+            if local_mjs.is_file():
+                return [node_bin, str(local_mjs), "serve", "--no-open", "--port", str(port)]
+
             # 1. Check global npm location in APPDATA
             appdata = os.environ.get("APPDATA", "")
             if appdata:
@@ -111,6 +144,223 @@ class GatewaySupervisor:
         if cls._get_daemon_command(20128) is not None:
             return True
         return bool(shutil.which("omniroute") or shutil.which("omniroute.cmd") or shutil.which("npx"))
+
+    # --- App-local runtime (item 10 A4 / B3) --------------------------------
+    @staticmethod
+    def _runtime_base() -> Path:
+        """Per-user runtime folder for the app's own Node.js + OmniRoute.
+        %LOCALAPPDATA%\\TradeBot0\\runtime on Windows (LOCALAPPDATA, not
+        APPDATA, so a 2.6 GB install never roams with the user profile),
+        falling back to %APPDATA% then ~/.tradebot0. Program Files is not
+        writable at runtime, so the runtime lives here -- never in the
+        install folder and never in the global npm tree."""
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            return Path(local) / "TradeBot0" / "runtime"
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "TradeBot0" / "runtime"
+        return Path.home() / ".tradebot0" / "runtime"
+
+    @classmethod
+    def _runtime_node_bin(cls) -> Optional[str]:
+        node_exe = cls._runtime_base() / "node" / "node.exe"
+        return str(node_exe) if node_exe.is_file() else None
+
+    @classmethod
+    def _resolve_node_bin(cls) -> Optional[str]:
+        """Node executable: the app-local runtime first, then system Node."""
+        return cls._runtime_node_bin() or shutil.which("node") or shutil.which("node.exe")
+
+    @classmethod
+    def _resolve_npm_bin(cls, node_bin: Optional[str]) -> Optional[str]:
+        """npm next to the given node.exe (runtime install), else npm on PATH."""
+        if node_bin:
+            node_dir = Path(node_bin).parent
+            for name in ("npm.cmd", "npm"):
+                cand = node_dir / name
+                if cand.is_file():
+                    return str(cand)
+        return shutil.which("npm") or shutil.which("npm.cmd")
+
+    @classmethod
+    def node_available(cls) -> bool:
+        """True when any Node.js is usable (app-local runtime or system)."""
+        return cls._resolve_node_bin() is not None
+
+    @classmethod
+    def omniroute_installed(cls) -> bool:
+        """True when an omniroute package is actually present (app-local
+        runtime or the global npm tree). npx alone does NOT count: npx would
+        download ~2.6 GB on first start and the 30 s spawn wait would kill it."""
+        local_mjs = cls._runtime_base() / "omniroute" / "node_modules" / "omniroute" / "bin" / "omniroute.mjs"
+        if local_mjs.is_file():
+            return True
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            global_mjs = os.path.join(appdata, "npm", "node_modules", "omniroute", "bin", "omniroute.mjs")
+            if os.path.exists(global_mjs):
+                return True
+        omni_path = shutil.which("omniroute.cmd") or shutil.which("omniroute")
+        if omni_path:
+            rel_mjs = os.path.join(os.path.dirname(omni_path), "node_modules", "omniroute", "bin", "omniroute.mjs")
+            if os.path.exists(rel_mjs):
+                return True
+        return False
+
+    @classmethod
+    def gateway_unavailable_reason(cls) -> Optional[str]:
+        """English reason string for the setup wizard when the gateway cannot
+        start, or None when it can."""
+        if not cls.node_available():
+            return "Node.js is not installed. The OmniRoute gateway needs Node.js 22 or later."
+        if not cls.omniroute_installed():
+            return "OmniRoute is not installed. Install it with one click below (about 3-5 min, ~2.6 GB)."
+        if not cls.is_cli_available():
+            return "OmniRoute CLI is not installed or not found in system PATH."
+        return None
+
+    def install_runtime_status(self) -> Dict[str, Any]:
+        """Current one-click install state for the wizard poll loop."""
+        with self._install_lock:
+            return {"status": self.install_status, "message": self.install_message}
+
+    def _set_install_status(self, status: str, message: str) -> None:
+        with self._install_lock:
+            self.install_status = status
+            self.install_message = message
+        logger.info("Runtime install status: %s - %s", status, message)
+        try:
+            self.install_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.install_log_path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {status}: {message}\n")
+        except Exception as e:
+            logger.debug("Failed to write install log: %s", e)
+
+    def start_runtime_install(self) -> Dict[str, Any]:
+        """Starts the one-click Node.js + OmniRoute install in a background
+        thread (item 10 B3). Safe to call repeatedly: a running install is
+        not started twice. The arena keeps running in Pure Math mode while
+        the install runs; the gateway is started automatically when it ends."""
+        with self._install_lock:
+            if self.install_status in ("downloading-node", "installing-omniroute"):
+                return {"ok": True, "message": "Installation already running."}
+            if self.node_available() and self.omniroute_installed():
+                self.install_status = "done"
+                self.install_message = "OmniRoute is already installed."
+                return {"ok": True, "message": self.install_message}
+            self.install_status = "downloading-node" if not self.node_available() else "installing-omniroute"
+            self.install_message = "Starting installation in the background..."
+            t = threading.Thread(target=self._run_runtime_install, name="omniroute-runtime-install", daemon=True)
+            self._install_thread = t
+            t.start()
+            return {"ok": True, "message": "Installation started in the background."}
+
+    def _run_runtime_install(self) -> None:
+        """Background worker: Node.js zip (if needed) + npm install omniroute
+        into the app-local runtime folder, then start the gateway."""
+        try:
+            base = self._runtime_base()
+            base.mkdir(parents=True, exist_ok=True)
+            node_bin = self._resolve_node_bin()
+            if node_bin is None:
+                self._set_install_status("downloading-node", "Downloading Node.js (about 37 MB)...")
+                node_bin = self._download_node(base)
+            npm_bin = self._resolve_npm_bin(node_bin)
+            if npm_bin is None:
+                raise RuntimeError("npm was not found next to Node.js.")
+            self._set_install_status("installing-omniroute", "Installing OmniRoute (about 3-5 min, ~2.6 GB)...")
+            self._npm_install_omniroute(npm_bin, base)
+            if not self.omniroute_installed():
+                raise RuntimeError("OmniRoute install finished but the package was not found.")
+            self._set_install_status("done", "OmniRoute installed. Starting the gateway...")
+            ok, msg = self.start_daemon(max_wait_sec=30.0)
+            if ok:
+                self._set_install_status("done", "OmniRoute installed and the gateway is online.")
+            else:
+                self._set_install_status("done", f"OmniRoute installed, but the gateway did not start: {msg}")
+        except Exception as e:
+            logger.error("OmniRoute runtime install failed: %s", e)
+            self._set_install_status("failed", f"Installation failed: {e}")
+
+    def _download_node(self, base: Path) -> str:
+        """Downloads the official Node.js zip and extracts it to
+        <runtime>/node. Returns the node.exe path."""
+        node_dir = base / "node"
+        zip_path = base / "node.zip"
+        req = urllib.request.Request(
+            RUNTIME_NODE_ZIP_URL, headers={"User-Agent": "TradeBot0-Installer/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=600) as resp, open(zip_path, "wb") as f:
+            shutil.copyfileobj(resp, f)
+        tmp_dir = base / "_node_tmp"
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(tmp_dir)
+        entries = [p for p in tmp_dir.iterdir()]
+        src_dir = entries[0] if len(entries) == 1 and entries[0].is_dir() else tmp_dir
+        if node_dir.exists():
+            shutil.rmtree(node_dir)
+        shutil.move(str(src_dir), str(node_dir))
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        try:
+            zip_path.unlink()
+        except Exception as e:
+            logger.debug("Failed to delete Node.js zip after extract: %s", e)
+        node_exe = node_dir / "node.exe"
+        if not node_exe.is_file():
+            raise RuntimeError("Downloaded Node.js package has no node.exe.")
+        return str(node_exe)
+
+    def _npm_install_omniroute(self, npm_bin: str, base: Path) -> None:
+        """Runs `npm install --prefix <runtime>/omniroute omniroute`.
+        npm 11+ blocks postinstall scripts by default, so the documented
+        --allow-scripts list is passed first (native bindings need it);
+        if npm rejects the flag (older npm), retry once without it."""
+        prefix = base / "omniroute"
+        prefix.mkdir(parents=True, exist_ok=True)
+        allow = "--allow-scripts=omniroute,better-sqlite3,keytar,tls-client-node,onnxruntime-node,sharp,core-js,esbuild,@parcel/watcher,@swc/core,protobufjs,koffi"
+        attempts = [
+            [npm_bin, "install", "--prefix", str(prefix), allow, "omniroute"],
+            [npm_bin, "install", "--prefix", str(prefix), "omniroute"],
+        ]
+        last_error = ""
+        with open(self.install_log_path, "a", encoding="utf-8", errors="replace", buffering=1) as log_file:
+            log_file.write(
+                f"--- npm install omniroute --prefix {prefix} "
+                f"at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
+            )
+            for i, cmd in enumerate(attempts):
+                log_file.write(f"--- attempt {i + 1}: {' '.join(cmd)} ---\n")
+                log_file.flush()
+                try:
+                    child_env = os.environ.copy()
+                    for key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME"):
+                        child_env.pop(key, None)
+                    creation_flags = 0x08000000 if sys.platform == "win32" else 0
+                    proc = subprocess.run(
+                        cmd, stdout=log_file, stderr=subprocess.STDOUT,
+                        env=child_env, creationflags=creation_flags, timeout=1800,
+                    )
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError("npm install timed out after 30 minutes.")
+                if proc.returncode == 0:
+                    return
+                last_error = f"npm install exited with code {proc.returncode} (attempt {i + 1})"
+                tail = self._tail_install_log(2000)
+                if i == 0 and ("allow-scripts" in tail or "unknown option" in tail.lower()):
+                    continue
+                break
+        raise RuntimeError(last_error or "npm install failed.")
+
+    def _tail_install_log(self, n_chars: int) -> str:
+        """Last n_chars of the install log, for failure diagnosis."""
+        try:
+            text = self.install_log_path.read_text(encoding="utf-8", errors="replace")
+            return text[-n_chars:]
+        except Exception:
+            return ""
 
     def is_port_open(self, timeout: float = 0.35) -> bool:
         """Fast TCP socket probe to verify if port is actively listening."""
