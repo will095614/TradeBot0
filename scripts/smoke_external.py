@@ -15,7 +15,7 @@
   OmniRoute /api/health（gateway 未跑時印提示、不算失敗）
   Node 下載 URL 可 HEAD 到（不下載本體）
 
-結束碼：0＝無 FAIL；1＝至少一項 FAIL。WARN／SKIP 不影響結束碼。
+結束碼：0＝核心報價路徑暢通（Binance REST、Kraken REST、Binance WS 至少一項 PASS）；1＝核心路徑全滅。個別來源 FAIL 只列在結果中，不影響結束碼——使用者政策（2026-11-13）：外部來源皆為 best-effort，不同使用者的網路過濾不同，連不到也沒關係。
 """
 from __future__ import annotations
 
@@ -317,9 +317,19 @@ def main():
     for _, status, _ in RESULTS:
         counts[status] = counts.get(status, 0) + 1
     summary = " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+    # Best-effort policy (user decision 2026-11-13): every external source
+    # is tried, and a blocked one is fine — different users sit behind
+    # different filters. Only the core quote path decides the exit code:
+    # the app can trade as long as at least one of Binance REST, Kraken
+    # REST or Binance WS answers. Individual FAILs stay visible above.
+    core_names = {"binance_rest", "kraken_rest", "binance_ws"}
+    core_ok = any(name in core_names and status == "PASS" for name, status, _ in RESULTS)
     failed = counts.get("FAIL", 0)
-    print(f"SUMMARY {summary} -> {'FAIL' if failed else 'OK'}")
-    return 1 if failed else 0
+    if core_ok:
+        print(f"SUMMARY {summary} -> OK (core quote path live; {failed} optional source(s) blocked)")
+        return 0
+    print(f"SUMMARY {summary} -> FAIL (no core quote source)")
+    return 1
 
 
 if __name__ == "__main__":

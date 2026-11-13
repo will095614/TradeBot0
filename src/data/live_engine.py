@@ -334,6 +334,12 @@ class LiveArenaEngine:
             if len(self.live_logs) > 120:
                 self.live_logs.pop()
 
+    # Quote chain policy (user decision 2026-11-13): every external source
+    # is best-effort — try it, and a blocked one is fine, because different
+    # users sit behind different network filters. Each fetcher below catches
+    # all exceptions (incl. SSLError from DNS-filter landing pages) and
+    # returns None; the caller walks Binance -> Kraken -> Coinbase and uses
+    # the first live quote. No single source may take down the quote path.
     def _fetch_binance_quote(self) -> Optional[LiveQuote]:
         try:
             r_bin = self.session.get("https://api.binance.com/api/v3/ticker/24hr?symbol=ETHUSDT", timeout=1.2)
