@@ -185,14 +185,20 @@
       <div class="lg-dock-pod lg-dock-pod--controls lg-glass lg-spot-card">
         <div class="auto-evolve-pill lg-pill num">
           <span class="evolve-gen-tag" id="genLabel">Gen #1</span>
-          <select class="interval-select lg-select" id="evolveIntervalSelect" onchange="changeEvolveInterval(this.value)" title="Change auto evolution cycle">
-            <option value="3600">1h</option>
-            <option value="7200">2h</option>
-            <option value="14400">4h</option>
-            <option value="21600" selected>6h</option>
-            <option value="43200">12h</option>
-            <option value="86400">24h</option>
-          </select>
+          <div class="lg-dropdown" id="evolveIntervalDropdown">
+            <button type="button" class="interval-select lg-select lg-dropdown__trigger" id="evolveIntervalSelect" onclick="toggleEvolveIntervalMenu()" aria-haspopup="menu" aria-expanded="false" title="Change auto evolution cycle">
+              <span id="evolveIntervalLabel">6h</span>
+              <svg class="lg-dropdown__chevron" viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="lg-dropdown__menu" id="evolveIntervalMenu" role="menu" aria-label="Auto evolution cycle">
+              <button type="button" class="lg-dropdown__item" role="menuitemradio" aria-checked="false" data-seconds="3600" style="--i:0" onclick="selectEvolveInterval('3600')">1h</button>
+              <button type="button" class="lg-dropdown__item" role="menuitemradio" aria-checked="false" data-seconds="7200" style="--i:1" onclick="selectEvolveInterval('7200')">2h</button>
+              <button type="button" class="lg-dropdown__item" role="menuitemradio" aria-checked="false" data-seconds="14400" style="--i:2" onclick="selectEvolveInterval('14400')">4h</button>
+              <button type="button" class="lg-dropdown__item is-selected" role="menuitemradio" aria-checked="true" data-seconds="21600" style="--i:3" onclick="selectEvolveInterval('21600')">6h</button>
+              <button type="button" class="lg-dropdown__item" role="menuitemradio" aria-checked="false" data-seconds="43200" style="--i:4" onclick="selectEvolveInterval('43200')">12h</button>
+              <button type="button" class="lg-dropdown__item" role="menuitemradio" aria-checked="false" data-seconds="86400" style="--i:5" onclick="selectEvolveInterval('86400')">24h</button>
+            </div>
+          </div>
           <strong id="countdownLabel" class="evolve-timer">06:00:00</strong>
           <button class="lg-switch" data-on="true" onclick="toggleAutoEvolve()" id="autoEvolveToggleBtn" title="Click to toggle auto evolution">
             <span class="lg-switch__thumb" aria-hidden="true"></span>
@@ -520,7 +526,7 @@
             <div class="panel-header lg-slab-header">
               <div class="panel-title">
                 <svg class="ss-svg-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <rect x="2" y="2" width="12" height="12" rx="2" stroke-dasharray="2 2"></rect>
+                  <rect x="2" y="2" width="12" height="12" rx="2"></rect>
                   <path d="M8 5v6M5 8h6"></path>
                 </svg>
                 <span class="slot-bay-title">Modular Extension Bay</span>
@@ -530,7 +536,7 @@
               </div>
             </div>
             <div class="modular-slot-canvas">
-              <div class="modular-slot-dashed-frame">
+              <div class="modular-slot-frame">
                 <svg class="modular-slot-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M12 3L2 8l10 5 10-5-10-5z"></path>
                   <path d="M2 13l10 5 10-5"></path>

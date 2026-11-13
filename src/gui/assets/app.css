@@ -506,7 +506,7 @@ body.arena-ready .app-shell {
   position: absolute;
   inset: 2px;
   border-radius: 50%;
-  border: 1.5px dashed rgba(0, 242, 254, 0.65);
+  border: 1.5px solid rgba(0, 242, 254, 0.65);
   animation: lgOrbitSpin 14s linear infinite;
 }
 
@@ -1032,6 +1032,101 @@ body.arena-paused #liveBadge .lg-wave-bars i,
 
 .interval-select:hover {
   border-color: var(--ss-accent);
+}
+
+/* AIMRAN uv-f-dd-scale custom dropdown (2026-11-13): the native <select>
+   popup is OS-rendered and cannot match the liquid-glass style, so the Gen
+   interval picker is a button + menu on the uv-f-dd-scale pattern
+   (scale-from-top menu, staggered option entrance, chevron flip) restyled
+   with the existing Stageshow / liquid-glass tokens. No backdrop-filter
+   here: the dock already disables it (.lg-glass), so the menu uses the
+   near-opaque --lg-fill-elevated gradient to stay legible over the chart. */
+.lg-dropdown {
+  position: relative;
+  display: inline-flex;
+}
+
+.lg-dropdown__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lg-dropdown__chevron {
+  flex-shrink: 0;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.lg-dropdown.is-open .lg-dropdown__chevron {
+  transform: rotate(180deg);
+}
+
+.lg-dropdown__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  min-width: 76px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border-radius: var(--r-sm);
+  background: var(--lg-fill-elevated);
+  border: 1px solid var(--ss-line-strong);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transform-origin: top center;
+  transform: scale(0.92) translateY(-4px);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease;
+}
+
+.lg-dropdown.is-open .lg-dropdown__menu {
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.lg-dropdown__item {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--ss-text-muted);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.lg-dropdown.is-open .lg-dropdown__item {
+  animation: lgDropdownItem 0.3s ease both;
+  animation-delay: calc(var(--i) * 0.04s);
+}
+
+.lg-dropdown__item:hover {
+  background: var(--bg-row-hover);
+  color: var(--ss-text-strong);
+}
+
+.lg-dropdown__item.is-selected {
+  background: var(--ss-accent-soft);
+  color: var(--ss-accent-text);
+}
+
+.lg-dropdown__item:focus-visible {
+  outline: 1px solid var(--ss-accent);
+  outline-offset: 1px;
+}
+
+@keyframes lgDropdownItem {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
 }
 
 /* AIMRAN Liquid Glass Toggle Switch (.lg-switch) */
@@ -2568,7 +2663,7 @@ body.arena-paused #pauseBtn:hover,
   flex-direction: column;
   overflow: hidden;
   border-radius: var(--r-md);
-  border: 1px dashed rgba(0, 242, 254, 0.35);
+  border: 1px solid rgba(0, 242, 254, 0.35);
   background: rgba(4, 12, 28, 0.50);
 }
 
@@ -2598,11 +2693,11 @@ body.arena-paused #pauseBtn:hover,
   padding: 12px;
 }
 
-.modular-slot-dashed-frame {
+.modular-slot-frame {
   width: 100%;
   height: 100%;
   min-height: 90px;
-  border: 1px dashed rgba(0, 242, 254, 0.22);
+  border: 1px solid rgba(0, 242, 254, 0.22);
   border-radius: var(--r-sm);
   background: rgba(2, 6, 23, 0.40);
   display: flex;
@@ -4786,7 +4881,7 @@ body:not(.arena-ready) .lg-glass {
   padding: 12px 14px;
   border-radius: 10px;
   background: rgba(0, 242, 254, 0.04);
-  border: 1px dashed rgba(0, 242, 254, 0.24);
+  border: 1px solid rgba(0, 242, 254, 0.24);
 }
 
 .setup-checkbox-row {

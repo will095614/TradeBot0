@@ -1090,6 +1090,62 @@ async function changeEvolveInterval(seconds) {
   if (state) { latestState = state; renderAll(state); }
 }
 
+// Custom Gen interval dropdown (2026-11-13): replaces the native <select>.
+// The native popup is rendered by the OS/browser and cannot match the
+// liquid-glass style, so the picker is a button + menu built on the
+// AIMRAN uv-f-dd-scale pattern (scale-from-top menu, staggered option
+// entrance, chevron flip) restyled with the Stageshow / liquid-glass
+// tokens. Behaviour is unchanged: choosing an interval still calls
+// changeEvolveInterval(), which posts to the Python bridge exactly as
+// before; backend state changes sync the label via renderAll.
+const EVOLVE_INTERVAL_OPTIONS = [
+  { seconds: '3600', label: '1h' },
+  { seconds: '7200', label: '2h' },
+  { seconds: '14400', label: '4h' },
+  { seconds: '21600', label: '6h' },
+  { seconds: '43200', label: '12h' },
+  { seconds: '86400', label: '24h' },
+];
+
+function syncEvolveIntervalUI(valueStr) {
+  const labelEl = document.getElementById('evolveIntervalLabel');
+  const opt = EVOLVE_INTERVAL_OPTIONS.find((o) => o.seconds === valueStr);
+  if (labelEl && opt) labelEl.textContent = opt.label;
+  const menu = document.getElementById('evolveIntervalMenu');
+  if (!menu) return;
+  menu.querySelectorAll('.lg-dropdown__item').forEach((item) => {
+    const selected = item.dataset.seconds === valueStr;
+    item.classList.toggle('is-selected', selected);
+    item.setAttribute('aria-checked', selected ? 'true' : 'false');
+  });
+}
+
+function toggleEvolveIntervalMenu(force) {
+  const dd = document.getElementById('evolveIntervalDropdown');
+  const trigger = document.getElementById('evolveIntervalSelect');
+  if (!dd || !trigger) return;
+  const open = typeof force === 'boolean' ? force : !dd.classList.contains('is-open');
+  dd.classList.toggle('is-open', open);
+  trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function selectEvolveInterval(seconds) {
+  toggleEvolveIntervalMenu(false);
+  syncEvolveIntervalUI(String(seconds));
+  changeEvolveInterval(seconds);
+}
+
+document.addEventListener('click', (event) => {
+  const dd = document.getElementById('evolveIntervalDropdown');
+  if (dd && dd.classList.contains('is-open') && !dd.contains(event.target)) {
+    toggleEvolveIntervalMenu(false);
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') toggleEvolveIntervalMenu(false);
+});
+
 let isResettingArena = false;
 
 async function resetArena() {
@@ -1315,12 +1371,13 @@ function renderHeader(state) {
   // Auto Evolve Countdown & Interval Sync
   const cdEl = document.getElementById('countdownLabel');
   const autoBtn = document.getElementById('autoEvolveToggleBtn');
-  const intSelect = document.getElementById('evolveIntervalSelect');
-  if (intSelect && state.auto_evolve_interval_sec) {
-    const curVal = String(state.auto_evolve_interval_sec);
-    if (intSelect.value !== curVal) {
-      intSelect.value = curVal;
-    }
+  // Custom Gen interval dropdown sync (2026-11-13): the native <select>
+  // was replaced by a liquid-glass button + menu (its popup is
+  // OS-rendered and cannot be styled); the current interval is shown in
+  // #evolveIntervalLabel and the selected menu item is marked by
+  // syncEvolveIntervalUI().
+  if (state.auto_evolve_interval_sec) {
+    syncEvolveIntervalUI(String(state.auto_evolve_interval_sec));
   }
 
   const autoLbl = document.getElementById('autoEvolveLabelText');
@@ -1923,6 +1980,11 @@ let lastHoverIdx = -1;
 let lastHoverSnapY = -1;
 let chartAnimRaf = null;
 
+// 60 FPS cap (2026-11-13 user decision: 2K 180Hz screen, app caps at 60fps).
+// At most one chart frame per 16.7ms; see stepChartAnimLoop().
+const CHART_FRAME_MIN_INTERVAL_MS = 16.7;
+let chartAnimLastRenderMs = 0;
+
 // Real-time interpolated animation coordinates (Lerp State)
 let animSpot = 0, targetSpot = 0;
 let animMinP = 0, targetMinP = 0;
@@ -2036,6 +2098,20 @@ function drawPriceChart(state) {
     animCandles = targetCandles.map(c => ({ o: c.o, h: c.h, l: c.l, c: c.c, t: c.t }));
   }
 
+  // G2 (Phase 2G): the arena chart is display:none while Intel Hub is
+  // shown, so do not start the animation loop for it. Snap the animated
+  // values to their targets so switching back to the arena shows the
+  // current chart immediately (no catch-up glide).
+  const intelEl = document.getElementById('intelHubMainView');
+  if (intelEl && intelEl.style.display !== 'none') {
+    animSpot = targetSpot;
+    animMinP = targetMinP;
+    animMaxP = targetMaxP;
+    candleSlideOffset = 0;
+    animCandles = targetCandles.map(c => ({ o: c.o, h: c.h, l: c.l, c: c.c, t: c.t }));
+    return;
+  }
+
   startChartAnimLoop();
 }
 
@@ -2052,6 +2128,24 @@ function stepChartAnimLoop() {
     renderPriceCanvas(latestState, animCandles, animSpot, animMinP, animMaxP);
     return;
   }
+
+  // 60 FPS cap: skip rendering until 16.7ms have passed since the last
+  // rendered frame. Defer with a one-shot timer (not another rAF) so the
+  // loop still stops on convergence instead of spinning idle at display
+  // refresh rate. The -1 sentinel keeps startChartAnimLoop() from starting
+  // a second loop while the timer is pending; the timer clears it before
+  // re-entering. Paused state is handled above and never deferred.
+  const nowMs = performance.now();
+  if (nowMs - chartAnimLastRenderMs < CHART_FRAME_MIN_INTERVAL_MS) {
+    chartAnimRaf = -1;
+    const delayMs = CHART_FRAME_MIN_INTERVAL_MS - (nowMs - chartAnimLastRenderMs);
+    setTimeout(() => {
+      chartAnimRaf = null;
+      stepChartAnimLoop();
+    }, delayMs);
+    return;
+  }
+  chartAnimLastRenderMs = nowMs;
 
   const ease = 0.08;
   let needsMore = false;
@@ -2272,7 +2366,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
         yTP = toY(s.take_profit);
         ctx.save();
         ctx.strokeStyle = hexToRgba(sColor, 0.72);
-        ctx.setLineDash([4, 4]);
         ctx.lineWidth = 1.15;
         ctx.beginPath();
         ctx.moveTo(padLeft, yTP);
@@ -2309,7 +2402,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
         yEntry = toY(s.entry_price);
         ctx.save();
         ctx.strokeStyle = hexToRgba(sColor, 0.85);
-        ctx.setLineDash([2, 3]);
         ctx.lineWidth = 1.25;
         ctx.beginPath();
         ctx.moveTo(padLeft, yEntry);
@@ -2336,7 +2428,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
         ySL = toY(s.stop_loss);
         ctx.save();
         ctx.strokeStyle = hexToRgba(sColor, 0.72);
-        ctx.setLineDash([4, 4]);
         ctx.lineWidth = 1.15;
         ctx.beginPath();
         ctx.moveTo(padLeft, ySL);
@@ -2401,7 +2492,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     const vy = toY(vwapVal);
     ctx.save();
     ctx.strokeStyle = 'rgba(20, 241, 149, 0.65)';
-    ctx.setLineDash([4, 4]);
     ctx.lineWidth = 1.25;
     ctx.beginPath();
     ctx.moveTo(padLeft, vy);
@@ -2427,7 +2517,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     const ohy = toY(orbHigh);
     ctx.save();
     ctx.strokeStyle = 'rgba(168, 85, 247, 0.58)';
-    ctx.setLineDash([3, 3]);
     ctx.lineWidth = 1.15;
     ctx.beginPath();
     ctx.moveTo(padLeft, ohy);
@@ -2450,7 +2539,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     const oly = toY(orbLow);
     ctx.save();
     ctx.strokeStyle = 'rgba(168, 85, 247, 0.58)';
-    ctx.setLineDash([3, 3]);
     ctx.lineWidth = 1.15;
     ctx.beginPath();
     ctx.moveTo(padLeft, oly);
@@ -2475,7 +2563,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     const sy = toY(spot);
     ctx.save();
     ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
-    ctx.setLineDash([3, 3]);
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     ctx.moveTo(padLeft, sy);
@@ -2562,7 +2649,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     if (Math.abs(by - b.rawY) > 2) {
       ctx.strokeStyle = hexToRgba(b.stratColor, 0.45);
       ctx.lineWidth = 1;
-      ctx.setLineDash([2, 2]);
       ctx.beginPath();
       ctx.moveTo(padLeft + plotW, b.rawY);
       ctx.lineTo(rx, by);
@@ -2718,7 +2804,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
 
     if (priceHoverPos.y >= padTop && priceHoverPos.y <= padTop + plotH) {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-      ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(padLeft, priceHoverPos.y);
       ctx.lineTo(padLeft + plotW, priceHoverPos.y);
@@ -2727,7 +2812,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
 
     if (hoveredCandleData) {
       const cy = toY(hoveredCandleData.c);
-      ctx.setLineDash([]);
       ctx.fillStyle = hoveredCandleData.c >= hoveredCandleData.o ? '#10F5A0' : '#FF4D79';
       ctx.strokeStyle = '#030A1C';
       ctx.lineWidth = 2;
