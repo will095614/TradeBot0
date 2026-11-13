@@ -177,8 +177,9 @@ body.arena-paused .app-shell {
   opacity: 0.94;
 }
 
-/* Smooth grayscale transition for paused arena (keeps #liveBadge and #pauseBtn in full red color) */
+/* Smooth grayscale transition for paused arena + Intel Hub news (keeps #liveBadge and #pauseBtn in full red color) */
 .workspace-grid,
+#intelHubMainView,
 .spatial-dock-bar .lg-dock-pod--island,
 .spatial-dock-bar .lg-dock-pod--brand > *:not(#liveBadge),
 .spatial-dock-bar .lg-dock-pod--controls > *:not(#pauseBtn) {
@@ -187,6 +188,7 @@ body.arena-paused .app-shell {
 }
 
 body.arena-paused .workspace-grid,
+body.arena-paused #intelHubMainView,
 body.arena-paused .spatial-dock-bar .lg-dock-pod--island,
 body.arena-paused .spatial-dock-bar .lg-dock-pod--brand > *:not(#liveBadge),
 body.arena-paused .spatial-dock-bar .lg-dock-pod--controls > *:not(#pauseBtn) {
@@ -3252,6 +3254,22 @@ tbody td {
 
 .intel-metric-val.highlight {
   color: #67E8F9;
+}
+
+/* Token Utilization spans 2 columns after the Remaining Quota cell was
+   removed (2026-11-13): it takes the freed space so the row stays full. */
+.intel-metric--wide {
+  grid-column: span 2;
+}
+
+/* Long "X used / Y saved" counts must never truncate to "...": allow the
+   value to wrap instead of clipping (scoped to this cell only; the global
+   .intel-metric-val ellipsis stays for the other cells). */
+.intel-metric-val--wrap {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.3;
 }
 
 .intel-metric-sub {

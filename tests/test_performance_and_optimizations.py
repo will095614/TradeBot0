@@ -2,7 +2,7 @@ import os
 import pathlib
 import re
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.arena.portfolio import Portfolio
@@ -529,10 +529,15 @@ def test_session_state_save_and_restore_and_shutdown_bridge():
     assert res_shut["saved"] is True
     assert dash.allow_exit is True
 
-    # Test open_omniroute_console bridge method
-    res_console = bridge.open_omniroute_console()
+    # Test open_omniroute_console bridge method. webbrowser must be
+    # mocked: the unmocked call opened a real Edge tab on every pytest
+    # run (2026-11-13: dozens of connection-refused tabs piled up
+    # while the gateway was down).
+    with patch("webbrowser.open", return_value=True) as mock_open:
+        res_console = bridge.open_omniroute_console()
     assert res_console["status"] == "ok"
     assert "20128" in res_console["url"]
+    mock_open.assert_called_once()
 
     # Test automated intel refresh cadence configuration
     assert engine1.intel_refresh_interval_sec == 300.0
