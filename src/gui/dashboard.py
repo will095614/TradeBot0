@@ -11,6 +11,9 @@ from typing import Any, Dict, Optional
 from src.data.live_engine import LiveArenaEngine
 from src.intelligence.config_manager import ConfigManager
 from src.intelligence.gateway_supervisor import GatewaySupervisor
+from src.update_checker import check_for_updates as _run_update_check
+from src.update_checker import get_manifest_url
+from src.version import APP_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +304,27 @@ class _ArenaBridgeApi:
             return {"status": "error", "message": "clipboard unavailable"}
         return {"status": "ok"}
 
+    def check_for_updates(self) -> Dict[str, Any]:
+        """Checks whether a newer TradeBot0 release is available.
+
+        Scaffolding (2026-11-13): the check runs only when a manifest
+        URL is configured (env TRADEBOT0_UPDATE_URL). With no URL
+        configured — the case today — this returns
+        {"status": "not_configured"} and issues no network request.
+        No download or install happens here; the frontend only reads
+        the status. Never raises.
+        """
+        try:
+            return _run_update_check()
+        except Exception as e:
+            logger.debug("Bridge update check failed: %s", e)
+            return {
+                "status": "check_failed",
+                "current_version": APP_VERSION,
+                "latest_version": None,
+                "download_url": None,
+            }
+
     def get_setup_status(self) -> Dict[str, Any]:
         """
         Returns initialization and credential setup status for the UI wizard.
@@ -557,6 +581,27 @@ class ArenaDashboard:
             logger.info("Starting TradeBot0 LiveArenaEngine (ETH/USD) post-onboarding...")
             self.engine.start_live_loop(interval_sec=1.0)
 
+    def _maybe_check_for_updates(self) -> None:
+        """Fires the startup update check on a background thread, if configured.
+
+        Guarded: with no manifest URL configured (the case today) this
+        returns immediately and issues no request. When a URL is set, the
+        check runs off the UI thread so a slow endpoint can never stall
+        startup; the result is only logged for now — showing a prompt in
+        the frontend is future work (see src/update_checker.py).
+        """
+        if not get_manifest_url():
+            return
+
+        def _check() -> None:
+            try:
+                result = _run_update_check()
+                logger.info("Update check at startup: %s", result.get("status"))
+            except Exception as e:
+                logger.debug("Startup update check failed: %s", e)
+
+        threading.Thread(target=_check, daemon=True).start()
+
     def stop(self) -> None:
         """Cleanly halts trading engine, persistence, and background daemon supervisor."""
         try:
@@ -626,6 +671,13 @@ class ArenaDashboard:
             self.engine.start_live_loop(interval_sec=1.0)
         else:
             logger.info("Awaiting onboarding setup before starting LiveArenaEngine...")
+
+        # Update check (scaffolding only): runs on a background thread and
+        # only when a manifest URL is configured (TRADEBOT0_UPDATE_URL).
+        # Nothing is configured today, so this is a no-op that issues no
+        # network request. See src/update_checker.py for what still needs
+        # wiring (frontend prompt, settings field, download flow).
+        self._maybe_check_for_updates()
 
         logger.info("Initializing pywebview GPU Window...")
         window = webview.create_window(

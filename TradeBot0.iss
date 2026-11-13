@@ -9,8 +9,8 @@
 ; then it runs in Pure Math mode. The installer shows a note when Node.js
 ; is missing (see [Code] below).
 ;
-; Version: the project defines no version constant, so this uses a
-; date-based version (YYYY.MM.DD). Bump it per release.
+; Version: the single source of truth is src/version.py (APP_VERSION);
+; keep MyAppVersion in sync with it at release time. Bump both per release.
 #define MyAppName "TradeBot0"
 #define MyAppVersion "2026.11.13"
 #define MyAppPublisher "TradeBot0"
