@@ -12,7 +12,7 @@
 ; Version: the single source of truth is src/version.py (APP_VERSION);
 ; keep MyAppVersion in sync with it at release time. Bump both per release.
 #define MyAppName "TradeBot0"
-#define MyAppVersion "2026.11.13"
+#define MyAppVersion "2026.11.14"
 #define MyAppPublisher "TradeBot0"
 #define MyAppExeName "TradeBot0_Arena.exe"
 

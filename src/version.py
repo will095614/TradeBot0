@@ -12,4 +12,4 @@ also accepted by the comparison helper, but releases use the date form.
 """
 
 APP_NAME = "TradeBot0"
-APP_VERSION = "2026.11.13"
+APP_VERSION = "2026.11.14"
