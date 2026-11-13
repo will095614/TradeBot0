@@ -161,6 +161,8 @@ class BrokerSim:
         )
         if not valid:
             self.rejection_audit.append((ticket.portfolio_id, reason))
+            if len(self.rejection_audit) > 500:
+                del self.rejection_audit[:-500]
             return None
 
         # Determine execution price:

@@ -18,6 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import weakref
 import zipfile
 from typing import Any, Dict, Optional, Tuple
 
@@ -65,6 +66,19 @@ class GatewaySupervisor:
     Guarantees that no error causes an unhandled exception or freezes the UI loop.
     """
 
+    # Live supervisors only (weak refs): the atexit handler must not
+    # keep dead instances alive.
+    _live_supervisors: "weakref.WeakSet[GatewaySupervisor]" = weakref.WeakSet()
+    _atexit_registered: bool = False
+
+    @classmethod
+    def _shutdown_all_at_exit(cls) -> None:
+        for sup in list(cls._live_supervisors):
+            try:
+                sup.shutdown()
+            except Exception as e:
+                logger.debug("Gateway shutdown at exit failed: %s", e)
+
     def __init__(
         self,
         host: str = "127.0.0.1",
@@ -90,11 +104,25 @@ class GatewaySupervisor:
         # because the worker thread and the bridge read it concurrently.
         self._install_lock = threading.Lock()
         self._install_thread: Optional[threading.Thread] = None
+        # Double-spawn guard for start_daemon (F5): two concurrent callers
+        # (wizard save + runtime-install finish) used to both pass the
+        # port check and spawn two daemons; the second overwrote
+        # child_process and orphaned the first.
+        self._daemon_lock = threading.Lock()
+        self._daemon_starting: bool = False
+        self._daemon_starting_thread: Optional[int] = None
         self.install_status: str = "idle"  # idle | downloading-node | installing-omniroute | done | failed
         self.install_message: str = ""
 
-        # Register exit hook to clean up child process on application termination
-        atexit.register(self.shutdown)
+        # Exit hook: a single class-level handler shuts down whatever
+        # supervisors are still alive (WeakSet, so dead instances drop out
+        # on their own). The old code registered bound self.shutdown per
+        # instance, which retained every supervisor ever built until
+        # process exit.
+        GatewaySupervisor._live_supervisors.add(self)
+        if not GatewaySupervisor._atexit_registered:
+            GatewaySupervisor._atexit_registered = True
+            atexit.register(GatewaySupervisor._shutdown_all_at_exit)
 
     @classmethod
     def _get_daemon_command(cls, port: int) -> Optional[List[str]]:
@@ -475,7 +503,36 @@ class GatewaySupervisor:
         Ensures an OmniRoute daemon is active and listening on the designated port.
         If already active, reuses it immediately. If not active, launches it headless
         in the background without displaying console windows.
+
+        Double-spawn guard (F5): while one thread is spawning, a second
+        caller waits on the health probe instead of spawning its own
+        daemon; the spawn itself runs in _start_daemon_once.
         """
+        with self._daemon_lock:
+            if self._daemon_starting:
+                _already_starting = True
+            else:
+                self._daemon_starting = True
+                self._daemon_starting_thread = threading.get_ident()
+                _already_starting = False
+        if _already_starting:
+            deadline = time.time() + max_wait_sec
+            while time.time() < deadline:
+                time.sleep(0.25)
+                if self.is_port_open(timeout=0.2):
+                    healthy, _ = self.probe_health(timeout=2.0)
+                    if healthy:
+                        return True, f"Connected to OmniRoute gateway at {self.host}:{self.port} (started by a concurrent request)"
+            return False, f"OmniRoute daemon did not respond within {max_wait_sec}s timeout."
+        try:
+            return self._start_daemon_once(max_wait_sec)
+        finally:
+            with self._daemon_lock:
+                self._daemon_starting = False
+                self._daemon_starting_thread = None
+
+    def _start_daemon_once(self, max_wait_sec: float = 30.0) -> Tuple[bool, str]:
+        # Single spawn attempt (see start_daemon for the concurrency guard).
         # Step 1: Check if already running and healthy
         if self.is_port_open():
             healthy, _ = self.probe_health(timeout=2.0)
@@ -568,6 +625,22 @@ class GatewaySupervisor:
         (or any other program) the user started by hand on the same port is
         left alone: killing it would destroy someone else's process (item 6).
         """
+        # If another thread is mid-spawn, wait for it to finish
+        # assigning child_process (bounded): snapshotting None now would
+        # orphan the daemon it is about to spawn. The spawning thread
+        # itself never waits (it owns the flag).
+        _spawn_deadline = time.time() + 35.0
+        while True:
+            with self._daemon_lock:
+                _starting = self._daemon_starting
+                _starter = self._daemon_starting_thread
+            if not _starting or _starter == threading.get_ident():
+                break
+            if time.time() > _spawn_deadline:
+                logger.warning("Gateway shutdown timed out waiting for a concurrent spawn")
+                break
+            time.sleep(0.1)
+
         owned_pid: Optional[int] = None
         if self.child_process and self.is_self_spawned:
             owned_pid = self.child_process.pid

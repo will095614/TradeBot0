@@ -171,7 +171,6 @@ class LiveArenaEngine:
             "fitness": 0.0,
             "status": "Gen #1 Running (Live Candidate #1)",
         }
-        self.tv_dispatch_log: List[Dict[str, Any]] = []
 
         # Anti-churn cooldown & hold-duration tracking
         self.strategy_cooldown: Dict[str, float] = {}
@@ -186,6 +185,7 @@ class LiveArenaEngine:
         self.intel_refresh_interval_sec: float = 300.0  # 5 minutes automated background digest cycle
         self.last_intel_refresh_ts: float = time.time()
         self._is_refreshing_intel: bool = False
+        self._intel_refresh_lock = threading.Lock()
 
         # Phase 1: Low-Latency WebSocket Streaming & Quote Manager (single shared WS socket)
         self.quote_manager = QuoteManager(session=self.session, on_ws_quote=self._handle_ws_quote)
@@ -214,6 +214,12 @@ class LiveArenaEngine:
             self.latest_quote = quote
             self._raw_quote_cache = quote
             self._slice_ticks.append(quote)
+            # Bound the backlog: while paused the live loop never drains
+            # this list, so an unattended WS stream would grow it forever
+            # (a cadence consumes at most seconds of ticks; 1200 is ~10
+            # minutes at full ticker rate).
+            if len(self._slice_ticks) > 1200:
+                del self._slice_ticks[:-1200]
             self.market_online = True
 
     def _is_current_generation(self) -> bool:
@@ -768,9 +774,10 @@ class LiveArenaEngine:
         Triggers an AI-driven refresh of macro intelligence, synthesizing live/curated events
         through OmniRoute. Returns updated intel hub telemetry.
         """
-        if self._is_refreshing_intel:
-            return self.macro_commander.get_intel_hub_telemetry()
-        self._is_refreshing_intel = True
+        with self._intel_refresh_lock:
+            if self._is_refreshing_intel:
+                return self.macro_commander.get_intel_hub_telemetry()
+            self._is_refreshing_intel = True
         self.last_intel_refresh_ts = time.time()
         try:
             loop = None
@@ -786,7 +793,8 @@ class LiveArenaEngine:
         except Exception as e:
             logger.warning("Intel digest refresh error: %s", e)
         finally:
-            self._is_refreshing_intel = False
+            with self._intel_refresh_lock:
+                self._is_refreshing_intel = False
             try:
                 self._publish_state_snapshot()
             except Exception as e:
@@ -1013,6 +1021,10 @@ class LiveArenaEngine:
                 event_type
             )
             return True
+        # Rejected by the broker (RiskGuard): do not retry every cadence
+        # -- that would spam rejection_audit forever. Same 20 s breather
+        # as the MTF / macro-veto / EV-gate rejections above.
+        self.strategy_cooldown[pid] = ts + 20.0
         return False
 
     def _evaluate_live_strategies(self, price: Decimal, prev_price: Decimal, ts: float) -> None:
@@ -1346,7 +1358,7 @@ class LiveArenaEngine:
         mean_ref = self.live_typical_mean if self.live_typical_mean > Decimal("0") else (self.live_ema_slow if self.live_ema_slow > Decimal("0") else price)
 
         # 1. Aggressive
-        if self.comp_a.portfolio.position_qty == Decimal("0"):
+        if self.comp_a.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_agg", 0.0):
             if is_uptrend:
                 sl = (price * (Decimal("1") - self.comp_a.genome.stop_loss_pct)).quantize(Decimal("0.01"))
                 tp = (price * (Decimal("1") + self.comp_a.genome.take_profit_pct)).quantize(Decimal("0.01")) if self.comp_a.genome.take_profit_pct else None
@@ -1357,7 +1369,7 @@ class LiveArenaEngine:
                 self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKDOWN_SHORT", side=OrderSide.SELL)
 
         # 2. Conservative
-        if self.comp_b.portfolio.position_qty == Decimal("0"):
+        if self.comp_b.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_cons", 0.0):
             if self.live_rsi > Decimal("52.0"):
                 sl = (price * Decimal("1.006")).quantize(Decimal("0.01"))
                 tp = (price * Decimal("0.991")).quantize(Decimal("0.01"))
@@ -1368,7 +1380,7 @@ class LiveArenaEngine:
                 self._try_enter_bracket(self.comp_b, price, sl, tp, ts, "SCALP_LONG", side=OrderSide.BUY)
 
         # 3. ATR Dynamic
-        if self.comp_c.portfolio.position_qty == Decimal("0"):
+        if self.comp_c.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_atr", 0.0):
             stop_dist = max(Decimal("50.00"), (self.live_atr * self.comp_c.genome.atr_stop_mult).quantize(Decimal("0.01")))
             target_dist = max(Decimal("100.00"), (self.live_atr * self.comp_c.genome.atr_target_mult).quantize(Decimal("0.01")))
             risk_budget = self.comp_c.portfolio.total_equity * self.comp_c.genome.atr_risk_pct
@@ -1382,7 +1394,7 @@ class LiveArenaEngine:
                 self._try_enter_bracket(self.comp_c, price, sl, tp, ts, "ATR_ADAPT_SHORT", side=OrderSide.SELL, risk_budget=risk_budget)
 
         # 4. Trailing Guard
-        if self.comp_d.portfolio.position_qty == Decimal("0"):
+        if self.comp_d.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_trail", 0.0):
             if is_uptrend:
                 sl = (price * Decimal("0.991")).quantize(Decimal("0.01"))
                 if self._try_enter_bracket(self.comp_d, price, sl, None, ts, "TRAIL_LONG", side=OrderSide.BUY):
@@ -1395,7 +1407,7 @@ class LiveArenaEngine:
                     self.comp_d.lowest_price_since_entry = price
 
         # 5. ORB Breakout
-        if self.comp_e.portfolio.position_qty == Decimal("0"):
+        if self.comp_e.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_orb", 0.0):
             if price >= orb_mid:
                 sl = (price * Decimal("0.992")).quantize(Decimal("0.01"))
                 tp = (price + (price - sl) * Decimal("2.0")).quantize(Decimal("0.01"))
@@ -1406,7 +1418,7 @@ class LiveArenaEngine:
                 self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_SHORT", side=OrderSide.SELL)
 
         # 6. Session Mean Pullback
-        if self.comp_f.portfolio.position_qty == Decimal("0"):
+        if self.comp_f.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_vwap", 0.0):
             if price >= mean_ref:
                 sl = (price * Decimal("0.993")).quantize(Decimal("0.01"))
                 tp = (price + (price - sl) * Decimal("2.2")).quantize(Decimal("0.01"))
@@ -1588,6 +1600,15 @@ class LiveArenaEngine:
     def start_live_loop(self, interval_sec: float = 1.0) -> None:
         if self.running:
             return
+        # A previous worker thread that has not exited yet (stop() only
+        # joins up to 3 s) must never be joined by a second live loop on
+        # the same engine: the old thread would see running=True again
+        # and resume ticking alongside the new one.
+        if self.worker_thread is not None and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=3.0)
+            if self.worker_thread.is_alive():
+                logger.warning("Previous live loop thread still alive; refusing to start a second one")
+                return
         self.cadence_sec = max(1.0, min(10.0, float(interval_sec)))
         self._stop_event.clear()
         self.running = True
@@ -1606,6 +1627,24 @@ class LiveArenaEngine:
             self.raw_fetch_thread.join(timeout=timeout)
         if self.raw_fetch_thread and not self.raw_fetch_thread.is_alive():
             self.raw_fetch_thread = None
+        # Release the quote session's keep-alive pool: every reset_engine
+        # builds a new engine (and a new Session), so an unclosed session
+        # leaks pooled connections until GC. The session stays usable
+        # afterwards (requests re-opens pools lazily) if this engine is
+        # ever started again.
+        try:
+            self.session.close()
+        except Exception as e:
+            logger.debug("Quote session close failed during stop: %s", e)
+        # Release the persistent SQLite connection too: every
+        # reset_engine builds a new engine (and a new ArenaStorage),
+        # so an unclosed connection would hold the database file
+        # handle until GC. The storage reopens lazily on next use,
+        # so restarting this same engine after stop() still works.
+        try:
+            self.storage.close()
+        except Exception as e:
+            logger.debug("Storage close failed during stop: %s", e)
 
     def stop(self) -> None:
         self.stop_live_loop()
@@ -1788,6 +1827,9 @@ class LiveArenaEngine:
                     paused_dur = max(0.0, now - self._pause_start_ts)
                     self.last_evolve_ts += paused_dur
                     self._pause_start_ts = None
+                    # Ticks that arrived while paused are stale: they must
+                    # not be aggregated into the first post-resume candle.
+                    self._slice_ticks.clear()
                 self.log_event("ENGINE", "Simulation & Evolution Timer RESUMED", "info")
         self._publish_state_snapshot()
 
@@ -2089,10 +2131,16 @@ class LiveArenaEngine:
             except Exception as e:
                 logger.debug("Invalid order type in saved ticket, defaulting to STOP_MARKET: %s", e)
                 order_type = OrderType.STOP_MARKET
-            price_val = Decimal(str(data["price"])) if data.get("price") is not None else None
-            sl_val = Decimal(str(data["stop_loss"])) if data.get("stop_loss") is not None else None
-            tp_val = Decimal(str(data["take_profit"])) if data.get("take_profit") is not None else None
-            qty_val = Decimal(str(data.get("qty", "0")))
+            try:
+                price_val = Decimal(str(data["price"])) if data.get("price") is not None else None
+                sl_val = Decimal(str(data["stop_loss"])) if data.get("stop_loss") is not None else None
+                tp_val = Decimal(str(data["take_profit"])) if data.get("take_profit") is not None else None
+                qty_val = Decimal(str(data.get("qty", "0")))
+            except Exception as e:
+                # Garbage numbers in one saved ticket must not abort the
+                # whole session restore (F3): drop this ticket only.
+                logger.debug("Dropping ticket with unparseable numbers: %s (%s)", data, e)
+                return None
             if qty_val <= Decimal("0"):
                 # A zero/negative-size ticket is not a valid bracket: drop
                 # it instead of letting restore mount it as a live stop.
@@ -2358,7 +2406,10 @@ class LiveArenaEngine:
                         if t:
                             self.broker.active_targets[pid] = t
                 if "position_entry_ts" in snapshot:
-                    self.position_entry_ts = {pid: float(ts) for pid, ts in snapshot["position_entry_ts"].items()}
+                    try:
+                        self.position_entry_ts = {pid: float(ts) for pid, ts in snapshot["position_entry_ts"].items()}
+                    except (TypeError, ValueError, AttributeError) as e:
+                        logger.debug("Invalid position_entry_ts in saved snapshot, ignoring: %s", e)
                 if "strategy_telemetry" in snapshot and isinstance(snapshot["strategy_telemetry"], dict):
                     self.strategy_telemetry.update(snapshot["strategy_telemetry"])
                 if "fill_records" in snapshot and isinstance(snapshot["fill_records"], list):

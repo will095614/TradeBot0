@@ -4,6 +4,7 @@ Implements Phase 2 (P1): Deterministic State Persistence in Write-Ahead Logging 
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -14,6 +15,27 @@ import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _retry_on_db_error(fn):
+    """Retry a storage call once after resetting a broken connection.
+
+    See the module note on the persistent connection: the only new
+    failure mode versus per-call connections is a stale handle, and
+    one reset + retry recovers from it exactly as a fresh connect
+    used to. Genuine errors (bad SQL, disk full) simply raise again
+    on the retry.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except sqlite3.Error:
+            self._reset_connection()
+            return fn(self, *args, **kwargs)
+
+    return wrapper
 
 
 class ArenaStorage:
@@ -38,15 +60,58 @@ class ArenaStorage:
             os.makedirs(parent_dir, exist_ok=True)
         self.db_path: str = db_path
         self._db_lock = threading.RLock()
+        self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=5.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA temp_store=MEMORY;")
-        return conn
+        """Return the single persistent connection for this storage.
 
+        Phase 2: opening a fresh connection per write cost ~8 ms per
+        tick (connect + 3 PRAGMAs + commit + close + WAL checkpoint on
+        last-close), ~65% of the whole tick. One lazily created
+        connection per instance removes that cost; the per-write
+        commit is unchanged, so crash safety is identical to before
+        (WAL + synchronous=NORMAL, commit per candle).
+        check_same_thread=False is required because one storage
+        instance is shared by the live-loop, bootstrap, harvest and
+        digest threads -- but every caller holds self._db_lock, so
+        the connection is still used by only one thread at a time.
+        """
+        with self._db_lock:
+            if self._conn is None:
+                conn = sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False)
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+                conn.execute("PRAGMA temp_store=MEMORY;")
+                self._conn = conn
+            return self._conn
+
+    def _reset_connection(self) -> None:
+        """Drop the persistent connection (checkpointing the WAL first).
+
+        Best effort: a checkpoint can fail while another connection
+        still holds the database; the data is safe either way because
+        every write already committed. The next call reopens lazily.
+        """
+        with self._db_lock:
+            conn, self._conn = self._conn, None
+            if conn is not None:
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def close(self) -> None:
+        """Release the persistent connection; the storage stays usable
+        (the next call reopens lazily), so an engine restarted after
+        stop() is unaffected."""
+        self._reset_connection()
+
+    @_retry_on_db_error
     def _init_db(self) -> None:
         with self._db_lock:
             with self._get_connection() as conn:
@@ -108,6 +173,7 @@ class ArenaStorage:
                 except Exception as e:
                     logger.debug("Evolution seed column already exists, skipping migration: %s", e)
 
+    @_retry_on_db_error
     def save_candle(self, c: Dict[str, Any]) -> None:
         with self._db_lock:
             with self._get_connection() as conn:
@@ -126,6 +192,7 @@ class ArenaStorage:
                     ),
                 )
 
+    @_retry_on_db_error
     def save_candles_batch(self, candles: List[Dict[str, Any]]) -> None:
         if not candles:
             return
@@ -150,6 +217,7 @@ class ArenaStorage:
                     rows,
                 )
 
+    @_retry_on_db_error
     def load_latest_candles(self, limit: int = 150) -> List[Dict[str, Any]]:
         with self._db_lock:
             with self._get_connection() as conn:
@@ -175,6 +243,7 @@ class ArenaStorage:
                     for r in reversed(rows)
                 ]
 
+    @_retry_on_db_error
     def record_fill(self, fill_data: Dict[str, Any]) -> None:
         with self._db_lock:
             with self._get_connection() as conn:
@@ -203,6 +272,7 @@ class ArenaStorage:
                     ),
                 )
 
+    @_retry_on_db_error
     def load_recent_fills(self, limit: int = 60) -> List[Dict[str, Any]]:
         with self._db_lock:
             with self._get_connection() as conn:
@@ -237,6 +307,7 @@ class ArenaStorage:
                     for r in rows
                 ]
 
+    @_retry_on_db_error
     def save_evolution_generation(
         self,
         generation: int,
@@ -272,6 +343,7 @@ class ArenaStorage:
                     ),
                 )
 
+    @_retry_on_db_error
     def load_evolution_history(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._db_lock:
             with self._get_connection() as conn:
@@ -302,6 +374,7 @@ class ArenaStorage:
                     for r in reversed(rows)
                 ]
 
+    @_retry_on_db_error
     def save_session_snapshot(self, snapshot: Dict[str, Any]) -> None:
         """Persist full arena session snapshot (competitors, cash, positions, genomes, generation)."""
         data_str = json.dumps(snapshot, default=str)
@@ -315,6 +388,7 @@ class ArenaStorage:
                     (time.time(), data_str),
                 )
 
+    @_retry_on_db_error
     def load_session_snapshot(self) -> Optional[Dict[str, Any]]:
         """Retrieve most recent saved session snapshot if present."""
         with self._db_lock:
@@ -331,6 +405,7 @@ class ArenaStorage:
                         return None
                 return None
 
+    @_retry_on_db_error
     def clear_session_snapshot(self) -> None:
         """Clear active saved session snapshot on hard reset."""
         with self._db_lock:

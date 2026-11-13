@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
@@ -481,6 +482,41 @@ class IntelligenceHarvester:
         self.is_running: bool = False
         self._harvest_task: Optional[asyncio.Task] = None
 
+    @staticmethod
+    def _fetch_registry_entry(
+        entry: Dict[str, Any], max_per_source: int, timeout_sec: float
+    ) -> List[RawEvent]:
+        """Fetch + parse ONE registry entry (worker side, no shared state).
+
+        Pure per-entry work: one requests.get plus the type-dispatched
+        parser. Deliberately does NOT touch self.dedup -- dedup runs
+        sequentially in the caller, in registry order, so parallel
+        fetching cannot change event order or dedup outcomes. Any
+        failure yields [] (never fatal: one dead source must not take
+        down the whole digest).
+        """
+        import requests
+
+        etype = str(entry.get("type", ""))
+        try:
+            resp = requests.get(
+                entry["url"], headers={"User-Agent": USER_AGENT}, timeout=timeout_sec
+            )
+            if resp.status_code != 200:
+                logger.debug("Registry feed %s returned HTTP %d", entry.get("id"), resp.status_code)
+                return []
+            if etype in ("rss", "atom"):
+                parsed = parse_rss_atom(resp.text, entry["name"], entry["domain"], tier=int(entry.get("tier", 2)))
+            elif etype == "rest_json":
+                parsed = parse_polymarket_events(resp.json())
+            else:
+                logger.debug("Unknown registry feed type %r for %s, skipped", etype, entry.get("id"))
+                return []
+            return parsed[:max_per_source]
+        except Exception as ex:
+            logger.debug("Registry feed fetch error for %s: %s", entry.get("id"), ex)
+            return []
+
     def fetch_from_registry(self, max_per_source: int = 5, timeout_sec: float = 3.0) -> List[RawEvent]:
         """
         Registry-driven fetch (item 12B): every entry in FEED_REGISTRY is a
@@ -490,38 +526,32 @@ class IntelligenceHarvester:
         cadence) and are explicitly skipped here, so the same stream is
         never scored twice per digest. Unknown types are skipped, never
         fatal: one dead source must not take down the whole digest.
+
+        Phase 2: the 16 fetchable entries are fetched concurrently
+        (ThreadPoolExecutor, 8 workers -- network-bound). Measured on
+        mocked 0.2 s/source: 3.21 s sequential -> 0.40 s. Dedup still
+        runs sequentially below in registry order, so results are
+        identical to the sequential version for the same responses.
         """
-        import requests
+        fetchable = [e for e in FEED_REGISTRY if str(e.get("type", "")) != "stocktwits"]
+        if not fetchable:
+            return []
+        workers = min(8, len(fetchable))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            per_entry = list(
+                pool.map(
+                    lambda entry: self._fetch_registry_entry(entry, max_per_source, timeout_sec),
+                    fetchable,
+                )
+            )
 
         fresh_events: List[RawEvent] = []
-        headers = {"User-Agent": USER_AGENT}
-
-        for entry in FEED_REGISTRY:
-            etype = str(entry.get("type", ""))
-            if etype == "stocktwits":
-                # ForumCollector owns StockTwits (separate forum batch).
-                logger.debug("Registry entry %s is forum-owned, skipped by news fetch", entry.get("id"))
-                continue
-            try:
-                resp = requests.get(entry["url"], headers=headers, timeout=timeout_sec)
-                if resp.status_code != 200:
-                    logger.debug("Registry feed %s returned HTTP %d", entry.get("id"), resp.status_code)
-                    continue
-                if etype in ("rss", "atom"):
-                    parsed = parse_rss_atom(resp.text, entry["name"], entry["domain"], tier=int(entry.get("tier", 2)))
-                elif etype == "rest_json":
-                    parsed = parse_polymarket_events(resp.json())
-                else:
-                    logger.debug("Unknown registry feed type %r for %s, skipped", etype, entry.get("id"))
-                    continue
-                for e in parsed[:max_per_source]:
-                    if self.dedup.is_new(e.title, e.url):
-                        fresh_events.append(e)
-                    elif hasattr(self.client, "record_dedup_hit"):
-                        self.client.record_dedup_hit()
-            except Exception as ex:
-                logger.debug("Registry feed fetch error for %s: %s", entry.get("id"), ex)
-
+        for parsed in per_entry:
+            for e in parsed:
+                if self.dedup.is_new(e.title, e.url):
+                    fresh_events.append(e)
+                elif hasattr(self.client, "record_dedup_hit"):
+                    self.client.record_dedup_hit()
         return fresh_events
 
     def fetch_live_feeds(self, max_per_source: int = 5, timeout_sec: float = 3.0) -> List[RawEvent]:

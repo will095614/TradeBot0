@@ -5,8 +5,12 @@ import logging
 import os
 import time
 import warnings
-import pandas as pd
-import numpy as np
+# Phase 2: pandas/numpy are imported lazily inside
+# fetch_historical_bars / _fetch_dataframe (their only use sites).
+# Importing them at module top cost ~0.6 s of the ~1.23 s
+# `import src.data.live_engine` at startup; the first bootstrap
+# fetch already does network I/O, so deferring the import there
+# moves the cost off the startup path with no behavior change.
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +83,10 @@ class ETHFeed:
         period: str = "1mo",
         interval: str = "15m"
     ) -> List[CandleBar]:
+        # Lazy pandas/numpy (see module note): first use is here.
+        import numpy as np
+        import pandas as pd
+
         df = cls._fetch_dataframe(ticker=ticker, period=period, interval=interval)
         if df.empty:
             raise ValueError(f"No market data returned for {ticker} with interval {interval}")
@@ -169,6 +177,10 @@ class ETHFeed:
 
     @staticmethod
     def _fetch_dataframe(ticker: str, period: str, interval: str) -> pd.DataFrame:
+        # Lazy pandas (see module note): first use is here, including
+        # the ARENA_FAST_TEST empty-frame path below.
+        import pandas as pd
+
         if os.environ.get("ARENA_FAST_TEST") == "1":
             return pd.DataFrame()
 
