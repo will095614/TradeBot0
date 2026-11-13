@@ -1325,6 +1325,13 @@ function renderHeader(state) {
 
   const autoLbl = document.getElementById('autoEvolveLabelText');
   cdEl.textContent = fmtTimeSec(state.next_evolve_sec || 0);
+  // P2 note wiring (2026-11-13): the countdown blends both triggers, so
+  // the full honest note (latest time cap + trades still needed) rides on
+  // the countdown tooltip; the trades-remaining part is also visible in
+  // the Genetic Engine card (hudGenSub below).
+  if (cdEl && typeof state.next_evolve_sec_note === 'string' && state.next_evolve_sec_note) {
+    cdEl.title = state.next_evolve_sec_note;
+  }
 
   if (isPaused) {
     cdEl.style.color = 'var(--ss-text-faint)';
@@ -1641,7 +1648,13 @@ function renderTacticalHud(state) {
   const genSubEl = document.getElementById('hudGenSub');
   if (genSubEl) {
     const hVal = Math.round((state.auto_evolve_interval_sec || 21600) / 3600);
-    genSubEl.textContent = `EV Gate (${hVal}H)`;
+    // P2 note wiring (2026-11-13): the trades-remaining label is rendered
+    // by the view model (Python) because frontend assets must stay CJK-free
+    // (see test_zero_cjk_in_frontend_assets); JS only displays it opaquely.
+    const tradesLabel = (typeof state.next_evolve_trades_label === 'string' && state.next_evolve_trades_label)
+      ? state.next_evolve_trades_label
+      : '';
+    genSubEl.textContent = tradesLabel ? `EV Gate (${hVal}H) · ${tradesLabel}` : `EV Gate (${hVal}H)`;
   }
 
   // 5. AIMRAN uvq11-wg Liquid Vessel Fluid Level Synchronization (--lv)
