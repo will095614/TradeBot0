@@ -80,6 +80,27 @@ def _copy_text_to_clipboard_windows(text: str) -> bool:
 
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
+        # 64-bit Windows: ctypes defaults every foreign return type to
+        # c_int, which truncates the 64-bit HGLOBAL handle; GlobalLock
+        # then fails on the truncated handle and the copy silently
+        # returns False (2026-11-13: the password-copy button never
+        # worked for this reason). Declare the real signatures.
+        kernel32.GlobalAlloc.restype = ctypes.c_void_p
+        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.restype = ctypes.c_bool
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalFree.restype = ctypes.c_void_p
+        kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+        user32.OpenClipboard.restype = ctypes.c_bool
+        user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+        user32.EmptyClipboard.restype = ctypes.c_bool
+        user32.EmptyClipboard.argtypes = []
+        user32.SetClipboardData.restype = ctypes.c_void_p
+        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        user32.CloseClipboard.restype = ctypes.c_bool
+        user32.CloseClipboard.argtypes = []
         CF_UNICODETEXT = 13
         GMEM_MOVEABLE = 0x0002
         data = text.encode("utf-16-le") + b"\x00\x00"

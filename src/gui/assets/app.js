@@ -3667,13 +3667,13 @@ function updateUiClockDisplay() {
     // so the button can truthfully show "copied!" again.
     const showEnvHint = () => {
       if (typeof showChartToast === 'function') {
-        showChartToast('Admin password is stored in ~/.omniroute/.env', '#F59E0B');
+        showChartToast({ triggerReason: 'Admin password is stored in ~/.omniroute/.env', action: 'INFO' });
       }
     };
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.copy_omniroute_password === 'function') {
       window.pywebview.api.copy_omniroute_password().then((res) => {
         if (res && res.status === 'ok') {
-          if (typeof showChartToast === 'function') showChartToast('copied!', '#10F5A0');
+          if (typeof showChartToast === 'function') showChartToast({ triggerReason: 'copied!', action: 'COPY' });
         } else {
           showEnvHint();
         }
