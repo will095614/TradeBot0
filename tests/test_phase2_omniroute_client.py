@@ -159,3 +159,63 @@ def test_omniroute_client_unreachable_safe_mode():
         assert client.failed_requests == 1
         assert client.is_gateway_online is False
     asyncio.run(_run())
+
+
+def _mock_429_session(responses):
+    """Builds a mock aiohttp session yielding the given responses in order."""
+    mock_session = MagicMock()
+    mock_session.closed = False
+    mock_session.post.return_value.__aenter__.side_effect = responses
+    return mock_session
+
+
+def _mock_resp(status, headers=None, json_body=None):
+    resp = AsyncMock()
+    resp.status = status
+    resp.headers = headers or {}
+    if json_body is not None:
+        resp.json = AsyncMock(return_value=json_body)
+    return resp
+
+
+def test_chat_json_retries_then_succeeds():
+    """第一次 429（帶 Retry-After）、第二次 200＋可解析 JSON：retried==1、successful==1。"""
+    async def _run():
+        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key", max_retries=2)
+        mock_session = _mock_429_session([
+            _mock_resp(429, {"Retry-After": "0.01"}),
+            _mock_resp(200, {}, {"choices": [{"message": {"content": '{"regime": "NORMAL"}'}}]}),
+        ])
+        client._session = mock_session
+        client._owns_session = False
+
+        result = await client.chat_json("auto", "system", "user")
+        assert result == {"regime": "NORMAL"}
+        assert client.total_requests == 1
+        assert client.retried_requests == 1
+        assert client.successful_requests == 1
+        assert client.failed_requests == 0
+        assert mock_session.post.call_count == 2
+    asyncio.run(_run())
+
+
+def test_chat_json_all_retries_429_returns_none():
+    """三次皆 429（max_retries=2）：回 None、retried==2、failed==1、successful==0。"""
+    async def _run():
+        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key", max_retries=2)
+        mock_session = _mock_429_session([
+            _mock_resp(429, {"Retry-After": "0.01"}),
+            _mock_resp(429, {"Retry-After": "0.01"}),
+            _mock_resp(429, {"Retry-After": "0.01"}),
+        ])
+        client._session = mock_session
+        client._owns_session = False
+
+        result = await client.chat_json("auto", "system", "user")
+        assert result is None
+        assert client.total_requests == 1
+        assert client.retried_requests == 2
+        assert client.failed_requests == 1
+        assert client.successful_requests == 0
+        assert mock_session.post.call_count == 3
+    asyncio.run(_run())

@@ -22,6 +22,15 @@ from src.competitors.orb import ORBCompetitor
 from src.competitors.session_mean import SessionMeanPullbackCompetitor
 from src.data.eth_feed import ETHFeed, CandleBar
 
+# A2: uncapped-runner target assumption -- a trend runner with no
+# take-profit is evaluated in Monte Carlo as if its target sat at
+# 1.8R (1.8x the stop distance). This is a MODEL ASSUMPTION, not a
+# measured outcome: no market data says an uncapped runner exits
+# at 1.8R. It shapes r_multiple / breakeven_prob / expected_r for
+# uncapped brackets only; capped brackets use their real TP.
+# The number itself is unchanged (decision: P2-A).
+UNCAPPED_RUNNER_R_MULTIPLE = 1.8
+
 
 class TimeMachineArena:
     """
@@ -60,6 +69,8 @@ class TimeMachineArena:
         cum_vol = Decimal("0")
         cum_pv = Decimal("0")
         window_bars: List[CandleBar] = []
+        # Rolling true ranges for the measured backtest ATR (F3).
+        true_ranges: List[Decimal] = []
 
         for bar in bars:
             window_bars.append(bar)
@@ -67,7 +78,9 @@ class TimeMachineArena:
                 window_bars.pop(0)
 
             typ_price = (bar.high + bar.low + bar.close) / Decimal("3")
-            bar_vol = bar.volume if bar.volume > Decimal("0") else Decimal("100.0")
+            # P0-B / F2: a zero-volume bar weighs 0 in the VWAP -- the old
+            # Decimal("100.0") invented volume out of thin air.
+            bar_vol = bar.volume if bar.volume > Decimal("0") else Decimal("0")
             cum_vol += bar_vol
             cum_pv += (typ_price * bar_vol)
             # Backtest bars carry volume, so this IS the genuine session VWAP.
@@ -82,6 +95,21 @@ class TimeMachineArena:
             orb_high = max(b.high for b in orb_window) if orb_window else bar.high
             orb_low = min(b.low for b in orb_window) if orb_window else bar.low
             orb_mid = (orb_high + orb_low) / Decimal("2")
+
+            # P0-B / F3: the backtest ATR is measured from the bars being
+            # replayed (rolling ATR(14) over true ranges), not the broker's
+            # fixed 12.00 start value -- the old value understated
+            # slippage 4-8x for the whole backtest. Updated before
+            # on_tick so this bar's fills already pay the measured rate.
+            # (compute_execution_slippage keeps its atr=12.0 default as a
+            # fallback for direct callers that pass no ATR.)
+            tr = bar.high - bar.low
+            if prev_bar is not None:
+                tr = max(tr, abs(bar.high - prev_bar.close), abs(bar.low - prev_bar.close))
+            true_ranges.append(tr)
+            if len(true_ranges) > 14:
+                true_ranges.pop(0)
+            self.broker.current_atr = sum(true_ranges, Decimal("0")) / Decimal(len(true_ranges))
 
             # 1. Advance exchange venue with full OHLC candle prices (checks intra-bar stops & targets)
             self.broker.on_tick(
@@ -212,6 +240,12 @@ class TimeMachineArena:
                 f"+{float(g.trailing_trigger_pct):.1f}% / {float(g.trailing_distance_pct)*100:.2f}% |"
             )
 
+        md.append(
+            "\n**Model assumptions**: uncapped runners (TP shown as `Unbounded (Run)`) "
+            "are evaluated in Monte Carlo with an assumed 1.8R target -- a model "
+            "assumption, not a measured outcome; capped brackets use their real TP."
+        )
+
         with open(report_path, "w", encoding="utf-8") as f:
             f.write("\n".join(md))
         print(f"[+] Arena post-mortem saved to {report_path}")
@@ -224,26 +258,34 @@ class MonteCarloBracketOdds:
     Inspired by day-trader-skill Time Machine.
     """
     passed: bool
-    target_prob: float
-    stop_prob: float
-    neither_prob: float
-    decided_win_rate: float
-    expected_r: float
+    # A1: probabilities / expected R are None when the odds are
+    # unknown (NumPy missing, no paths simulated) -- never invented.
+    # r_multiple / breakeven_prob are pure bracket geometry and stay numeric.
+    target_prob: Optional[float]
+    stop_prob: Optional[float]
+    neither_prob: Optional[float]
+    decided_win_rate: Optional[float]
+    expected_r: Optional[float]
     r_multiple: float
     breakeven_prob: float
     verdict: str
-    green_prob: float = 0.50
+    green_prob: Optional[float] = 0.50
+    # A2: True when r_multiple came from the uncapped-runner 1.8R
+    # assumption (no take-profit was given) instead of a real TP.
+    # Surfaced in to_dict() so the live view model can label it.
+    r_multiple_is_assumption: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "passed": self.passed,
-            "target_prob": round(self.target_prob, 4),
-            "stop_prob": round(self.stop_prob, 4),
-            "neither_prob": round(self.neither_prob, 4),
-            "decided_win_rate": round(self.decided_win_rate, 4),
-            "green_prob": round(self.green_prob, 4),
-            "expected_r": round(self.expected_r, 3),
+            "target_prob": round(self.target_prob, 4) if self.target_prob is not None else None,
+            "stop_prob": round(self.stop_prob, 4) if self.stop_prob is not None else None,
+            "neither_prob": round(self.neither_prob, 4) if self.neither_prob is not None else None,
+            "decided_win_rate": round(self.decided_win_rate, 4) if self.decided_win_rate is not None else None,
+            "green_prob": round(self.green_prob, 4) if self.green_prob is not None else None,
+            "expected_r": round(self.expected_r, 3) if self.expected_r is not None else None,
             "r_multiple": round(self.r_multiple, 2),
+            "r_multiple_is_assumption": self.r_multiple_is_assumption,
             "breakeven_prob": round(self.breakeven_prob, 4),
             "verdict": self.verdict,
         }
@@ -289,6 +331,7 @@ class MonteCarloOddsEvaluator:
 
         is_short = (sl_f > entry_f)
         stop_dist = abs(entry_f - sl_f)
+        r_assumed = False  # A2: set True when the 1.8R assumption is used below.
 
         if is_short:
             # SHORT bracket: Stop-Loss is above entry, Take-Profit is below entry
@@ -297,8 +340,11 @@ class MonteCarloOddsEvaluator:
                 target_dist = entry_f - tp_f
                 r_mult = max(0.5, target_dist / stop_dist)
             else:
-                # Uncapped short runner assumes target at 1.8R downward
-                r_mult = 1.8
+                # Uncapped short runner: no TP was given, so the target
+                # is ASSUMED at UNCAPPED_RUNNER_R_MULTIPLE (1.8R) downward
+                # (A2: model assumption, not a measured exit).
+                r_mult = UNCAPPED_RUNNER_R_MULTIPLE
+                r_assumed = True
                 tp_f = entry_f - (stop_dist * r_mult)
         else:
             # LONG bracket: Stop-Loss is below entry, Take-Profit is above entry
@@ -307,8 +353,11 @@ class MonteCarloOddsEvaluator:
                 target_dist = tp_f - entry_f
                 r_mult = max(0.5, target_dist / stop_dist)
             else:
-                # Uncapped trend runner assumes target at 1.8R upward
-                r_mult = 1.8
+                # Uncapped trend runner: no TP was given, so the target
+                # is ASSUMED at UNCAPPED_RUNNER_R_MULTIPLE (1.8R) upward
+                # (A2: model assumption, not a measured exit).
+                r_mult = UNCAPPED_RUNNER_R_MULTIPLE
+                r_assumed = True
                 tp_f = entry_f + (stop_dist * r_mult)
 
         breakeven_win_rate = 1.0 / (1.0 + r_mult)
@@ -369,38 +418,55 @@ class MonteCarloOddsEvaluator:
                 green_paths = target_first | (neither & (paths[:, -1] >= entry_f))
             green_prob = float(np.mean(green_paths))
         else:
-            # Fallback pure-python estimator
-            target_prob = 0.35
-            stop_prob = 0.45
-            neither_prob = 0.20
-            green_prob = 0.48
-            expected_r = (target_prob * r_mult) - stop_prob
+            # A1: NumPy is missing, so no Monte Carlo paths ran at all.
+            # The old fixed probabilities (0.35 / 0.45 / 0.20 / 0.48) were
+            # invented numbers with no source; report unknown (None) and
+            # fail the EV gate closed instead of trading on them.
+            target_prob = None
+            stop_prob = None
+            neither_prob = None
+            green_prob = None
+            expected_r = None
 
-        decided = target_prob + stop_prob
-        decided_win_rate = (target_prob / decided) if decided > 0 else 0.50
+        if target_prob is None or stop_prob is None:
+            decided_win_rate = None
+        else:
+            decided = target_prob + stop_prob
+            decided_win_rate = (target_prob / decided) if decided > 0 else 0.50
 
         # Target achievable check:
         # If stop was hit by substantial paths (stop_prob >= 0.35) but target was NEVER reached (target_prob <= 0.002),
         # the bracket is hostile/absurd (e.g. 40R target in 30 minutes).
-        target_achievable = not (stop_prob >= 0.35 and target_prob <= 0.002)
+        # Unknown odds cannot prove the target achievable: fail closed.
+        target_achievable = (
+            target_prob is not None and stop_prob is not None
+            and not (stop_prob >= 0.35 and target_prob <= 0.002)
+        )
 
         # Day-trader-skill Time Machine rule:
         # When neither_prob > 0.40 (trade horizon extends past simulation window),
         # evaluate win rate using green_prob (profitable paths), avoiding the small-sample
         # distortion of premature barrier touches.
-        effective_win_rate = green_prob if neither_prob > 0.40 else decided_win_rate
+        if neither_prob is None or decided_win_rate is None:
+            effective_win_rate = None
+        else:
+            effective_win_rate = green_prob if neither_prob > 0.40 else decided_win_rate
 
         # Decision Gate:
         # Pass if Expected R is above threshold, effective win rate meets breakeven threshold,
         # and target is achievable.
         passed = (
             target_achievable
+            and expected_r is not None
             and (expected_r >= min_ev_threshold)
+            and effective_win_rate is not None
             and (effective_win_rate >= (breakeven_win_rate * 0.70))
         )
 
         display_win = effective_win_rate
-        if passed:
+        if target_prob is None:
+            verdict = "Unknown (NumPy unavailable: Monte Carlo odds cannot be computed)"
+        elif passed:
             verdict = f"Passed EV Gate (EV {expected_r:+.2f}R | Win {display_win*100:.0f}%)"
         else:
             verdict = f"Blocked by EV Gate (EV {expected_r:+.2f}R | Win {display_win*100:.0f}%)"
@@ -416,4 +482,5 @@ class MonteCarloOddsEvaluator:
             breakeven_prob=breakeven_win_rate,
             verdict=verdict,
             green_prob=green_prob,
+            r_multiple_is_assumption=r_assumed,
         )

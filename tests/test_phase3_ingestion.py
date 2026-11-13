@@ -234,3 +234,179 @@ def test_stage2_interrupt_debouncing_r4():
 
     asyncio.run(_run())
 
+# ---------------------------------------------------------------------------
+# fetch_from_registry: real HTTP payloads, mocked transport (P0C)
+# ---------------------------------------------------------------------------
+import time
+
+import requests
+from unittest.mock import patch
+
+_COINDESK_RSS = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+    <channel>
+        <title>CoinDesk</title>
+        <item>
+            <title>Bitcoin ETF Sees Record Inflows as ETH Rallies</title>
+            <link>https://www.coindesk.com/markets/2026/11/13/bitcoin-etf-inflows</link>
+            <description>Spot bitcoin ETFs drew record inflows while ether climbed past key resistance.</description>
+            <pubDate>Thu, 13 Nov 2026 10:00:00 GMT</pubDate>
+        </item>
+        <item>
+            <title>Ethereum Upgrade Scheduled for December</title>
+            <link>https://www.coindesk.com/tech/2026/11/13/ethereum-upgrade-december</link>
+            <description>Developers confirm the next network upgrade date.</description>
+            <pubDate>Thu, 13 Nov 2026 09:30:00 GMT</pubDate>
+        </item>
+    </channel>
+</rss>
+"""
+
+_SEC_ATOM = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <title>SEC 8-K Feed</title>
+    <entry>
+        <title>8-K: MicroStrategy Purchases Additional 25,000 BTC</title>
+        <link href="https://www.sec.gov/edgar/data/12345/8k-20261113.htm"/>
+        <summary>Registrant reports acquisition of additional bitcoin.</summary>
+        <updated>2026-11-13T08:00:00Z</updated>
+    </entry>
+</feed>
+"""
+
+_POLYMARKET_JSON = [
+    {
+        "title": "Fed Rate Decision December 2026",
+        "volume24hr": 1250000.0,
+        "slug": "fed-rate-decision-december-2026",
+        "markets": [{
+            "outcomes": ["25bps cut", "No change"],
+            "outcomePrices": ["0.62", "0.38"],
+        }],
+    }
+]
+
+
+def _fake_registry_response(status_code=200, text="", json_data=None):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    resp.json = MagicMock(return_value=json_data)
+    return resp
+
+
+def _registry_get_ok(url, headers=None, timeout=None):
+    if "coindesk.com" in url:
+        return _fake_registry_response(text=_COINDESK_RSS)
+    if "sec.gov" in url:
+        return _fake_registry_response(text=_SEC_ATOM)
+    if "gamma-api.polymarket.com" in url:
+        return _fake_registry_response(text="{}", json_data=_POLYMARKET_JSON)
+    return _fake_registry_response(status_code=404, text="not found")
+
+
+def _new_harvester():
+    return IntelligenceHarvester(client=MagicMock())
+
+
+def test_fetch_from_registry_parses_real_rss_xml():
+    """RSS (CoinDesk x2) + Atom (SEC x1) + Polymarket JSON (x1) via mocked
+    requests.get: titles/urls/tier/domain correct, dedup pins the second call."""
+    harvester = _new_harvester()
+    requested = []
+
+    def _recording_get(url, headers=None, timeout=None):
+        requested.append(url)
+        return _registry_get_ok(url, headers=headers, timeout=timeout)
+
+    before = time.time()
+    with patch("requests.get", side_effect=_recording_get):
+        events = harvester.fetch_from_registry()
+    after = time.time()
+
+    assert len(events) == 4
+    # Registry order: polymarket, sec, ..., coindesk.
+    poly, sec, cd1, cd2 = events
+    assert poly.source == "Polymarket" and poly.domain == "prediction" and poly.tier == 1
+    assert "Fed Rate Decision December 2026" in poly.title
+    assert "[Polymarket 24h Vol $1,250,000]" in poly.title
+    assert "25bps cut: 62%" in poly.title and "No change: 38%" in poly.title
+    assert poly.url == "https://polymarket.com/event/fed-rate-decision-december-2026"
+
+    assert sec.source == "SEC EDGAR 8-K" and sec.domain == "corporate" and sec.tier == 1
+    assert "MicroStrategy" in sec.title
+    assert sec.url == "https://www.sec.gov/edgar/data/12345/8k-20261113.htm"
+    assert "acquisition of additional bitcoin" in sec.raw_content
+
+    assert cd1.source == "CoinDesk Live" and cd1.domain == "crypto" and cd1.tier == 2
+    assert cd1.title == "Bitcoin ETF Sees Record Inflows as ETH Rallies"
+    assert cd1.url == "https://www.coindesk.com/markets/2026/11/13/bitcoin-etf-inflows"
+    assert "Spot bitcoin ETFs drew record inflows" in cd1.raw_content
+    assert cd2.title == "Ethereum Upgrade Scheduled for December"
+    assert cd2.url == "https://www.coindesk.com/tech/2026/11/13/ethereum-upgrade-december"
+
+    # NOTE: parse_rss_atom stamps ingest time; it does NOT parse pubDate /
+    # <updated>. The timestamps below pin that actual behaviour.
+    for e in events:
+        assert before <= e.timestamp <= after
+
+    # Every non-stocktwits registry entry was attempted; stocktwits never was.
+    assert len(requested) == 16
+    assert not any("stocktwits.com" in u for u in requested)
+
+    # Same payloads again: dedup buffer yields nothing new.
+    with patch("requests.get", side_effect=_registry_get_ok):
+        assert harvester.fetch_from_registry() == []
+
+
+def test_fetch_from_registry_skips_bad_sources():
+    """Non-200 / timeout / corrupt XML sources are skipped; the healthy
+    Polymarket source still delivers."""
+    requested = []
+
+    def _bad_get(url, headers=None, timeout=None):
+        requested.append(url)
+        if "coindesk.com" in url:
+            return _fake_registry_response(status_code=500, text="server error")
+        if "sec.gov" in url:
+            raise requests.exceptions.ConnectTimeout("timed out")
+        if "forexlive.com" in url:
+            return _fake_registry_response(text="this is not xml <<< garbage")
+        if "gamma-api.polymarket.com" in url:
+            return _fake_registry_response(text="{}", json_data=_POLYMARKET_JSON)
+        return _fake_registry_response(status_code=404, text="not found")
+
+    harvester = _new_harvester()
+    with patch("requests.get", side_effect=_bad_get):
+        events = harvester.fetch_from_registry()
+
+    assert len(events) == 1
+    assert events[0].source == "Polymarket"
+    # The bad sources were actually attempted (not silently unvisited).
+    assert any("coindesk.com" in u for u in requested)
+    assert any("sec.gov" in u for u in requested)
+    assert any("forexlive.com" in u for u in requested)
+
+
+def test_fetch_from_registry_skips_stocktwits_entries():
+    """Registry stocktwits entries are forum-owned: news fetch never calls
+    their URLs, so the same stream is never scored twice per digest."""
+    from src.intelligence.ingestion import FEED_REGISTRY
+
+    stocktwits_ids = [e["id"] for e in FEED_REGISTRY if e.get("type") == "stocktwits"]
+    assert len(stocktwits_ids) == 2  # guard: the skip is exercised, not vacuous
+
+    requested = []
+
+    def _recording_get(url, headers=None, timeout=None):
+        requested.append(url)
+        return _fake_registry_response(status_code=404, text="not found")
+
+    harvester = _new_harvester()
+    with patch("requests.get", side_effect=_recording_get):
+        events = harvester.fetch_from_registry()
+
+    assert events == []
+    assert not any("stocktwits.com" in u for u in requested)
+    assert len(requested) == len(FEED_REGISTRY) - len(stocktwits_ids)
+

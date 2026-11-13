@@ -247,7 +247,7 @@ def test_no_fabricated_seed_events_and_honest_quota():
     real_client = OmniRouteClient()
     real_commander = MacroCommander(real_client)
     tel2 = real_commander.get_intel_hub_telemetry()
-    assert tel2["omniroute"]["quota_pct"] == 100.0  # real client: 0 tokens used of 100000 budget
+    assert tel2["omniroute"]["quota_pct"] is None  # F4: no DAILY_TOKEN_QUOTA set, so no real denominator -- unknown, not 100.0
 
 
 def test_fallback_thresholds_do_not_veto_on_single_word():

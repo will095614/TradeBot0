@@ -8,17 +8,21 @@
 """
 import asyncio
 import inspect
+import io
 import json
+import pytest
 import shutil
+import subprocess
 import threading
 import time
+import zipfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import src.gui.dashboard as dashboard_mod
 from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
 from src.intelligence.config_manager import ConfigManager
-from src.intelligence.gateway_supervisor import GatewaySupervisor
+from src.intelligence.gateway_supervisor import GatewaySupervisor, RUNTIME_NODE_ZIP_URL
 from src.intelligence.omniroute_client import OmniRouteClient
 
 
@@ -328,3 +332,103 @@ def test_frontend_wizard_has_gateway_install_ui():
     ):
         assert s.isascii()
         assert s in js
+
+
+# ------------------------------------------------- P1: Node 下載／npm 安裝
+def _make_node_zip_bytes():
+    """In-memory stand-in for the official Node.js zip (single top dir)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("node-v24.21.0-win-x64/node.exe", b"fake-node-exe")
+        zf.writestr("node-v24.21.0-win-x64/npm.cmd", b"fake-npm")
+    return buf.getvalue()
+
+
+class _FakeURLDownload:
+    """urlopen stand-in whose context manager yields a readable BytesIO."""
+
+    def __init__(self, data: bytes):
+        self._buf = io.BytesIO(data)
+
+    def __enter__(self):
+        return self._buf
+
+    def __exit__(self, *exc):
+        self._buf.close()
+        return False
+
+
+def _node_supervisor(tmp_path):
+    return GatewaySupervisor(
+        daemon_log_path=tmp_path / "daemon.log",
+        install_log_path=tmp_path / "install.log",
+    )
+
+
+def test_download_node_verifies_zip_and_extracts(tmp_path):
+    """Mock 下載固定 zip bytes：下載到正確路徑、解壓後 node.exe 存在、zip 已刪。"""
+    base = tmp_path / "runtime"
+    base.mkdir(parents=True)
+    sup = _node_supervisor(tmp_path)
+    with patch("urllib.request.urlopen", return_value=_FakeURLDownload(_make_node_zip_bytes())) as mock_urlopen:
+        node_exe = sup._download_node(base)
+    assert node_exe == str(base / "node" / "node.exe")
+    assert (base / "node" / "node.exe").is_file()
+    assert (base / "node" / "npm.cmd").is_file()
+    assert not (base / "node.zip").exists()
+    req = mock_urlopen.call_args[0][0]
+    assert req.full_url == RUNTIME_NODE_ZIP_URL
+    assert mock_urlopen.call_args[1]["timeout"] == 600
+
+
+def test_download_node_corrupt_zip_raises_without_installing(tmp_path):
+    """損毀 zip：解壓失敗直接報錯、不炸出別的東西，也不裝出 node.exe。"""
+    base = tmp_path / "runtime"
+    base.mkdir(parents=True)
+    sup = _node_supervisor(tmp_path)
+    with patch("urllib.request.urlopen", return_value=_FakeURLDownload(b"this is not a zip file")):
+        with pytest.raises(zipfile.BadZipFile):
+            sup._download_node(base)
+    assert not (base / "node" / "node.exe").exists()
+
+
+def test_npm_install_omniroute_runs_expected_command(tmp_path):
+    """Mock subprocess.run：npm 指令含 --prefix <runtime>/omniroute 與 --allow-scripts 清單。"""
+    base = tmp_path / "runtime"
+    sup = _node_supervisor(tmp_path)
+    npm_bin = str(base / "node" / "npm.cmd")
+    with patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run:
+        sup._npm_install_omniroute(npm_bin, base)
+    assert mock_run.call_count == 1
+    cmd = mock_run.call_args[0][0]
+    assert cmd[0] == npm_bin
+    assert cmd[1] == "install"
+    assert cmd[2] == "--prefix"
+    assert cmd[3] == str(base / "omniroute")
+    assert cmd[4].startswith("--allow-scripts=")
+    for pkg in ("omniroute", "better-sqlite3", "keytar", "tls-client-node",
+                "onnxruntime-node", "sharp", "core-js", "esbuild",
+                "@parcel/watcher", "@swc/core", "protobufjs", "koffi"):
+        assert pkg in cmd[4], f"{pkg} missing from --allow-scripts"
+    assert cmd[5] == "omniroute"
+    assert mock_run.call_args[1]["timeout"] == 1800
+    log_text = (tmp_path / "install.log").read_text(encoding="utf-8")
+    assert "npm install omniroute --prefix" in log_text
+    assert str(base / "omniroute") in log_text
+
+
+def test_npm_install_omniroute_failure_reports_status(tmp_path):
+    """兩次 npm 都失敗（rc=1）：先帶 --allow-scripts 試一次、再不帶重試一次，然後報錯。"""
+    base = tmp_path / "runtime"
+    sup = _node_supervisor(tmp_path)
+    npm_bin = str(base / "node" / "npm.cmd")
+    with patch("subprocess.run", return_value=MagicMock(returncode=1)) as mock_run:
+        with pytest.raises(RuntimeError, match="npm install exited with code 1"):
+            sup._npm_install_omniroute(npm_bin, base)
+    assert mock_run.call_count == 2
+    first_cmd = mock_run.call_args_list[0][0][0]
+    second_cmd = mock_run.call_args_list[1][0][0]
+    assert any(a.startswith("--allow-scripts=") for a in first_cmd)
+    assert not any(a.startswith("--allow-scripts") for a in second_cmd)
+    assert second_cmd[1:4] == ["install", "--prefix", str(base / "omniroute")]
+    assert second_cmd[-1] == "omniroute"

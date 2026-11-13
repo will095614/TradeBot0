@@ -173,6 +173,9 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
                 "target_prob": mc_st.get("target_prob"),
                 "stop_prob": mc_st.get("stop_prob"),
                 "r_multiple": mc_st.get("r_multiple"),
+                # A2: True when the 1.8R above is the uncapped-runner
+                # model assumption rather than a real TP.
+                "r_multiple_is_assumption": mc_st.get("r_multiple_is_assumption"),
                 "ev_passed": mc_st.get("passed"),
             }
         )
@@ -257,7 +260,32 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
     elif not engine.auto_evolve_enabled and getattr(engine, "_auto_evolve_disabled_ts", None) is not None:
         now = engine._auto_evolve_disabled_ts
     elapsed_since_evolve = max(0.0, now - engine.last_evolve_ts)
-    next_evolve_sec = max(0.0, float(engine.auto_evolve_interval_sec) - elapsed_since_evolve)
+    # P2-A: honest countdown. Evolution fires on the EARLIER of the
+    # time cap and N closed trades (live_engine._auto_evolve_reason),
+    # so a pure hours countdown overstates the wait once trades
+    # accumulate. next_evolve_sec blends both triggers: the time
+    # countdown scaled by the fraction of closing trades still
+    # needed -- 0 when either trigger is met, the full countdown
+    # when no trade has closed yet. It is a display countdown, not
+    # the trigger predicate itself (the 30-minute debounce still
+    # applies in _auto_evolve_reason). next_evolve_sec_latest is the
+    # pure time countdown: the latest ("\u6700\u665a") the next
+    # evolution can happen. The trade counts come from the engine's
+    # own counter (_closed_trades_since_evolve), not a new one.
+    time_remaining = max(0.0, float(engine.auto_evolve_interval_sec) - elapsed_since_evolve)
+    evolve_trade_threshold = int(getattr(engine, "auto_evolve_closed_trades", 30) or 30)
+    closed_since_evolve = int(getattr(engine, "_closed_trades_since_evolve", 0) or 0)
+    trades_remaining = max(0, evolve_trade_threshold - closed_since_evolve)
+    if evolve_trade_threshold > 0:
+        next_evolve_sec = time_remaining * (trades_remaining / evolve_trade_threshold)
+    else:
+        next_evolve_sec = time_remaining
+    next_evolve_sec_latest = time_remaining
+    next_evolve_note = (
+        f"\u6700\u665a {int(next_evolve_sec_latest)}s"
+        f"\uff08{int(engine.auto_evolve_interval_sec)}s \u4e0a\u9650\uff09\uff1b"
+        f"\u9084\u5dee {trades_remaining} \u7b46\u5e73\u5009\u5373\u89f8\u767c"
+    )
 
     if rankings and (engine.tv_champion.get("generation") == 1 or not engine.tv_champion.get("strategy_id")):
         top = rankings[0]
@@ -295,6 +323,11 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         "auto_evolve_enabled": engine.auto_evolve_enabled,
         "auto_evolve_interval_sec": engine.auto_evolve_interval_sec,
         "next_evolve_sec": int(next_evolve_sec),
+        # P2-A: "latest" bound + trade-count progress (see above).
+        "next_evolve_sec_latest": int(next_evolve_sec_latest),
+        "closed_trades_since_evolve": int(closed_since_evolve),
+        "closed_trades_to_next_evolve": int(trades_remaining),
+        "next_evolve_sec_note": next_evolve_note,
         "evolution_events": engine.evolution_events,
         "macro_commander": engine.macro_commander.current_state.to_dict(),
         "intel_hub": engine.macro_commander.get_intel_hub_telemetry(),
@@ -355,6 +388,10 @@ def _empty_view_model(error: str) -> Dict[str, Any]:
         "auto_evolve_enabled": False,
         "auto_evolve_interval_sec": 21600,
         "next_evolve_sec": 0,
+        "next_evolve_sec_latest": 0,
+        "closed_trades_since_evolve": 0,
+        "closed_trades_to_next_evolve": 30,
+        "next_evolve_sec_note": "\u6700\u665a 0s\uff0821600s \u4e0a\u9650\uff09\uff1b\u9084\u5dee 30 \u7b46\u5e73\u5009\u5373\u89f8\u767c",
         "evolution_events": [],
         "macro_commander": {},
         "intel_hub": {},

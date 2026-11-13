@@ -14,6 +14,14 @@ from src.arena.order import (
 from src.arena.portfolio import Portfolio, PRECISION_CASH
 from src.arena.risk_guard import RiskGuard, MAX_DRAWDOWN_LIMIT_PCT
 
+# A4: fixed slippage-model pool depth (in ETH). The quadratic
+# depth-impact term (0.0005 * (qty / pool_depth) ** 2) is struck
+# against this assumed pool size -- it is a MODEL PARAMETER, not
+# measured order-book depth: no live depth feed exists. It is
+# configurable per BrokerSim instance for sensitivity analysis;
+# the value itself is unchanged (decision: P2-A).
+DEFAULT_POOL_DEPTH = Decimal("200.0")
+
 
 class BrokerSim:
     """
@@ -26,7 +34,8 @@ class BrokerSim:
         self,
         symbol: str = "ETH/USD",
         slippage_pct: Decimal = Decimal("0.0002"),  # 0.02% slippage
-        mode: str = "paper_arena"
+        mode: str = "paper_arena",
+        pool_depth: Decimal = DEFAULT_POOL_DEPTH,
     ):
         self.symbol: str = symbol
         self.slippage_pct: Decimal = slippage_pct
@@ -38,7 +47,7 @@ class BrokerSim:
         self.pending_orders: Dict[str, OrderTicket] = {}  # order_id -> resting LIMIT / STOP_MARKET awaiting trigger
         self.current_price: Decimal = Decimal("0.00")
         self.current_atr: Decimal = Decimal("12.00")
-        self.pool_depth: Decimal = Decimal("200.0")
+        self.pool_depth: Decimal = pool_depth  # A4: fixed model parameter, not measured depth (see DEFAULT_POOL_DEPTH).
         self.execution_audit: List[FillEvent] = []
         self.rejection_audit: List[tuple[str, str]] = []
         self._seq_counter: int = 0
@@ -73,7 +82,7 @@ class BrokerSim:
         half_spread = mid_price * base_spread_pct
 
         # 2. Quadratic Market Depth impact
-        pool_depth = self.pool_depth if self.pool_depth > Decimal("0") else Decimal("200.0")
+        pool_depth = self.pool_depth if self.pool_depth > Decimal("0") else DEFAULT_POOL_DEPTH
         depth_ratio = min(Decimal("1.5"), qty / pool_depth)
         impact_pct = Decimal("0.0005") * (depth_ratio ** 2)
 

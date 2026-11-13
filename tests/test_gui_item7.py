@@ -3,6 +3,7 @@ view-model fault tolerance, reset state preservation, async evolve,
 UI-thread shutdown, single config load."""
 import inspect
 import json
+import pytest
 import threading
 import time
 from dataclasses import replace
@@ -218,3 +219,32 @@ def test_run_loads_config_once_and_uses_window_title_constant():
     assert dashboard_mod._get_native_hwnd(SimpleNamespace()) is None
     fake = SimpleNamespace(native=SimpleNamespace(Handle=SimpleNamespace(ToInt64=lambda: 12345)))
     assert dashboard_mod._get_native_hwnd(fake) == 12345
+
+
+# ------------------------------------------------------- short view model
+def test_view_model_short_unrealized_pnl_pct():
+    """空頭持倉的未實現損益 %（view_model.py:122）等於手算值。
+
+    Short: (entry - spot) / entry * 100。entry 2400、現價 2300 時
+    +4.1667%；現價漲到 2500 時 -4.1667%（與多頭版符號相反）。"""
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    try:
+        engine.latest_quote = None  # spot 取 broker.current_price
+        engine.broker.current_price = Decimal("2300")
+        comp = engine.comp_a
+        comp.portfolio.position_qty = Decimal("10")
+        comp.portfolio.position_side = PositionSide.SHORT
+        comp.portfolio.avg_entry_price = Decimal("2400")
+        vm = build_engine_view_model(engine, _rankings(engine), 1)
+        strat = next(s for s in vm["strategies"] if s["id"] == comp.portfolio_id)
+        assert strat["position_side"] == "SHORT"
+        assert strat["in_position"] is True
+        assert strat["unrealized_pct"] == pytest.approx((2400 - 2300) / 2400 * 100)
+
+        # 價格漲破進場價：空頭虧損，符號為負。
+        engine.broker.current_price = Decimal("2500")
+        vm2 = build_engine_view_model(engine, _rankings(engine), 1)
+        strat2 = next(s for s in vm2["strategies"] if s["id"] == comp.portfolio_id)
+        assert strat2["unrealized_pct"] == pytest.approx((2400 - 2500) / 2400 * 100)
+    finally:
+        engine.stop()

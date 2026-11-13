@@ -38,6 +38,15 @@ logger = logging.getLogger(__name__)
 # price (offline mode removed, item 3).
 QUOTE_STALE_SEC = 5.0
 
+# A SQLite candle cache is fresh only while its newest 1-minute bar is
+# recent. 600s = 10 bars of slack for a brief feed gap: a cache older
+# than that belongs to a dead session, and warming indicators (RSI / ATR
+# / ORB / session mean) from it would misprice the live open. The 5s
+# quote freshness above is for tradable quotes, not warm-up candles,
+# so it does not apply here. Both bootstrap cache branches share this
+# one threshold (the first branch already used the literal 600.0).
+CANDLE_CACHE_STALE_SEC = 600.0
+
 
 @dataclass
 class LiveQuote:
@@ -498,9 +507,11 @@ class LiveArenaEngine:
         if self._stop_event.is_set():
             return
         recent_bars: List[CandleBar] = []
+        cached_candles: List[Dict[str, Any]] = []
+        is_fresh_cache = False
         try:
             cached_candles = self.storage.load_latest_candles(120)
-            is_fresh_cache = bool(cached_candles) and (time.time() - float(cached_candles[-1]["t"])) < 600.0
+            is_fresh_cache = bool(cached_candles) and (time.time() - float(cached_candles[-1]["t"])) < CANDLE_CACHE_STALE_SEC
             if len(cached_candles) >= 30 and is_fresh_cache:
                 recent_bars = [
                     CandleBar(
@@ -534,7 +545,10 @@ class LiveArenaEngine:
             return
 
         # Prefer persisted SQLite cache (real data only) when the live feed is unreachable.
-        if not recent_bars and cached_candles:
+        # Same freshness rule as the first branch: a stale cache must never
+        # become the opening bars, even as a fallback (P1: the old code
+        # hydrated it unconditionally here).
+        if not recent_bars and cached_candles and is_fresh_cache:
             recent_bars = [
                 CandleBar(
                     timestamp=float(c["t"]),
@@ -954,8 +968,15 @@ class LiveArenaEngine:
         self.strategy_telemetry[pid]["mc_stats"] = mc_odds.to_dict()
         if not mc_odds.passed:
             self.strategy_cooldown[pid] = ts + 20.0
-            display_win = mc_odds.green_prob if mc_odds.neither_prob > 0.40 else mc_odds.decided_win_rate
-            self.strategy_telemetry[pid]["intent"] = f"EV Gate Blocked: Win {display_win*100:.0f}% (EV {mc_odds.expected_r:+.2f}R)"
+            # A1: with NumPy missing the odds are unknown (None), not numbers;
+            # comparing None would raise here, so report "unknown" instead.
+            if mc_odds.neither_prob is None or mc_odds.green_prob is None or mc_odds.decided_win_rate is None:
+                win_txt = "unknown"
+            else:
+                display_win = mc_odds.green_prob if mc_odds.neither_prob > 0.40 else mc_odds.decided_win_rate
+                win_txt = f"{display_win*100:.0f}%"
+            ev_txt = f"{mc_odds.expected_r:+.2f}R" if mc_odds.expected_r is not None else "unknown"
+            self.strategy_telemetry[pid]["intent"] = f"EV Gate Blocked: Win {win_txt} (EV {ev_txt})"
             self.log_event("EV_GATE_BLOCK", f"{competitor.base_name.split(' ')[0]} blocked by TimeMachine EV Gate: {mc_odds.verdict}", "info")
             return False
 
@@ -2045,18 +2066,12 @@ class LiveArenaEngine:
         if isinstance(data, OrderTicket):
             return data
         if isinstance(data, (int, float, Decimal, str)):
-            try:
-                return OrderTicket(
-                    portfolio_id="",
-                    symbol="ETH/USD",
-                    side=OrderSide.SELL,
-                    order_type=OrderType.STOP_MARKET,
-                    qty=Decimal("0"),
-                    price=Decimal(str(data))
-                )
-            except Exception as e:
-                logger.debug("Failed to deserialize order ticket, dropping: %s", e)
-                return None
+            # A bare number carries no quantity, so it would deserialize
+            # to a qty=0 ticket; a zero-size ticket must never be mounted
+            # as a live stop/target in the broker (P0 fix: restore used
+            # to mount it because OrderTicket has no __bool__).
+            logger.debug("Dropping scalar ticket without quantity: %s", data)
+            return None
         if isinstance(data, dict):
             try:
                 side = OrderSide(data.get("side", "SELL"))
@@ -2071,12 +2086,18 @@ class LiveArenaEngine:
             price_val = Decimal(str(data["price"])) if data.get("price") is not None else None
             sl_val = Decimal(str(data["stop_loss"])) if data.get("stop_loss") is not None else None
             tp_val = Decimal(str(data["take_profit"])) if data.get("take_profit") is not None else None
+            qty_val = Decimal(str(data.get("qty", "0")))
+            if qty_val <= Decimal("0"):
+                # A zero/negative-size ticket is not a valid bracket: drop
+                # it instead of letting restore mount it as a live stop.
+                logger.debug("Dropping deserialized ticket with non-positive qty: %s", data)
+                return None
             return OrderTicket(
                 portfolio_id=str(data.get("portfolio_id", "")),
                 symbol=str(data.get("symbol", "ETH/USD")),
                 side=side,
                 order_type=order_type,
-                qty=Decimal(str(data.get("qty", "0"))),
+                qty=qty_val,
                 price=price_val,
                 stop_loss=sl_val,
                 take_profit=tp_val

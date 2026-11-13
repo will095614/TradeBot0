@@ -115,16 +115,21 @@ def test_empty_digest_expires_stale_fallback():
     assert state.regime == "NORMAL"
 
 
-def test_quota_throttling_slows_digest():
+def test_quota_throttling_slows_digest(monkeypatch):
     """A4-4: at/over the daily quota the digest slows to >= 900s; under
     quota it keeps the configured base cadence."""
+    # F4: the quota is the user's own DAILY_TOKEN_QUOTA budget -- the
+    # client no longer invents a 100000 denominator when it is unset.
+    monkeypatch.setenv("DAILY_TOKEN_QUOTA", "100000")
     client = OmniRouteClient()
     commander = MacroCommander(client)
+    assert client.get_quota_pct() == 100.0
     assert client.is_over_quota() is False
     assert commander.digest_interval_sec() == 300.0
     assert commander.is_quota_throttled() is False
 
     client.total_tokens_used = 100000
+    assert client.get_quota_pct() == 0.0
     assert client.is_over_quota() is True
     assert commander.digest_interval_sec() == 900.0
     assert commander.digest_interval_sec(600.0) == 900.0
@@ -143,3 +148,61 @@ def test_regime_state_dict_exposes_fallback():
     d = MacroRegimeState().to_dict()
     assert d["fallback"] is False
     assert d["fallback_since"] == ""
+
+
+def test_quota_pct_has_no_invented_denominator(monkeypatch):
+    """F4: with no DAILY_TOKEN_QUOTA set there is no real denominator, so
+    get_quota_pct() is None and the digest never throttles on usage; the
+    only throttle signal is an observed 429, which cools down again."""
+    import time as _time
+
+    monkeypatch.delenv("DAILY_TOKEN_QUOTA", raising=False)
+    client = OmniRouteClient()
+    assert client.get_quota_pct() is None
+    assert client.is_over_quota() is False
+    commander = MacroCommander(client)
+    assert commander.is_quota_throttled() is False
+    assert commander.digest_interval_sec() == 300.0
+    tel = commander.get_intel_hub_telemetry()
+    assert tel["omniroute"]["quota_pct"] is None
+    assert tel["omniroute"]["quota_throttled"] is False
+
+    # A 429 observed through chat_json starts the cooldown: the digest
+    # throttles while the signal is fresh...
+    async def _run_429():
+        c = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", max_retries=0)
+        mock_resp = AsyncMock()
+        mock_resp.status = 429
+        mock_resp.headers = {}
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.post.return_value.__aenter__.return_value = mock_resp
+        c._session = mock_session
+        c._owns_session = False
+        assert await c.chat_json("auto", "system", "user") is None
+        return c
+
+    limited = asyncio.run(_run_429())
+    assert limited.is_rate_limited() is True
+    assert limited.is_over_quota() is True
+    assert MacroCommander(limited).digest_interval_sec() == 900.0
+    assert MacroCommander(limited).is_quota_throttled() is True
+
+    # ...and recovers once the cooldown has passed.
+    limited._rate_limit_until = _time.monotonic() - 1.0
+    assert limited.is_over_quota() is False
+    assert MacroCommander(limited).digest_interval_sec() == 300.0
+
+
+def test_quota_pct_uses_user_set_budget(monkeypatch):
+    """F4: when the user sets their own DAILY_TOKEN_QUOTA, the denominator
+    is real and the % is computed from it."""
+    monkeypatch.setenv("DAILY_TOKEN_QUOTA", "200000")
+    client = OmniRouteClient()
+    assert client.get_quota_pct() == 100.0
+    client.total_tokens_used = 50000
+    assert client.get_quota_pct() == 75.0
+    assert client.is_over_quota() is False
+    client.total_tokens_used = 200000
+    assert client.get_quota_pct() == 0.0
+    assert client.is_over_quota() is True

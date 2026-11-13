@@ -182,3 +182,202 @@ def test_orb_window_excludes_current_bar():
     assert len(rankings) == 6
     # The breakout bar closes above the prior 15-bar high (2500): ORB must fire.
     assert arena.comp_e.portfolio.position_qty > Decimal("0")
+
+
+def test_zero_volume_bar_does_not_invent_volume():
+    """F2: a volume=0 bar contributes weight 0 to the session VWAP.
+
+    Bar 1 has typ 2500 on 100 volume; bar 2 has typ 2600 on 0 volume.
+    The VWAP after bar 2 must stay 2500.00 -- the old fallback counted
+    the zero-volume bar as 100.0 and dragged it to 2550.00.
+    Observed through the mean_ref each competitor receives.
+    """
+    arena = TimeMachineArena(symbol="ETH/USD", initial_cash=Decimal("500000.00"))
+    seen_vwap = []
+    orig_evaluate = arena.comp_a.evaluate_signal
+
+    def _spy(signal, market_price, indicators, broker, timestamp):
+        seen_vwap.append(indicators["mean_ref"])
+        return orig_evaluate(
+            signal=signal, market_price=market_price, indicators=indicators,
+            broker=broker, timestamp=timestamp,
+        )
+
+    arena.comp_a.evaluate_signal = _spy
+    bars = [
+        CandleBar(
+            timestamp=1000.0, open_=Decimal("2498.00"), high=Decimal("2502.00"),
+            low=Decimal("2498.00"), close=Decimal("2500.00"), volume=Decimal("100.0"),
+            ema_fast=Decimal("2499.00"), ema_slow=Decimal("2495.00"),
+            rsi=Decimal("55.00"), atr=Decimal("25.00"),
+        ),
+        CandleBar(
+            timestamp=1900.0, open_=Decimal("2598.00"), high=Decimal("2602.00"),
+            low=Decimal("2598.00"), close=Decimal("2600.00"), volume=Decimal("0"),
+            ema_fast=Decimal("2599.00"), ema_slow=Decimal("2595.00"),
+            rsi=Decimal("55.00"), atr=Decimal("25.00"),
+        ),
+    ]
+    arena.run_simulation(bars)
+    assert len(seen_vwap) == 2
+    assert seen_vwap[0] == Decimal("2500.00")
+    assert seen_vwap[1] == Decimal("2500.00")
+# =========================================================== P1-A
+# Multi-generation tournament + Monte Carlo without NumPy (A1).
+# ===========================================================
+
+
+def test_evolution_tournament_runs_multiple_generations():
+    """P1 §2.8 (timemachine.py:140-158): run_evolution_tournament over
+    3 generations produces a ranking each generation, advances the
+    generation number by 1 per generation, and really changes genes
+    (the rank-1 elite is preserved apart from its generation bump)."""
+    from dataclasses import asdict
+
+    arena = TimeMachineArena(symbol="ETH/USD", initial_cash=Decimal("500000.00"))
+    bars = []
+    base_price = Decimal("2500.00")
+    for i in range(40):
+        if i < 20:
+            price = base_price + Decimal(i * 15)  # Rising
+        else:
+            price = base_price + Decimal(20 * 15) - Decimal((i - 20) * 20)  # Falling
+        bars.append(CandleBar(
+            timestamp=1000.0 + (i * 900),
+            open_=price - Decimal("2.00"),
+            high=price + Decimal("5.00"),
+            low=price - Decimal("5.00"),
+            close=price,
+            volume=Decimal("150.0"),
+            ema_fast=price - Decimal("5.00"),
+            ema_slow=price - Decimal("20.00"),
+            rsi=Decimal("55.00"),
+            atr=Decimal("25.00"),
+        ))
+    before = {c.portfolio_id: asdict(c.genome) for c in arena.competitors}
+
+    rankings = arena.run_evolution_tournament(bars, generations=3)
+
+    assert len(rankings) == 6
+    assert sorted(r.rank for r in rankings) == [1, 2, 3, 4, 5, 6]
+    for r in rankings:
+        assert r.equity > Decimal("0")
+    # Two evolutions happened (gen 1 -> 3): every genome carries gen 3.
+    assert all(c.genome.generation == 3 for c in arena.competitors)
+    changed = 0
+    for c in arena.competitors:
+        old = before[c.portfolio_id]
+        new = asdict(c.genome)
+        moved = [k for k in old if k != "generation" and new[k] != old[k]]
+        if c.portfolio_id == rankings[0].portfolio_id:
+            # Rank-1 elite: preserved verbatim apart from the generation bump.
+            assert moved == [], f"elite {c.portfolio_id} genes moved: {moved}"
+        elif moved:
+            changed += 1
+    assert changed >= 4, f"expected >= 4 non-elite competitors to evolve, got {changed}"
+
+
+def test_monte_carlo_without_numpy_reports_unknown(monkeypatch):
+    """A1: with NumPy missing, the Monte Carlo evaluator ran zero paths,
+    so it must report unknown (None) -- never the old invented fixed
+    probabilities 0.35 / 0.45 / 0.20 / 0.48 -- and fail the EV gate.
+    r_multiple / breakeven_prob are pure bracket geometry, so they stay numeric."""
+    import src.data.timemachine as tm
+
+    monkeypatch.setattr(tm, "np", None)
+    evaluator = tm.MonteCarloOddsEvaluator(seed=19)
+    odds = evaluator.evaluate_bracket(
+        entry_price=Decimal("2500.00"),
+        stop_loss=Decimal("2485.00"),
+        take_profit=Decimal("2525.00"),
+        atr=Decimal("4.00"),
+    )
+    assert odds.passed is False
+    assert odds.target_prob is None
+    assert odds.stop_prob is None
+    assert odds.neither_prob is None
+    assert odds.green_prob is None
+    assert odds.expected_r is None
+    assert odds.decided_win_rate is None
+    assert "Unknown" in odds.verdict
+    assert "NumPy" in odds.verdict
+    d = odds.to_dict()  # must not raise on None values
+    assert d["passed"] is False
+    assert d["target_prob"] is None
+    assert d["stop_prob"] is None
+    assert d["neither_prob"] is None
+    assert d["green_prob"] is None
+    assert d["expected_r"] is None
+    assert d["decided_win_rate"] is None
+    assert d["r_multiple"] == 1.67  # (2525-2500)/(2500-2485) = 25/15
+    assert d["breakeven_prob"] == 0.375  # 1 / (1 + 5/3)
+
+# =========================================================== P2-A
+# A2: the uncapped-runner 1.8R is a labelled model assumption.
+# ===========================================================
+
+
+def test_uncapped_runner_r_assumption_is_labelled():
+    """A2: a bracket with no take-profit is evaluated as if its target
+    sat at 1.8R -- a MODEL ASSUMPTION, not a measured exit. The value
+    (1.8) is unchanged; what changes is that the assumption is now a
+    named constant, flagged on the result, and footnoted in the backtest
+    report instead of silently posing as bracket geometry."""
+    from src.data.timemachine import MonteCarloOddsEvaluator, UNCAPPED_RUNNER_R_MULTIPLE
+
+    assert UNCAPPED_RUNNER_R_MULTIPLE == 1.8
+    evaluator = MonteCarloOddsEvaluator(seed=19)
+
+    # Long runner, no TP: r_multiple is the assumed 1.8R, flagged as such.
+    odds_long = evaluator.evaluate_bracket(
+        entry_price=Decimal("2500.00"),
+        stop_loss=Decimal("2485.00"),
+        take_profit=None,
+        atr=Decimal("4.00"),
+    )
+    assert odds_long.r_multiple == 1.8
+    assert odds_long.r_multiple_is_assumption is True
+    d_long = odds_long.to_dict()
+    assert d_long["r_multiple"] == 1.8
+    assert d_long["r_multiple_is_assumption"] is True
+
+    # Short runner, no TP: same assumption, mirrored downward.
+    odds_short = evaluator.evaluate_bracket(
+        entry_price=Decimal("2500.00"),
+        stop_loss=Decimal("2515.00"),
+        take_profit=None,
+        atr=Decimal("4.00"),
+    )
+    assert odds_short.r_multiple == 1.8
+    assert odds_short.r_multiple_is_assumption is True
+
+    # Capped bracket: the real TP drives r_multiple, no assumption flag.
+    odds_capped = evaluator.evaluate_bracket(
+        entry_price=Decimal("2500.00"),
+        stop_loss=Decimal("2485.00"),
+        take_profit=Decimal("2525.00"),
+        atr=Decimal("4.00"),
+    )
+    assert odds_capped.r_multiple == pytest.approx(25 / 15)  # (2525-2500)/(2500-2485)
+    assert odds_capped.r_multiple_is_assumption is False
+    assert odds_capped.to_dict()["r_multiple_is_assumption"] is False
+
+    # The backtest report footnotes the assumption where uncapped
+    # runners appear ("Unbounded (Run)").
+    arena = TimeMachineArena(symbol="ETH/USD", initial_cash=Decimal("500000.00"))
+    bars = [
+        CandleBar(
+            timestamp=1000.0 + (i * 900), open_=Decimal("2500.00"),
+            high=Decimal("2505.00"), low=Decimal("2495.00"),
+            close=Decimal("2500.00"), volume=Decimal("100.0"),
+            ema_fast=Decimal("2499.00"), ema_slow=Decimal("2495.00"),
+            rsi=Decimal("55.00"), atr=Decimal("25.00"),
+        )
+        for i in range(2)
+    ]
+    arena.run_simulation(bars)
+    mem_dir = os.environ.get("ARENA_MEMORY_DIR", "memory")
+    report = open(os.path.join(mem_dir, "arena_report.md"), encoding="utf-8").read()
+    assert "Unbounded (Run)" in report
+    assert "1.8R" in report
+    assert "model assumption" in report

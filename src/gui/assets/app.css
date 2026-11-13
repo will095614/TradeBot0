@@ -4914,4 +4914,151 @@ body:not(.arena-ready) .lg-glass {
   .auto-evolve-pill select { display: none; }
 }
 
+/* ==========================================================================
+   P2 (2026-11-13): classes that were referenced but undefined.
+   Grouped by role; every rule reuses the existing tokens
+   (--ss-*, --lg-*, --r-pill, --lg-spring) -- no new palette, no new
+   invented look. The 8 deleted references (tactical-hud, hud-card,
+   macro-ribbon, macro-dot, auto-evolve-btn, pwd-copy-icon,
+   view-switcher, matrix-title) were pure duplicates of sibling
+   classes and were removed from index.html instead.
+   ========================================================================== */
 
+/* Stageshow stage host (body): the root stage surface. Base sizing and
+   background live in the html, body reset; these rules pin the skill
+   tokens to the stage so the classes are real selectors, not dead hooks. */
+.ss-stage-host {
+  position: relative;
+  min-height: 100%;
+}
+
+/* Frontend-design liquid-glass stage (body): the same stage surface. */
+.lg-stage {
+  background-color: var(--stage-bg-base);
+}
+
+/* Splash brand block: title + subtitle, centred in the splash card. */
+.splash-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+/* Splash step label: left half of the progress meta row; long step text
+   ellipsises instead of wrapping the row. */
+.splash-step-lbl {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+/* Splash zap icon: keep the svg on its own line-box and give it the same
+   cyan glow as the splash-icon orb around it. */
+.splash-svg-icon {
+  display: block;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 6px rgba(0, 242, 254, 0.55));
+}
+
+/* Stageshow badge label: the text inside an .ss-badge pill. The live
+   badge's own #liveStatusText sizing (!important) still wins there. */
+.ss-badge__label {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+/* Liquid-glass island pill: the .ss-badge variant used in the dock pods
+   (live badge, macro regime badge). */
+.lg-island-pill {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Liquid-glass ghost button variant: transparent fill, quiet border
+   (used by the "skip to pure math" button). */
+.lg-btn--ghost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.22);
+  color: var(--ss-ink-2);
+  box-shadow: none;
+}
+
+.lg-btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.45);
+  color: #FFFFFF;
+}
+
+/* Liquid-glass switch label: the state word inside an .lg-switch
+   (auto-evolve "Active"/"Paused", on-top "Pin"/"Pinned"). */
+.lg-switch__label {
+  display: inline-block;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* Segmented-control stretch: while syncSegThumb slides the thumb to the
+   new segment (210 ms) the thumb stretches slightly, then settles. */
+.lg-seg--stretching .lg-seg__thumb,
+.lg-seg--stretching .ss-seg__thumb {
+  transform: translateX(calc(var(--active-idx, 0) * 100%)) scaleX(1.12);
+}
+
+/* Toast strategy name: the name text inside a .toast-tag. */
+.toast-strat-name {
+  font-weight: 800;
+}
+
+/* Catalyst-impact pill modifiers: badge_cls values produced by Python
+   (macro_commander default "buy"; live_engine "buy"/"sell" opens and
+   "profit"/"loss" closes). Up = green (same as the pill base),
+   down = red, mirroring .catalyst-impact-pill.danger. */
+.catalyst-impact-pill.profit,
+.catalyst-impact-pill.buy {
+  background: rgba(16, 245, 160, 0.15);
+  color: #6EE7B7;
+  border-color: rgba(16, 245, 160, 0.35);
+}
+
+.catalyst-impact-pill.loss,
+.catalyst-impact-pill.sell {
+  background: rgba(239, 68, 68, 0.18);
+  color: #FCA5A5;
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+/* Intel status pill modifiers: "standby" = gateway offline / PANIC-CHOP
+   regime (amber, the warn tone); "surge" = SURGE regime (violet,
+   matching the vessel-card violet accent). */
+.intel-status-pill.standby {
+  background: rgba(251, 191, 36, 0.16);
+  color: #FCD34D;
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.intel-status-pill.surge {
+  background: rgba(192, 132, 252, 0.16);
+  color: #DDD6FE;
+  border-color: rgba(192, 132, 252, 0.45);
+}
+
+/* On-top toggle button: same fixed geometry as the auto-evolve switch so
+   the two switches in the dock read as a pair ("Pinned" is 6 chars, like
+   "Active"). */
+#onTopToggleBtn {
+  width: 68px !important;
+  min-width: 68px !important;
+  max-width: 68px !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
+}
+
+#onTopLabelText {
+  display: inline-block !important;
+  width: 38px !important;
+  min-width: 38px !important;
+  max-width: 38px !important;
+  text-align: center !important;
+}

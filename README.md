@@ -58,3 +58,4 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 - 斷網處理正在重構：離線模式將移除，改為斷網時等待重連、畫面遮蔽不讓人使用（2026-11-13 決定）。
 - 已知問題與維修清單另外維護（程式審查報告 2026-11-13 版，1–12 項已完成，打包已完成）。
 - 舊的審查／除錯／部署報告已於 2026-11-13 程式瘦身時移除，內容仍在 git 歷史（HEAD 5b6b7d5）可還原；設計參考見 `OptimizationFullGuide.md`。
+- 外部連線冒煙測試（唯讀、不下單、不進 pytest）：`python scripts/smoke_external.py`（加 `--quick` 只跑 30 秒內項目）。

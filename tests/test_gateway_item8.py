@@ -1,8 +1,11 @@
 """Item 8 tests: OmniRoute gateway startup wait, auto-spawn default,
 daemon log file, and health-probe timeout."""
 import inspect
+import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -217,3 +220,117 @@ def test_daemon_log_rotates_over_5mb(tmp_path):
     assert backup.is_file()
     assert backup.stat().st_size == DAEMON_LOG_MAX_BYTES + 1
     assert log_path.stat().st_size < 1024
+
+
+# ------------------------------------------------- P1: probe_health 本體
+class _FakeHTTPResponse:
+    """Minimal urlopen stand-in: status + read() + context manager."""
+
+    def __init__(self, status, body=b""):
+        self.status = status
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_probe_health_success_failure_timeout(tmp_path):
+    """probe_health 本體（非 mock probe）：200＋正確 JSON→True；
+    非 200／超時／連線拒絕／壞 JSON→False。"""
+    gs = GatewaySupervisor(daemon_log_path=tmp_path / "logs" / "omniroute_daemon.log")
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_FakeHTTPResponse(200, b'{"status": "ok", "version": "3.8.53"}'),
+    ) as mock_urlopen:
+        ok, data = gs.probe_health(timeout=2.0)
+    assert ok is True
+    assert data == {"status": "ok", "version": "3.8.53"}
+    req = mock_urlopen.call_args[0][0]
+    assert req.full_url == "http://127.0.0.1:20128/api/health"
+    assert mock_urlopen.call_args[1]["timeout"] == 2.0
+
+    with patch("urllib.request.urlopen", return_value=_FakeHTTPResponse(503, b"")):
+        assert gs.probe_health() == (False, {})
+
+    with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        assert gs.probe_health() == (False, {})
+
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+        assert gs.probe_health() == (False, {})
+
+    with patch("urllib.request.urlopen", return_value=_FakeHTTPResponse(200, b"not json")):
+        assert gs.probe_health() == (False, {})
+
+
+def test_start_daemon_spawns_and_waits_with_fake_proc(tmp_path):
+    """Spawn 路徑：daemon 指令正確、stdout/stderr 進 log 檔、log 寫 PID／時間標頭。"""
+    log_path = tmp_path / "logs" / "omniroute_daemon.log"
+    gs = GatewaySupervisor(daemon_log_path=log_path)
+    fake_proc = MagicMock()
+    fake_proc.pid = 4242
+    cmd = ["node", "omniroute.mjs", "serve", "--no-open", "--port", "20128"]
+    probe_calls = []
+
+    def fake_probe(timeout):
+        probe_calls.append(timeout)
+        return (True, {"status": "ok"}) if len(probe_calls) >= 2 else (False, {})
+
+    try:
+        with patch.object(GatewaySupervisor, "_get_daemon_command", return_value=cmd) as mock_cmd, \
+             patch("subprocess.Popen", return_value=fake_proc) as mock_popen, \
+             patch.object(gs, "is_port_open", side_effect=[False, True, True]), \
+             patch.object(gs, "probe_health", side_effect=fake_probe):
+            ok, msg = gs.start_daemon()
+        assert ok is True
+        assert "verified" in msg
+        assert probe_calls == [2.0, 2.0]
+        mock_cmd.assert_called_once_with(20128)
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0] == cmd
+        kwargs = mock_popen.call_args.kwargs
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["stdout"] is not subprocess.DEVNULL
+        assert kwargs["stderr"] is kwargs["stdout"]
+        assert kwargs["stdout"].name.endswith("omniroute_daemon.log")
+        assert gs.child_process is fake_proc
+        assert gs.is_self_spawned is True
+    finally:
+        gs.shutdown()
+    assert re.search(
+        r"--- OmniRoute daemon spawned \(PID 4242\) at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ---",
+        log_path.read_text(encoding="utf-8"),
+    )
+
+
+def test_start_daemon_times_out_when_health_never_ok(tmp_path):
+    """超時路徑：port 已開但 health 永遠 False→回 False，並拆掉自己 spawn 的子行程。"""
+    log_path = tmp_path / "logs" / "omniroute_daemon.log"
+    gs = GatewaySupervisor(daemon_log_path=log_path)
+    fake_proc = MagicMock()
+    fake_proc.pid = 4243
+    port_checks = {"n": 0}
+
+    def fake_is_port_open(timeout=0.35):
+        port_checks["n"] += 1
+        return port_checks["n"] > 1
+
+    try:
+        with patch.object(GatewaySupervisor, "_get_daemon_command", return_value=["fake-cmd"]), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch.object(gs, "is_port_open", side_effect=fake_is_port_open), \
+             patch.object(gs, "probe_health", return_value=(False, {})) as mock_probe:
+            ok, msg = gs.start_daemon(max_wait_sec=0.75)
+        assert ok is False
+        assert "did not respond" in msg
+        assert mock_probe.call_count >= 1
+        assert gs.child_process is None
+        assert gs._daemon_log_file is None
+    finally:
+        gs.shutdown()
+    assert "4243" in log_path.read_text(encoding="utf-8")

@@ -260,9 +260,10 @@ class MacroCommander:
                 if isinstance(q_val, (int, float)):
                     quota_pct = float(q_val)
             except Exception as e:
-                logger.debug("Failed to read quota from client, falling back to estimate: %s", e)
-        elif tokens_used > 0:
-            quota_pct = max(0.0, round((1.0 - (tokens_used / 100000.0)) * 100.0, 1))
+                logger.debug("Failed to read quota from client: %s", e)
+        # P0-B / F4: no fallback estimate. The old `elif` divided by a
+        # made-up 100000 denominator; with no user-set DAILY_TOKEN_QUOTA
+        # the quota is unknown and stays None.
 
         tot_tokens = tokens_used + tokens_saved
         dedup_pct = round((tokens_saved / tot_tokens) * 100.0, 1) if tot_tokens > 0 else 0.0
@@ -364,9 +365,11 @@ class MacroCommander:
     def digest_interval_sec(self, base_sec: float = 300.0) -> float:
         """Effective digest cadence (item 12 / A4-4).
 
-        Once the daily quota is reached, the digest slows from the base
-        cadence to at least 900s so the gateway is not hammered while over
-        budget. Never shortens a longer user-configured interval.
+        Once the daily quota is reached -- a user-set DAILY_TOKEN_QUOTA
+        budget, or a 429 observed within its cooldown (F4) -- the digest
+        slows from the base cadence to at least 900s so the gateway is not
+        hammered while over budget. Never shortens a longer
+        user-configured interval.
         """
         if self.is_quota_throttled():
             return max(float(base_sec), 900.0)

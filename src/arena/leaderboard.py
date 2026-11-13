@@ -1,10 +1,18 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
-from typing import List, Dict
+from typing import List, Dict, Optional
 import math
 from src.arena.portfolio import Portfolio
 from src.arena.order import OrderSide
+
+# A3: annualization convention -- 35040 periods/year = 365 days x 96
+# 15-minute bars per day (24h crypto market). This is a fixed modelling
+# convention, NOT a measured sampling frequency: live equity_history is
+# sampled every ~5s, but sub-60s histories are still annualized at this
+# 15-minute-bar rate so high-frequency tick noise cannot inflate the
+# annualization factor. The number itself is unchanged (decision: P2-A).
+PERIODS_PER_YEAR_15MIN_BARS = 35040.0
 
 
 @dataclass
@@ -35,21 +43,23 @@ class Leaderboard:
     """
     @staticmethod
     def _estimate_periods_per_year(equity_history: List[tuple[float, Decimal]]) -> float:
-        # Standardize crypto intraday frequency (15-min bars: 365 * 24 * 4 = 35,040 periods/year)
-        # Prevents high-frequency sub-second tick noise from blowing up annualization factor
+        # Annualize at the 15-minute-bar convention (see the named
+        # constant PERIODS_PER_YEAR_15MIN_BARS above): sub-60s histories
+        # would otherwise annualize at their tick frequency and blow
+        # up the Sharpe/Sortino factor.
         if len(equity_history) < 2:
-            return 35040.0  # Default 15-min bars in a 365-day 24/7 crypto year
+            return PERIODS_PER_YEAR_15MIN_BARS  # Default: 15-min bars in a 365-day 24/7 crypto year
         dt_total = equity_history[-1][0] - equity_history[0][0]
         avg_dt = dt_total / max(1, len(equity_history) - 1)
         if avg_dt < 60.0:
-            return 35040.0
+            return PERIODS_PER_YEAR_15MIN_BARS
         seconds_per_year = 365.25 * 86400.0
-        return max(252.0, min(35040.0, seconds_per_year / avg_dt))
+        return max(252.0, min(PERIODS_PER_YEAR_15MIN_BARS, seconds_per_year / avg_dt))
 
     @classmethod
     def calculate_sharpe_and_sortino(
         cls, portfolio: Portfolio, risk_free_rate: float = 0.0
-    ) -> tuple[float, float]:
+    ) -> tuple[float, Optional[float]]:
         history = portfolio.equity_history
         if len(history) < 3:
             return 0.0, 0.0
@@ -94,7 +104,12 @@ class Leaderboard:
             else:
                 sortino = sharpe
         else:
-            sortino = round(abs(sharpe) * 1.5, 2) if mean_ret > 0 else 0.0
+            # P0-B / F1: no downside returns means the downside deviation
+            # is undefined, not abs(sharpe) * 1.5 -- that 1.5 multiplier
+            # had no source and invented a Sortino for never-losing
+            # histories. Callers treat None as "undefined" (fitness
+            # counts it as 0; the rankings table shows 0.0).
+            sortino = None
 
         result = (sharpe, sortino)
         portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
@@ -114,7 +129,7 @@ class Leaderboard:
         roi_pct: float,
         max_dd_pct: float,
         sharpe: float,
-        sortino: float,
+        sortino: Optional[float],
         is_tripped: bool,
         closed_trades: int = 0,
     ) -> float:
@@ -123,11 +138,14 @@ class Leaderboard:
         Rewards risk-adjusted returns (ROI + Sharpe + Sortino) while penalizing
         quadratic drawdown excursions, overtrading churn, and circuit-breaker violations.
         """
+        # An undefined Sortino (no downside returns, F1) contributes 0 to
+        # fitness instead of an invented abs(sharpe) * 1.5.
+        sortino_value = 0.0 if sortino is None else sortino
         penalty = -50.0 if is_tripped else 0.0
         dd_linear = max_dd_pct * 1.25
         dd_quad = ((max_dd_pct / 15.0) ** 2) * 2.0
         churn_penalty = max(0.0, (closed_trades - 50) / 100.0) * 1.5
-        score = (roi_pct * 2.0) + (sharpe * 1.5) + (sortino * 1.0) - dd_linear - dd_quad - churn_penalty + penalty
+        score = (roi_pct * 2.0) + (sharpe * 1.5) + (sortino_value * 1.0) - dd_linear - dd_quad - churn_penalty + penalty
         return round(score, 2)
 
     @classmethod
@@ -156,7 +174,9 @@ class Leaderboard:
                 roi_pct=p.roi_pct,
                 max_drawdown_pct=p.max_drawdown_pct,
                 sharpe_ratio=sharpe,
-                sortino_ratio=sortino,
+                # Display fallback for an undefined Sortino (F1); the
+                # fitness above already received the None.
+                sortino_ratio=sortino if sortino is not None else 0.0,
                 profit_factor=p.profit_factor,
                 win_rate_pct=win_rate,
                 total_trades=len(p.trade_history),

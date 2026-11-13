@@ -340,3 +340,51 @@ def test_evolution_seed_recorded_in_history():
     rows = storage.load_evolution_history(limit=5)
     row = [r for r in rows if r["generation"] == 2][-1]
     assert row["evolution_seed"] == GeneticEvolver._generation_seed(2)
+# =========================================================== P1-A
+# Evolved genomes stay valid (invariants, §2.9).
+# ===========================================================
+
+
+def test_evolved_genomes_all_valid():
+    """P1 §2.9: after evolve_generation, every competitor's new genome
+    still passes CompetitorGenome.__post_init__ (ranges, TP >= 1.5x SL,
+    ATR target >= 1.5x stop), and the fine-tuned runner-up keeps TP at
+    the 1.8x SL clamp target."""
+    from dataclasses import asdict
+
+    from src.competitors.base import CompetitorGenome
+    from src.competitors.orb import ORBCompetitor
+    from src.competitors.session_mean import SessionMeanPullbackCompetitor
+
+    competitors = [AggressiveCompetitor(), ConservativeCompetitor(),
+                   ATRDynamicCompetitor(), TrailingGuardCompetitor(),
+                   ORBCompetitor(), SessionMeanPullbackCompetitor()]
+    broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
+    for c in competitors:
+        broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
+    # Fixed equity order: trail #1 (champion), cons #2 (runner-up).
+    cash = {"comp_trail": "518000", "comp_cons": "505000", "comp_atr": "496000",
+            "comp_agg": "479000", "comp_orb": "470000", "comp_vwap": "460000"}
+    for c in competitors:
+        c.portfolio.cash = Decimal(cash[c.portfolio_id])
+        c.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
+    rankings = Leaderboard.get_rankings(broker.portfolios)
+    assert [r.portfolio_id for r in rankings[:2]] == ["comp_trail", "comp_cons"]
+
+    logs = GeneticEvolver.evolve_generation(
+        competitors, rankings, preserve_portfolio=True, save_history=False)
+    assert len(logs) == 6
+
+    for c in competitors:
+        g = c.genome
+        assert g.generation == 2
+        # Reconstruction re-runs __post_init__: any out-of-range gene or
+        # broken ratio rule raises instead of passing silently.
+        CompetitorGenome(**asdict(g))
+        if g.take_profit_pct is not None:
+            assert g.take_profit_pct >= g.stop_loss_pct * Decimal("1.5"), c.portfolio_id
+        assert g.atr_target_mult >= g.atr_stop_mult * Decimal("1.5"), c.portfolio_id
+
+    runner_up = next(c for c in competitors if c.portfolio_id == "comp_cons")
+    assert runner_up.genome.take_profit_pct is not None
+    assert runner_up.genome.take_profit_pct >= runner_up.genome.stop_loss_pct * Decimal("1.8")

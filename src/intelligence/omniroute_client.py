@@ -6,12 +6,16 @@ import logging
 import os
 import random
 import re
+import time
 from typing import Any, Dict, Optional
 import aiohttp
 
 logger = logging.getLogger(__name__)
 
 _RETRY_STATUSES = {429, 502, 503}
+# Cooldown after an observed 429: the digest treats the gateway as over
+# quota for this long (F4). A user-set DAILY_TOKEN_QUOTA is separate.
+_RATE_LIMIT_COOLDOWN_SEC = 300.0
 _THINK_CLOSED = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _THINK_OPEN = re.compile(r"<think>.*\Z", re.DOTALL | re.IGNORECASE)
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
@@ -127,7 +131,18 @@ class OmniRouteClient:
         # from them: the old record_tokens_saved(420) wrote a fixed estimate
         # per hit with no measurement behind it.
         self.total_dedup_hits: int = 0
-        self.daily_quota_limit: int = int(os.getenv("DAILY_TOKEN_QUOTA", "100000"))
+        # P0-B / F4: no invented denominator. DAILY_TOKEN_QUOTA is the
+        # user's own budget: only when they set it is there a real
+        # denominator to divide by. Unset (or unparseable) means unknown.
+        _quota_env = os.getenv("DAILY_TOKEN_QUOTA")
+        try:
+            self.daily_quota_limit: Optional[int] = int(_quota_env) if _quota_env is not None else None
+        except (TypeError, ValueError):
+            self.daily_quota_limit = None
+        # Timestamp (time.monotonic) until which an observed 429 /
+        # limitReached signal counts as over quota. No quota math is
+        # involved: it is a cooldown after an observed rate-limit signal.
+        self._rate_limit_until: float = 0.0
 
     def record_dedup_hit(self) -> None:
         """Records one deduplication hit (a duplicate title+URL skipped).
@@ -145,19 +160,52 @@ class OmniRouteClient:
         if tokens > 0:
             self.total_tokens_saved += int(tokens)
 
+    def note_rate_limit(self, retry_after: Optional[str] = None) -> None:
+        """Records an observed rate-limit signal (429 / limitReached).
+
+        Starts a cooldown during which is_over_quota() reads True. This
+        is the only throttle signal when no DAILY_TOKEN_QUOTA is set: no
+        provider reports a daily free allowance, so there is no real
+        denominator to divide by (F4). A Retry-After longer than the
+        default cooldown extends it.
+        """
+        cooldown = _RATE_LIMIT_COOLDOWN_SEC
+        if retry_after:
+            try:
+                val = float(retry_after)
+                if 0.0 < val <= 3600.0:
+                    cooldown = max(cooldown, val)
+            except (TypeError, ValueError):
+                pass
+        self._rate_limit_until = time.monotonic() + cooldown
+
+    def is_rate_limited(self) -> bool:
+        """True while the cooldown from an observed 429 is still running."""
+        return time.monotonic() < self._rate_limit_until
+
     def is_over_quota(self) -> bool:
-        """True once measured token usage reaches the daily quota.
+        """True once measured token usage reaches the daily quota, or while
+        a recently observed 429 cooldown is running.
 
         The quota is a soft display budget, not a limiter (item 12 / A4-4);
         callers use this to throttle the digest cadence, never to block a
-        single request.
+        single request. With no DAILY_TOKEN_QUOTA set there is no usage
+        threshold at all -- only the 429 signal can trip this (F4).
         """
-        return self.daily_quota_limit > 0 and self.total_tokens_used >= self.daily_quota_limit
+        if self.daily_quota_limit is not None and self.daily_quota_limit > 0:
+            if self.total_tokens_used >= self.daily_quota_limit:
+                return True
+        return self.is_rate_limited()
 
-    def get_quota_pct(self) -> float:
-        """Calculates dynamic available quota percentage against daily budget."""
-        if self.daily_quota_limit <= 0:
-            return 100.0
+    def get_quota_pct(self) -> Optional[float]:
+        """Remaining quota % against the user's own daily budget, or None.
+
+        Returns None when DAILY_TOKEN_QUOTA is unset: no provider
+        reports a daily free allowance, so any % would invent a
+        denominator (F4). Only a user-set budget yields a real %.
+        """
+        if self.daily_quota_limit is None or self.daily_quota_limit <= 0:
+            return None
         remaining = max(0, self.daily_quota_limit - self.total_tokens_used)
         return round((remaining / self.daily_quota_limit) * 100.0, 1)
 
@@ -252,6 +300,10 @@ class OmniRouteClient:
                     ) as resp:
                         status = resp.status
                         retry_after = resp.headers.get("Retry-After")
+                        if status == 429:
+                            # Observed rate-limit signal (F4): start the
+                            # cooldown even if the retry later succeeds.
+                            self.note_rate_limit(retry_after)
 
                         if status == 200:
                             body = await resp.json()

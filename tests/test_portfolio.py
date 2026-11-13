@@ -155,3 +155,130 @@ def test_portfolio_breakeven_trade_does_not_count_as_loss():
     assert p.loss_count == 0
 
 
+# =========================================================== P1-A
+# Portfolio invariants left over from P0 (§2.9): equity conservation,
+# short add-to-position, and proportional margin release on partial close.
+# ===========================================================
+
+
+def _fill(order_id, side, qty, price, ts, fee="0.00"):
+    return FillEvent(
+        order_id=order_id, portfolio_id="test_p", symbol="ETH/USD",
+        side=side, qty=Decimal(qty), price=Decimal(price),
+        fee=Decimal(fee), timestamp=ts,
+    )
+
+
+def _assert_equity_conservation(p):
+    # Decimal-exact identity: total_equity == cash + margin_locked + unrealized_pnl.
+    # (total_equity returns cash alone once flat, where margin and
+    # unrealized are both 0, so the identity holds there too.)
+    assert p.total_equity == (p.cash + p.margin_locked + p.unrealized_pnl)
+
+
+def test_equity_conservation_across_all_fill_cases():
+    p = Portfolio(portfolio_id="test_p", name="Test Portfolio",
+                  initial_cash=Decimal("100000.00"), maker_taker_fee_rate=Decimal("0.0"))
+
+    # Open long 1.0 @ 2500 (cash 97500, margin 2500), mark 2600.
+    p.apply_fill(_fill("o1", OrderSide.BUY, "1.0000", "2500.00", 1000.0))
+    p.update_market_price(Decimal("2600.00"), timestamp=1001.0)
+    assert p.total_equity == Decimal("100100.00")  # 97500 + 2500 + 100
+    _assert_equity_conservation(p)
+
+    # Add long 1.0 @ 2600 (avg 2550, margin 5100), mark 2700.
+    p.apply_fill(_fill("o2", OrderSide.BUY, "1.0000", "2600.00", 1002.0))
+    assert p.avg_entry_price == Decimal("2550.00")
+    p.update_market_price(Decimal("2700.00"), timestamp=1003.0)
+    assert p.total_equity == Decimal("100300.00")  # 94900 + 5100 + 300
+    _assert_equity_conservation(p)
+
+    # Partial close long 1.0 @ 2700, mark 2650.
+    p.apply_fill(_fill("o3", OrderSide.SELL, "1.0000", "2700.00", 1004.0))
+    assert p.position_qty == Decimal("1.0000")
+    p.update_market_price(Decimal("2650.00"), timestamp=1005.0)
+    _assert_equity_conservation(p)
+
+    # Full close long 1.0 @ 2650.
+    p.apply_fill(_fill("o4", OrderSide.SELL, "1.0000", "2650.00", 1006.0))
+    assert p.position_qty == Decimal("0.0000")
+    assert p.margin_locked == Decimal("0.00")
+    _assert_equity_conservation(p)
+
+    # Open short 1.0 @ 2650, mark 2550.
+    p.apply_fill(_fill("o5", OrderSide.SELL, "1.0000", "2650.00", 1007.0))
+    assert p.position_side.value == "SHORT"
+    p.update_market_price(Decimal("2550.00"), timestamp=1008.0)
+    _assert_equity_conservation(p)
+
+    # Add short 1.0 @ 2550 (avg 2600), mark 2600.
+    p.apply_fill(_fill("o6", OrderSide.SELL, "1.0000", "2550.00", 1009.0))
+    assert p.avg_entry_price == Decimal("2600.00")
+    p.update_market_price(Decimal("2600.00"), timestamp=1010.0)
+    _assert_equity_conservation(p)
+
+    # Partial cover short 1.0 @ 2600, mark 2500.
+    p.apply_fill(_fill("o7", OrderSide.BUY, "1.0000", "2600.00", 1011.0))
+    assert p.position_qty == Decimal("1.0000")
+    p.update_market_price(Decimal("2500.00"), timestamp=1012.0)
+    _assert_equity_conservation(p)
+
+    # Full cover short 1.0 @ 2500.
+    p.apply_fill(_fill("o8", OrderSide.BUY, "1.0000", "2500.00", 1013.0))
+    assert p.position_qty == Decimal("0.0000")
+    assert p.position_side.value == "FLAT"
+    assert p.margin_locked == Decimal("0.00")
+    _assert_equity_conservation(p)
+
+
+def test_add_to_short_recomputes_avg_entry_and_margin():
+    p = Portfolio(portfolio_id="test_p", name="Test Portfolio",
+                  initial_cash=Decimal("100000.00"), maker_taker_fee_rate=Decimal("0.0"))
+    p.apply_fill(_fill("s1", OrderSide.SELL, "1.0000", "2500.00", 1000.0))
+    assert p.position_side.value == "SHORT"
+    assert p.position_qty == Decimal("1.0000")
+    assert p.avg_entry_price == Decimal("2500.00")
+    assert p.margin_locked == Decimal("2500.00")
+    assert p.cash == Decimal("97500.00")
+
+    # Add 1.0 short @ 2600: weighted average (2500 + 2600) / 2 = 2550,
+    # margin grows by the new notional, cash falls by the same amount.
+    p.apply_fill(_fill("s2", OrderSide.SELL, "1.0000", "2600.00", 1001.0))
+    assert p.position_side.value == "SHORT"
+    assert p.position_qty == Decimal("2.0000")
+    assert p.avg_entry_price == Decimal("2550.00")
+    assert p.margin_locked == Decimal("5100.00")
+    assert p.cash == Decimal("94900.00")
+    _assert_equity_conservation(p)
+
+    # Adding to a short with too little cash raises, like the long side.
+    small = Portfolio(portfolio_id="test_p", name="Test Portfolio",
+                      initial_cash=Decimal("3000.00"), maker_taker_fee_rate=Decimal("0.0"))
+    small.apply_fill(_fill("s1", OrderSide.SELL, "1.0000", "2500.00", 1000.0))
+    assert small.cash == Decimal("500.00")
+    with pytest.raises(ValueError, match="Insufficient cash"):
+        small.apply_fill(_fill("s2", OrderSide.SELL, "1.0000", "2600.00", 1001.0))
+
+
+def test_partial_close_releases_margin_proportionally():
+    # LONG: open 1.0 @ 2500 (margin 2500), sell half @ 2600.
+    p = Portfolio(portfolio_id="test_p", name="Test Portfolio",
+                  initial_cash=Decimal("100000.00"), maker_taker_fee_rate=Decimal("0.0"))
+    p.apply_fill(_fill("b1", OrderSide.BUY, "1.0000", "2500.00", 1000.0))
+    p.apply_fill(_fill("s1", OrderSide.SELL, "0.5000", "2600.00", 1001.0))
+    assert p.position_side.value == "LONG"
+    assert p.position_qty == Decimal("0.5000")
+    assert p.avg_entry_price == Decimal("2500.00")  # average never moves on a close
+    assert p.margin_locked == Decimal("1250.00")  # exactly half released
+    _assert_equity_conservation(p)
+
+    # SHORT: open 1.0 @ 2500 (margin 2500), cover half @ 2400.
+    q = Portfolio(portfolio_id="test_p", name="Test Portfolio",
+                  initial_cash=Decimal("100000.00"), maker_taker_fee_rate=Decimal("0.0"))
+    q.apply_fill(_fill("s1", OrderSide.SELL, "1.0000", "2500.00", 1000.0))
+    q.apply_fill(_fill("c1", OrderSide.BUY, "0.5000", "2400.00", 1001.0))
+    assert q.position_side.value == "SHORT"
+    assert q.position_qty == Decimal("0.5000")
+    assert q.avg_entry_price == Decimal("2500.00")
+    assert q.margin_locked == Decimal("1250.00")
+    _assert_equity_conservation(q)
