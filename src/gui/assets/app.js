@@ -1064,6 +1064,35 @@ async function toggleAutoEvolve() {
   if (state) { latestState = state; renderAll(state); }
 }
 
+// On-top toggle: same switch pattern as toggleAutoEvolve above (the
+// .lg-switch button shows its state via data-on + label text). The
+// bridge returns the new value from toggle_on_top, and the initial
+// state is read back via is_on_top (dashboard.py, untouched) -- the
+// engine state dict carries no on-top flag, so renderAll cannot sync it.
+async function toggleOnTop() {
+  if (!window.pywebview || !window.pywebview.api) return;
+  const onTop = await window.pywebview.api.toggle_on_top();
+  updateOnTopButton(Boolean(onTop));
+}
+
+function updateOnTopButton(onTop) {
+  const btn = document.getElementById('onTopToggleBtn');
+  const lbl = document.getElementById('onTopLabelText');
+  if (btn) btn.dataset.on = onTop ? 'true' : 'false';
+  if (lbl) lbl.textContent = onTop ? 'Pinned' : 'Pin';
+  if (btn) btn.title = onTop ? 'Unpin window (stop staying on top)' : 'Pin window on top';
+}
+
+async function syncOnTopButton() {
+  if (!window.pywebview || !window.pywebview.api || typeof window.pywebview.api.is_on_top !== 'function') return;
+  try {
+    const onTop = await window.pywebview.api.is_on_top();
+    updateOnTopButton(Boolean(onTop));
+  } catch (e) {
+    console.debug('is_on_top err:', e);
+  }
+}
+
 async function changeEvolveInterval(seconds) {
   if (!window.pywebview || !window.pywebview.api) return;
   const sec = parseInt(seconds, 10);
@@ -3415,6 +3444,7 @@ function updateUiClockDisplay() {
   window.addEventListener('DOMContentLoaded', () => {
     startUiClock();
     setRightTab('cards');
+    syncOnTopButton();
     const pWrap = document.getElementById('priceCanvasWrap');
     if (pWrap) resizeObserver.observe(pWrap);
     setupChartInteraction();
@@ -3663,8 +3693,22 @@ function updateUiClockDisplay() {
 
   function copyOmniPassword() {
     // The password value never enters the frontend (item 7): the bridge
-    // copies it to the OS clipboard server-side and only reports success,
-    // so the button can truthfully show "copied!" again.
+    // copies it to the OS clipboard server-side and only reports success.
+    // Success feedback is shown ON the button itself (2026-11-13): the
+    // chart toast lives in the Arena view, so it is invisible while the
+    // user is on the Intel Hub page where this button sits.
+    const pwdBadge = document.getElementById('omniConsolePwd');
+    const flashCopiedOnButton = () => {
+      if (!pwdBadge) return;
+      if (pwdBadge._copiedTimer) clearTimeout(pwdBadge._copiedTimer);
+      if (pwdBadge._copiedOriginal === undefined) pwdBadge._copiedOriginal = pwdBadge.innerHTML;
+      pwdBadge.textContent = 'copied!';
+      pwdBadge._copiedTimer = setTimeout(() => {
+        pwdBadge.innerHTML = pwdBadge._copiedOriginal;
+        pwdBadge._copiedOriginal = undefined;
+        pwdBadge._copiedTimer = undefined;
+      }, 2000);
+    };
     const showEnvHint = () => {
       if (typeof showChartToast === 'function') {
         showChartToast({ triggerReason: 'Admin password is stored in ~/.omniroute/.env', action: 'INFO' });
@@ -3673,6 +3717,7 @@ function updateUiClockDisplay() {
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.copy_omniroute_password === 'function') {
       window.pywebview.api.copy_omniroute_password().then((res) => {
         if (res && res.status === 'ok') {
+          flashCopiedOnButton();
           if (typeof showChartToast === 'function') showChartToast({ triggerReason: 'copied!', action: 'COPY' });
         } else {
           showEnvHint();
