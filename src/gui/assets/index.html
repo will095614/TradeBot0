@@ -194,13 +194,13 @@
             <option value="86400">24h</option>
           </select>
           <strong id="countdownLabel" class="evolve-timer">06:00:00</strong>
-          <button class="auto-evolve-btn lg-switch" data-on="true" onclick="toggleAutoEvolve()" id="autoEvolveToggleBtn" title="Click to toggle auto evolution">
+          <button class="lg-switch" data-on="true" onclick="toggleAutoEvolve()" id="autoEvolveToggleBtn" title="Click to toggle auto evolution">
             <span class="lg-switch__thumb" aria-hidden="true"></span>
             <span class="lg-switch__label" id="autoEvolveLabelText">Active</span>
           </button>
         </div>
 
-        <div class="view-switcher ss-seg lg-seg" style="--n:2;" data-active-idx="0" id="mainViewSeg">
+        <div class="ss-seg lg-seg" style="--n:2;" data-active-idx="0" id="mainViewSeg">
           <span class="ss-seg__thumb lg-seg__thumb" aria-hidden="true"></span>
           <button class="view-btn ss-seg__option active" id="btnViewArena" data-on onclick="switchMainView('arena')" title="Trading Arena (Press 1)">
             <svg class="ss-svg-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -241,6 +241,10 @@
             <path d="M6 13.5H2.5V10"></path>
           </svg>
         </button>
+        <button class="lg-switch" data-on="false" onclick="toggleOnTop()" id="onTopToggleBtn" title="Pin window on top">
+          <span class="lg-switch__thumb" aria-hidden="true"></span>
+          <span class="lg-switch__label" id="onTopLabelText">Pin</span>
+        </button>
         <button class="btn btn-icon-only lg-btn" id="btnOpenSettings" onclick="openSetupWizardModal()" title="API Credentials &amp; Gateway Settings">
           <svg class="ss-svg-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="3"></circle>
@@ -269,9 +273,9 @@
         <aside class="spatial-flank-left">
 
           <!-- 4 Telemetry Tubes (.lg-vessel-grid) -->
-          <div class="tactical-hud lg-vessel-grid">
+          <div class="lg-vessel-grid">
             <!-- Vessel 1: Arena Champion -->
-            <div class="hud-card lg-glass lg-spot-card lg-vessel-card" data-accent="cyan" style="--lv:0.78;">
+            <div class="lg-glass lg-spot-card lg-vessel-card" data-accent="cyan" style="--lv:0.78;">
               <div class="lg-fluid-tube" id="hudVesselChamp" aria-hidden="true">
                 <span class="lg-tube-liquid">
                   <span class="lg-tube-meniscus"></span>
@@ -287,7 +291,7 @@
             </div>
 
             <!-- Vessel 2: Momentum & Volatility (RSI Fluid Level) -->
-            <div class="hud-card lg-glass lg-spot-card lg-vessel-card" data-accent="emerald" style="--lv:0.50;">
+            <div class="lg-glass lg-spot-card lg-vessel-card" data-accent="emerald" style="--lv:0.50;">
               <div class="lg-fluid-tube" id="hudVesselRsi" aria-hidden="true">
                 <span class="lg-tube-liquid">
                   <span class="lg-tube-meniscus"></span>
@@ -303,7 +307,7 @@
             </div>
 
             <!-- Vessel 3: Gross Exposure & Capital Utilization -->
-            <div class="hud-card lg-glass lg-spot-card lg-vessel-card" data-accent="violet" style="--lv:0.42;">
+            <div class="lg-glass lg-spot-card lg-vessel-card" data-accent="violet" style="--lv:0.42;">
               <div class="lg-fluid-tube" id="hudVesselExp" aria-hidden="true">
                 <span class="lg-tube-liquid">
                   <span class="lg-tube-meniscus"></span>
@@ -319,7 +323,7 @@
             </div>
 
             <!-- Vessel 4: Genetic Evolution & EV Gate -->
-            <div class="hud-card lg-glass lg-spot-card lg-vessel-card" data-accent="amber" style="--lv:0.68;">
+            <div class="lg-glass lg-spot-card lg-vessel-card" data-accent="amber" style="--lv:0.68;">
               <div class="lg-fluid-tube" id="hudVesselGen" aria-hidden="true">
                 <span class="lg-tube-liquid">
                   <span class="lg-tube-meniscus"></span>
@@ -336,7 +340,7 @@
           </div>
 
           <!-- AIMRAN uvq11-lens + uvq11-lava Macro Commander Optical Core Card -->
-          <div class="macro-ribbon lg-glass lg-spot-card lg-macro-core-card" id="macroRibbon" onclick="switchMainView('intel')" title="Click to open Macro Intelligence Hub &amp; OmniRoute telemetry">
+          <div class="lg-glass lg-spot-card lg-macro-core-card" id="macroRibbon" onclick="switchMainView('intel')" title="Click to open Macro Intelligence Hub &amp; OmniRoute telemetry">
             <div class="lg-macro-core-top">
               <!-- AIMRAN Optical Multi-Coating Lens + Lava Core -->
               <div class="lg-optical-iris" aria-hidden="true">
@@ -348,7 +352,7 @@
                 <div class="macro-core-sub-title">Macro Commander</div>
                 <div class="macro-badge-row">
                   <div class="macro-badge ss-badge lg-island-pill" id="macroRegimeBadge" data-lead>
-                    <span class="macro-dot ss-badge__dot" id="macroDot"></span>
+                    <span class="ss-badge__dot" id="macroDot"></span>
                     <span id="macroRegimeText" class="ss-badge__label">&#x9ad4;&#x5236;: &#x5747;&#x8861;&#x5e38;&#x614b;</span>
                   </div>
                   <span class="macro-omni-pill num" id="macroOmniTag">&#x667a;&#x8166;: &#x672c;&#x6a5f; NLP &#x6975;&#x901f;</span>
@@ -419,14 +423,7 @@
                   <button class="seg-btn ss-seg__option active" id="btnScaleAuto" data-on onclick="setScaleMode('auto')" title="Focus on visible candle action (Press F)">Focus</button>
                   <button class="seg-btn ss-seg__option" id="btnScaleFull" onclick="setScaleMode('full')" title="Include distant bracket orders (Press F)">Full</button>
                 </div>
-                <div class="seg-control ss-seg lg-seg" style="--n:2; --active-idx:0;" data-active-idx="0" id="chartModeSeg">
-                  <span class="ss-seg__thumb lg-seg__thumb" aria-hidden="true"></span>
-                  <button class="seg-btn ss-seg__option active" id="btnModeCandles" data-on onclick="setChartMode('candles')" title="Candlestick mode (Press C)">Candles</button>
-                  <button class="seg-btn ss-seg__option" id="btnModeLine" onclick="setChartMode('line')" title="Spline Wave mode (Press C)">Wave</button>
-                </div>
                 <div class="chart-legend-strip lg-pill">
-                  <span class="legend-item"><i class="legend-swatch" style="background:var(--c-cons)"></i>EMA 9</span>
-                  <span class="legend-item"><i class="legend-swatch" style="background:var(--c-atr)"></i>EMA 21</span>
                   <span class="legend-item"><i class="legend-swatch" style="background:var(--c-mean)"></i>MEAN</span>
                   <span class="legend-divider" aria-hidden="true"></span>
                   <span class="legend-item" title="Aggressive Momentum"><i class="legend-dot" style="background:var(--c-agg)"></i>AGG</span>
@@ -552,7 +549,7 @@
       <section class="spatial-lower-dock">
         <div class="panel ss-window-panel lg-glass lg-bento-dock-panel">
           <div class="panel-header lg-slab-header">
-            <div class="panel-title matrix-title">
+            <div class="panel-title">
               <span class="lg-crystal-orb lg-crystal-orb--emerald" aria-hidden="true"></span>
               <span class="matrix-title-main">Autonomous Strategy Execution Matrix</span>
               <span class="panel-subtitle num matrix-subtitle">6 Parallel Competitors · Real-Time Strategy Telemetry · $100,000 Baseline Each</span>
@@ -606,7 +603,7 @@
                   </svg>
                   <span>Launch Console</span>
                 </button>
-                <span class="intel-metric-sub" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" onclick="copyOmniPassword()" title="Admin password is stored in ~/.omniroute/.env"><span>********</span><svg class="pwd-copy-icon" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code></span>
+                <span class="intel-metric-sub" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" onclick="copyOmniPassword()" title="Admin password is stored in ~/.omniroute/.env"><span>********</span><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code></span>
               </div>
               <div class="intel-metric lg-glass lg-spot-card intel-metric--wide">
                 <span class="intel-metric-lbl">Token Utilization</span>

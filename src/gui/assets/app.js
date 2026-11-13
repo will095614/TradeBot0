@@ -24,7 +24,6 @@ let isWizardOpen = false;
 // Global Arena Data & Polling States
 let latestState = null;
 let isPolling = false;
-let chartMode = 'candles'; // 'candles' or 'line'
 let scaleMode = 'auto';    // 'auto' or 'full'
 
 // Position tracking states
@@ -842,16 +841,6 @@ window.previewPositionAnimation = previewPositionAnimation;
 window.previewPositionClosedAnimation = previewPositionClosedAnimation;
 
 // Position tracking maps initialized at top of script
-
-function setChartMode(mode) {
-  chartMode = mode;
-  syncSegThumb('chartModeSeg', mode === 'candles' ? 0 : 1);
-  const scrubEl = document.getElementById('chartScrubReadout');
-  if (scrubEl) {
-    scrubEl.textContent = mode === 'candles' ? '1m Candles' : 'Wave';
-  }
-  if (latestState) drawPriceChart(latestState);
-}
 
 function setScaleMode(mode) {
   scaleMode = mode;
@@ -1914,43 +1903,6 @@ function strokeRoundRect(ctx, x, y, w, h, r) {
   ctx.stroke();
 }
 
-/* Catmull-Rom / Cardinal Cubic Bézier Smooth Spline Interpolator for Silky Trend Lines */
-function drawSmoothCurve(ctx, points, color, width, lineDash = []) {
-  if (!points || points.length < 2) return;
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  if (lineDash.length > 0) ctx.setLineDash(lineDash);
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-
-  if (points.length === 2) {
-    ctx.lineTo(points[1].x, points[1].y);
-    ctx.stroke();
-    ctx.restore();
-    return;
-  }
-
-  const tension = 0.28;
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = i > 0 ? points[i - 1] : points[i];
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const p3 = i < points.length - 2 ? points[i + 2] : p2;
-
-    const cp1x = p1.x + (p2.x - p0.x) * tension;
-    const cp1y = p1.y + (p2.y - p0.y) * tension;
-    const cp2x = p2.x - (p3.x - p1.x) * tension;
-    const cp2y = p2.y - (p3.y - p1.y) * tension;
-
-    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
 /* Detailed Chart 1: Dynamic Auto-Scaled Price / Candles + Indicators + Levels (Stageshow Crafted Canvas) */
 let priceHoverPos = null;
 let hoveredCandleData = null;
@@ -1975,7 +1927,7 @@ function drawPriceChart(state) {
 
   const rawCandles = state.candles || [];
   const rawPrices = state.price_history || [];
-  const useCandles = chartMode === 'candles' && rawCandles.length >= 2;
+  const useCandles = rawCandles.length >= 2;
   const strategies = state.strategies || [];
 
   const quotePrice = Number((state.quote && state.quote.price) || 0);
@@ -2170,10 +2122,8 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
   ctx.fillRect(0, 0, w, h);
 
   const rawPrices = state.price_history || [];
-  const ema9 = state.ema_fast_history || [];
-  const ema21 = state.ema_slow_history || [];
   const strategies = state.strategies || [];
-  const useCandles = chartMode === 'candles' && visibleCandles.length >= 2;
+  const useCandles = visibleCandles.length >= 2;
 
   const padLeft = 12;
   const padRight = 98;
@@ -2277,23 +2227,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
       fillRoundRect(ctx, cx - bodyW / 2, topY, bodyW, bHeight, 1.5);
     });
 
-    // Overlay Silky Smooth Bézier Spline EMA lines
-    const drawCandleEma = (emaArr, color, width = 1.6, lineDash = []) => {
-      if (!emaArr || emaArr.length < 2) return;
-      const sliceEma = emaArr.slice(-n);
-      const offset = Math.max(0, n - sliceEma.length);
-      const pts = [];
-      for (let i = 0; i < sliceEma.length; i++) {
-        pts.push({
-          x: startX + (offset + i + 0.5) * step + shiftX,
-          y: toY(sliceEma[i])
-        });
-      }
-      drawSmoothCurve(ctx, pts, color, width, lineDash);
-    };
-
-    drawCandleEma(ema21, '#FFB800', 1.4);
-    drawCandleEma(ema9, '#38BDF8', 1.6);
 
     // Session High / Low Callout Pills
     ctx.save();
@@ -2306,29 +2239,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     ctx.restore();
 
     ctx.restore();
-  } else if (rawPrices.length >= 2) {
-    const n = Math.min(80, rawPrices.length);
-    const visiblePrices = rawPrices.slice(-n);
-    const toX = (i) => padLeft + (i / (n - 1)) * candlePlotW;
-    activeHeadX = toX(n - 1);
-
-    const drawLine = (arr, color, width, lineDash = []) => {
-      if (!arr || arr.length < 2) return;
-      const sliceArr = arr.slice(-n);
-      const offset = Math.max(0, n - sliceArr.length);
-      const pts = [];
-      for (let i = 0; i < sliceArr.length; i++) {
-        pts.push({
-          x: toX(offset + i),
-          y: toY(sliceArr[i])
-        });
-      }
-      drawSmoothCurve(ctx, pts, color, width, lineDash);
-    };
-
-    drawLine(ema21, '#FFB800', 1.4);
-    drawLine(ema9, '#38BDF8', 1.5);
-    drawLine(visiblePrices, '#F2F3F5', 2.0);
   }
 
   // 3. Strategy Levels, Brackets & Spot Price Badges
@@ -2879,7 +2789,7 @@ function updateChartMouseHover(clientX, clientY) {
     priceHoverPos = { x: mouseX, y: mouseY };
 
     const candles = (animCandles && animCandles.length > 0) ? animCandles : (latestState.candles || []);
-    const useCandles = chartMode === 'candles' && candles.length >= 2;
+    const useCandles = candles.length >= 2;
     const padLeft = 12, padRight = 98;
     const candleRightOffset = 80;
     const plotW = Math.max(50, rect.width - padLeft - padRight);
@@ -2940,7 +2850,7 @@ function updateChartMouseHover(clientX, clientY) {
     lastHoverSnapY = -1;
     tip.style.display = 'none';
     if (scrubEl) {
-      scrubEl.textContent = chartMode === 'candles' ? '1m Candles' : 'Wave';
+      scrubEl.textContent = '1m Candles';
     }
   }
   if (needsRedraw) {
@@ -3008,7 +2918,7 @@ function setupChartInteraction() {
     hoveredCandleData = null;
     tip.style.display = 'none';
     if (scrubEl) {
-      scrubEl.textContent = chartMode === 'candles' ? '1m Candles' : 'Wave';
+      scrubEl.textContent = '1m Candles';
     }
     if (latestState) drawPriceChart(latestState);
   });
@@ -3068,8 +2978,6 @@ window.addEventListener('keydown', function (e) {
     switchMainView('intel');
   } else if (e.code === 'KeyE' || e.key === 'e' || e.key === 'E') {
     triggerEvolution();
-  } else if (e.code === 'KeyC' || e.key === 'c' || e.key === 'C') {
-    setChartMode(chartMode === 'candles' ? 'line' : 'candles');
   } else if (e.code === 'KeyF' || e.key === 'f' || e.key === 'F') {
     setScaleMode(scaleMode === 'auto' ? 'full' : 'auto');
   }
