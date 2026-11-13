@@ -5,6 +5,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -257,14 +258,17 @@ def test_fallback_thresholds_do_not_veto_on_single_word():
         commander = MacroCommander(mock_client)
         # One bearish word (sentiment -0.45) + urgency 7 used to flip the
         # arena to SHORT_ONLY; the conservative fallback bar keeps NORMAL.
-        weak = StructuredEvent(timestamp="2026-11-13T00:00:00Z", source="Test", domain="macro", entities_tickers=["FED"], urgency_score=7, sentiment_score=-0.45, summary="Weak signal")
+        weak = StructuredEvent(timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), source="Test", domain="macro", entities_tickers=["FED"], urgency_score=7, sentiment_score=-0.45, summary="Weak signal")
         state = await commander.synthesize_regime([weak])
         assert state.directional_bias == "BIDIRECTIONAL"
         assert state.regime == "NORMAL"
-        # Two strongly bearish events with severe urgency still flip it.
+        # Three strongly bearish events with severe urgency still flip it
+        # (two fresh events also reach the relaxed C1 gate N >= 1.9,
+        # since N = SUM(decay) ~= 1.9996; one event still cannot flip).
         strong = [
-            StructuredEvent(timestamp="2026-11-13T00:00:00Z", source="Test", domain="macro", entities_tickers=["FED"], urgency_score=9, sentiment_score=-0.70, summary="Strong bearish 1"),
-            StructuredEvent(timestamp="2026-11-13T00:00:00Z", source="Test", domain="macro", entities_tickers=["FED"], urgency_score=8, sentiment_score=-0.85, summary="Strong bearish 2"),
+            StructuredEvent(timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), source="Test", domain="macro", entities_tickers=["FED"], urgency_score=9, sentiment_score=-0.70, summary="Strong bearish 1"),
+            StructuredEvent(timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), source="Test", domain="macro", entities_tickers=["FED"], urgency_score=8, sentiment_score=-0.85, summary="Strong bearish 2"),
+            StructuredEvent(timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), source="Test", domain="macro", entities_tickers=["FED"], urgency_score=9, sentiment_score=-0.80, summary="Strong bearish 3"),
         ]
         state = await commander.synthesize_regime(strong)
         assert state.directional_bias == "SHORT_ONLY"

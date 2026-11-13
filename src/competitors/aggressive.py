@@ -12,6 +12,9 @@ class AggressiveCompetitor(BaseCompetitor):
     - Default Genome: 70% Position / 3.0x Leverage Active / 3.5% Wide Stop-Loss / Uncapped Run
     - Supports cross-generation genetic evolution via CompetitorGenome
     """
+    # News sensitivity (item 12C): momentum eats macro-news sizing hard.
+    NEWS_SENSITIVITY: float = 0.8
+
     def __init__(self, portfolio_id: str = "comp_agg", initial_cash: Decimal = Decimal("100000.00")):
         default_genome = CompetitorGenome(
             position_ratio=Decimal("0.70"),
@@ -20,7 +23,8 @@ class AggressiveCompetitor(BaseCompetitor):
             take_profit_pct=None,
             generation=1,
             leverage_enabled=True,
-            leverage=Decimal("3.0")
+            leverage=Decimal("3.0"),
+            news_sensitivity=0.8
         )
         super().__init__(
             portfolio_id=portfolio_id,
@@ -38,6 +42,7 @@ class AggressiveCompetitor(BaseCompetitor):
         broker: BrokerSim,
         timestamp: float,
         side: OrderSide = OrderSide.BUY,
+        sizing_multiplier: Decimal = Decimal("1.0"),
     ) -> Optional[OrderTicket]:
         if self.portfolio.is_circuit_breaker_tripped:
             return None
@@ -49,7 +54,7 @@ class AggressiveCompetitor(BaseCompetitor):
                 if self.genome.take_profit_pct is not None
                 else None
             )
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 
@@ -72,7 +77,7 @@ class AggressiveCompetitor(BaseCompetitor):
                 if self.genome.take_profit_pct is not None
                 else None
             )
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 

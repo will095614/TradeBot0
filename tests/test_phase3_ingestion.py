@@ -185,7 +185,8 @@ def test_feed_registry_completeness_r3():
     assert any("gcaptain" in i for i in ids)
 
     # Core Tape & Macro
-    assert any("tree_news" in i for i in ids)
+    # Tree News was removed 2026-11-13 (item 12B): it needs an API key and
+    # the user rule is no-login sources only.
     assert any("polymarket" in i for i in ids)
     assert any("sec_edgar" in i for i in ids)
 

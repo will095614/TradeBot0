@@ -16,6 +16,9 @@ class ORBCompetitor(BaseCompetitor):
     - Risk & Exit: Stop-loss anchored at range midpoint (~1.8%), profit target set to 2.0R (~3.6%).
     - Dynamic Sizing: Quant dynamic R-Multiple sizing up to 45% position cap.
     """
+    # News sensitivity (item 12C): breakout eats macro-news sizing in full.
+    NEWS_SENSITIVITY: float = 1.0
+
     def __init__(self, portfolio_id: str = "comp_orb", initial_cash: Decimal = Decimal("100000.00")):
         default_genome = CompetitorGenome(
             position_ratio=Decimal("0.45"),
@@ -24,7 +27,8 @@ class ORBCompetitor(BaseCompetitor):
             take_profit_pct=Decimal("0.036"),
             generation=1,
             leverage_enabled=True,
-            leverage=Decimal("2.5")
+            leverage=Decimal("2.5"),
+            news_sensitivity=1.0
         )
         super().__init__(
             portfolio_id=portfolio_id,
@@ -42,6 +46,7 @@ class ORBCompetitor(BaseCompetitor):
         broker: BrokerSim,
         timestamp: float,
         side: OrderSide = OrderSide.BUY,
+        sizing_multiplier: Decimal = Decimal("1.0"),
     ) -> Optional[OrderTicket]:
         if self.portfolio.is_circuit_breaker_tripped:
             return None
@@ -65,7 +70,7 @@ class ORBCompetitor(BaseCompetitor):
             target_dist = stop_dist * Decimal("2.0")  # Strict 2.0R Target
             target_price = (market_price + target_dist).quantize(Decimal("0.01"))
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 
@@ -100,7 +105,7 @@ class ORBCompetitor(BaseCompetitor):
             target_dist = stop_dist * Decimal("2.0")  # Strict 2.0R Target
             target_price = (market_price - target_dist).quantize(Decimal("0.01"))
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 

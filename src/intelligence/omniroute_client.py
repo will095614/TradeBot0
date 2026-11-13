@@ -123,12 +123,36 @@ class OmniRouteClient:
         self.retried_requests: int = 0
         self.total_tokens_used: int = 0
         self.total_tokens_saved: int = 0
+        # Dedup hits, counted (item 12 / A4-3). No token figure is derived
+        # from them: the old record_tokens_saved(420) wrote a fixed estimate
+        # per hit with no measurement behind it.
+        self.total_dedup_hits: int = 0
         self.daily_quota_limit: int = int(os.getenv("DAILY_TOKEN_QUOTA", "100000"))
 
+    def record_dedup_hit(self) -> None:
+        """Records one deduplication hit (a duplicate title+URL skipped).
+
+        Counts hits only. The old record_tokens_saved(420) wrote a fixed
+        420-token estimate per hit with no measurement behind it (item 12 /
+        A4-3): no token figure is claimed anymore.
+        """
+        self.total_dedup_hits += 1
+
     def record_tokens_saved(self, tokens: int) -> None:
-        """Records tokens saved via deduplication buffers or cache hits."""
+        """Legacy estimate hook (item 12 / A4-3): kept for backward
+        compatibility only. New code uses record_dedup_hit(); no caller
+        should treat the accumulated figure as a measured saving."""
         if tokens > 0:
             self.total_tokens_saved += int(tokens)
+
+    def is_over_quota(self) -> bool:
+        """True once measured token usage reaches the daily quota.
+
+        The quota is a soft display budget, not a limiter (item 12 / A4-4);
+        callers use this to throttle the digest cadence, never to block a
+        single request.
+        """
+        return self.daily_quota_limit > 0 and self.total_tokens_used >= self.daily_quota_limit
 
     def get_quota_pct(self) -> float:
         """Calculates dynamic available quota percentage against daily budget."""

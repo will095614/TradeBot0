@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 import hashlib
 import html
 import json
@@ -22,8 +23,9 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 # [R3] Comprehensive Multi-Domain Feed Registry
 FEED_REGISTRY: List[Dict[str, Any]] = [
-    # Tier 0: Breaking Websocket / Sub-second tape
-    {"id": "tree_news_ws", "name": "Tree News", "tier": 0, "domain": "crypto", "type": "websocket", "url": "wss://news.treeofalpha.com/ws"},
+    # User rule 2026-11-13: no-login sources ONLY. Tree News (needs an API
+    # key), Reddit (per-user OAuth), X (paid), Discord/Telegram (user
+    # channels) are NOT listed here and are never fetched.
     # Tier 1: 30-60s Breaking Wires, Prediction & Geopolitics
     {"id": "polymarket_gamma", "name": "Polymarket Gamma", "tier": 1, "domain": "prediction", "type": "rest_json", "url": "https://gamma-api.polymarket.com/events?limit=25&active=true"},
     {"id": "sec_edgar_8k", "name": "SEC EDGAR 8-K", "tier": 1, "domain": "corporate", "type": "atom", "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&CIK=&type=8-K&company=&dateb=&owner=include&start=0&count=40&output=atom"},
@@ -39,8 +41,9 @@ FEED_REGISTRY: List[Dict[str, Any]] = [
     {"id": "technews_tw", "name": "TechNews Global Supply Chain", "tier": 2, "domain": "tech", "type": "rss", "url": "https://technews.tw/feed/"},
     {"id": "coindesk_wire", "name": "CoinDesk Live", "tier": 2, "domain": "crypto", "type": "rss", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
     {"id": "cointelegraph_wire", "name": "CoinTelegraph", "tier": 2, "domain": "crypto", "type": "rss", "url": "https://cointelegraph.com/rss"},
-    {"id": "reddit_crypto", "name": "Reddit r/CryptoCurrency", "tier": 2, "domain": "crypto", "type": "reddit_json", "url": "https://www.reddit.com/r/CryptoCurrency/hot.json?limit=25"},
-    {"id": "reddit_wsb", "name": "Reddit r/wallstreetbets", "tier": 2, "domain": "macro", "type": "reddit_json", "url": "https://www.reddit.com/r/wallstreetbets/hot.json?limit=25"},
+    {"id": "decrypt_wire", "name": "Decrypt", "tier": 2, "domain": "crypto", "type": "rss", "url": "https://decrypt.co/feed"},
+    {"id": "stocktwits_ethx", "name": "StockTwits ETH.X", "tier": 2, "domain": "forum", "type": "stocktwits", "url": "https://api.stocktwits.com/api/2/streams/symbol/ETH.X.json"},
+    {"id": "stocktwits_btcx", "name": "StockTwits BTC.X", "tier": 2, "domain": "forum", "type": "stocktwits", "url": "https://api.stocktwits.com/api/2/streams/symbol/BTC.X.json"},
     # Tier 3: 15-30m Macro Liquidity & Treasury
     {"id": "fred_releases", "name": "FRED Economic Data Releases", "tier": 3, "domain": "macro", "type": "rss", "url": "https://fred.stlouisfed.org/rss/releases.xml"},
     {"id": "us_treasury", "name": "US Treasury Press Releases", "tier": 3, "domain": "macro", "type": "rss", "url": "https://home.treasury.gov/rss/press-releases.xml"},
@@ -50,12 +53,14 @@ FEED_REGISTRY: List[Dict[str, Any]] = [
 @dataclass
 class RawEvent:
     source: str
-    domain: str  # "crypto", "macro", "geopolitics", "tech", "prediction"
+    domain: str  # "crypto", "macro", "geopolitics", "tech", "prediction", "forum"
     title: str
     url: str
     timestamp: float
     raw_content: str = ""
     entities: List[str] = field(default_factory=list)
+    tier: int = 2  # source tier from FEED_REGISTRY (0-3); 2 = general news/forum
+    thread_id: Optional[str] = None  # forum thread key, e.g. "stocktwits:ETH.X"
 
 
 @dataclass
@@ -69,6 +74,9 @@ class StructuredEvent:
     summary: str
     raw_title: str = ""
     headline_zh: str = ""
+    tier: int = 2  # source tier (0-3); feeds the C1 weighted sentiment formula
+    thread_id: Optional[str] = None  # forum thread key, e.g. "stocktwits:ETH.X"
+    consensus: Optional[Dict[str, float]] = None  # forum reply split {bullish, bearish, neutral}
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -81,6 +89,9 @@ class StructuredEvent:
             "summary": self.summary,
             "raw_title": self.raw_title,
             "headline_zh": self.headline_zh,
+            "tier": self.tier,
+            "thread_id": self.thread_id,
+            "consensus": self.consensus,
         }
 
 
@@ -134,7 +145,7 @@ def _contains_word(text: str, word: str) -> bool:
     return re.search(r"\b" + re.escape(word.strip().lower()) + r"\b", text.lower()) is not None
 
 
-def parse_rss_atom(xml_text: str, source_name: str, domain: str) -> List[RawEvent]:
+def parse_rss_atom(xml_text: str, source_name: str, domain: str, tier: int = 2) -> List[RawEvent]:
     """
     Parses RSS 2.0 and Atom feeds into a standardized list of RawEvent items.
     """
@@ -167,7 +178,8 @@ def parse_rss_atom(xml_text: str, source_name: str, domain: str) -> List[RawEven
                 title=title,
                 url=link or source_name,
                 timestamp=now,
-                raw_content=desc[:450]
+                raw_content=desc[:450],
+                tier=tier,
             ))
 
     # Atom (<feed><entry>...</entry></feed>)
@@ -199,6 +211,7 @@ def parse_rss_atom(xml_text: str, source_name: str, domain: str) -> List[RawEven
                 url=link or source_name,
                 timestamp=now,
                 raw_content=desc[:450],
+                tier=tier,
             ))
 
     return events
@@ -244,7 +257,8 @@ def parse_polymarket_events(data: Any) -> List[RawEvent]:
                 title=full_title,
                 url=url,
                 timestamp=now,
-                raw_content=odds_str
+                raw_content=odds_str,
+                tier=1,
             ))
     return events
 
@@ -279,6 +293,86 @@ def parse_reddit_posts(data: Any, subreddit: str, domain: str) -> List[RawEvent]
                 url=url,
                 timestamp=now,
             ))
+    return events
+
+
+def _parse_iso_ts(value: Any) -> float:
+    """Parses an ISO8601 timestamp to epoch seconds; now on failure."""
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            pass
+    return time.time()
+
+
+def parse_stocktwits_stream(data: Any, symbol: str) -> List[RawEvent]:
+    """
+    Parses one StockTwits v2 symbol stream into a single forum RawEvent.
+
+    The stream is newest-first (30 messages/page); the top 20 messages are
+    concatenated into raw_content (<= 1200 chars) and the event is keyed on
+    the latest message, so dedup only produces a new event when the stream
+    actually moves. No login: the public v2 endpoint returns HTTP 200 with
+    just a User-Agent (verified from the PC 2026-11-13). Note "ETH" on
+    StockTwits is the Grayscale ETF; the crypto streams are ETH.X / BTC.X.
+    """
+    events: List[RawEvent] = []
+    if not isinstance(data, dict):
+        return events
+    messages = data.get("messages", [])
+    if not isinstance(messages, list) or not messages:
+        return events
+
+    top = [m for m in messages[:20] if isinstance(m, dict) and (m.get("body") or "").strip()]
+    if not top:
+        return events
+
+    latest = top[0]
+    latest_id = latest.get("id")
+    latest_user = ""
+    user = latest.get("user")
+    if isinstance(user, dict):
+        latest_user = str(user.get("username", ""))
+
+    # Title carries the latest message: dedup (title+URL) then only fires
+    # when the stream moves, instead of once per fetch.
+    first_line = re.sub(r"\s+", " ", (latest.get("body") or "").strip().split("\n")[0])
+    title = f"[StockTwits {symbol}] {first_line[:80]}"
+    url = (
+        f"https://stocktwits.com/{latest_user}/message/{latest_id}"
+        if latest_user and latest_id is not None
+        else f"https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
+    )
+
+    lines = []
+    for m in top:
+        body = re.sub(r"\s+", " ", (m.get("body") or "").strip())
+        if not body:
+            continue
+        uname = ""
+        mu = m.get("user")
+        if isinstance(mu, dict):
+            uname = str(mu.get("username", ""))
+        sent = ""
+        ent = m.get("entities")
+        if isinstance(ent, dict):
+            s = ent.get("sentiment")
+            if isinstance(s, dict) and s.get("basic"):
+                sent = f" [{s.get('basic')}]"
+        lines.append(f"{uname}{sent}: {body[:200]}")
+    raw_content = "\n".join(lines)[:1200]
+
+    events.append(RawEvent(
+        source=f"StockTwits {symbol}",
+        domain="forum",
+        title=title,
+        url=url,
+        timestamp=_parse_iso_ts(latest.get("created_at")),
+        raw_content=raw_content,
+        tier=2,
+        thread_id=f"stocktwits:{symbol}",
+    ))
     return events
 
 
@@ -387,6 +481,49 @@ class IntelligenceHarvester:
         self.is_running: bool = False
         self._harvest_task: Optional[asyncio.Task] = None
 
+    def fetch_from_registry(self, max_per_source: int = 5, timeout_sec: float = 3.0) -> List[RawEvent]:
+        """
+        Registry-driven fetch (item 12B): every entry in FEED_REGISTRY is a
+        no-login source (user rule 2026-11-13), dispatched by its `type`:
+        rss/atom -> parse_rss_atom, rest_json -> parse_polymarket_events.
+        `stocktwits` entries are owned by ForumCollector (forum batch, own
+        cadence) and are explicitly skipped here, so the same stream is
+        never scored twice per digest. Unknown types are skipped, never
+        fatal: one dead source must not take down the whole digest.
+        """
+        import requests
+
+        fresh_events: List[RawEvent] = []
+        headers = {"User-Agent": USER_AGENT}
+
+        for entry in FEED_REGISTRY:
+            etype = str(entry.get("type", ""))
+            if etype == "stocktwits":
+                # ForumCollector owns StockTwits (separate forum batch).
+                logger.debug("Registry entry %s is forum-owned, skipped by news fetch", entry.get("id"))
+                continue
+            try:
+                resp = requests.get(entry["url"], headers=headers, timeout=timeout_sec)
+                if resp.status_code != 200:
+                    logger.debug("Registry feed %s returned HTTP %d", entry.get("id"), resp.status_code)
+                    continue
+                if etype in ("rss", "atom"):
+                    parsed = parse_rss_atom(resp.text, entry["name"], entry["domain"], tier=int(entry.get("tier", 2)))
+                elif etype == "rest_json":
+                    parsed = parse_polymarket_events(resp.json())
+                else:
+                    logger.debug("Unknown registry feed type %r for %s, skipped", etype, entry.get("id"))
+                    continue
+                for e in parsed[:max_per_source]:
+                    if self.dedup.is_new(e.title, e.url):
+                        fresh_events.append(e)
+                    elif hasattr(self.client, "record_dedup_hit"):
+                        self.client.record_dedup_hit()
+            except Exception as ex:
+                logger.debug("Registry feed fetch error for %s: %s", entry.get("id"), ex)
+
+        return fresh_events
+
     def fetch_live_feeds(self, max_per_source: int = 5, timeout_sec: float = 3.0) -> List[RawEvent]:
         """
         Fetches genuine live RSS news items from multi-domain feeds over HTTP.
@@ -404,32 +541,11 @@ class IntelligenceHarvester:
                 RawEvent(source="Test Feed", domain="macro", title="[TEST] Fed Reiterates Rate Path Stability in Policy Note", url="https://forexlive.com", timestamp=now),
             ]
 
-        feed_targets = [
-            ("CoinDesk", "crypto", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
-            ("CoinTelegraph", "crypto", "https://cointelegraph.com/rss"),
-            ("Decrypt", "crypto", "https://decrypt.co/feed"),
-            ("ForexLive", "macro", "https://www.forexlive.com/feed/news"),
-        ]
-
-        fresh_events: List[RawEvent] = []
-        headers = {"User-Agent": USER_AGENT}
-
-        for source_name, domain, url in feed_targets:
-            try:
-                import requests
-                resp = requests.get(url, headers=headers, timeout=timeout_sec)
-                if resp.status_code == 200 and resp.text:
-                    parsed = parse_rss_atom(resp.text, source_name, domain)
-                    for e in parsed[:max_per_source]:
-                        if self.dedup.is_new(e.title, e.url):
-                            fresh_events.append(e)
-                        else:
-                            if hasattr(self.client, "record_tokens_saved"):
-                                self.client.record_tokens_saved(420)
-            except Exception as ex:
-                logger.debug("Live feed fetch error for %s: %s", source_name, ex)
-
-        return fresh_events
+        # Registry-driven fetch (item 12B): the 4 previously hardcoded RSS
+        # sources are registry entries now (Decrypt included); the single
+        # source of truth is FEED_REGISTRY, which holds no-login sources
+        # only (user rule 2026-11-13).
+        return self.fetch_from_registry(max_per_source=max_per_source, timeout_sec=timeout_sec)
 
     def push_raw_events(self, raw_events: List[RawEvent]) -> List[RawEvent]:
         """Filters incoming raw events through the deduplication buffer."""
@@ -438,8 +554,10 @@ class IntelligenceHarvester:
             if self.dedup.is_new(e.title, e.url):
                 fresh.append(e)
             else:
-                if hasattr(self.client, "record_tokens_saved"):
-                    self.client.record_tokens_saved(420)
+                # Dedup hit: count it, do not claim a token figure
+                # (item 12 / A4-3: the old 420 was a fixed estimate).
+                if hasattr(self.client, "record_dedup_hit"):
+                    self.client.record_dedup_hit()
         return fresh
 
     async def process_batch(self, events: List[RawEvent]) -> List[StructuredEvent]:
@@ -467,12 +585,14 @@ class IntelligenceHarvester:
             '      "entities_tickers": ["ETH", "FED"],\n'
             '      "urgency_score": 6,\n'
             '      "sentiment_score": 0.35,\n'
+            '      "consensus": {"bullish": 0.6, "bearish": 0.25, "neutral": 0.15},\n'
             '      "headline_zh": "繁體中文新聞標題（精準翻譯並提煉核心事件，約15至28字）",\n'
             '      "summary": "繁體中文內容總結（以繁體中文完整總結新聞內容要點、關鍵數據及對加密貨幣或宏觀市場的多空影響，約35至70字）"\n'
             "    }\n"
             "  ]\n"
             "}\n"
             "CRITICAL REQUIREMENT: Both 'headline_zh' and 'summary' MUST be written strictly in Traditional Chinese (繁體中文). Never output English in headline_zh or summary.\n"
+            "For forum threads only, also include 'consensus' with the share of replies that are bullish / bearish / neutral (three numbers summing to 1.0); omit it for news items.\n"
             "Urgency rubric: 1-4=Routine noise, 5-7=Notable market mover, 8-10=Black Swan, Fed rate shock, election result, major war, or SEC enforcement."
         )
 
@@ -502,6 +622,7 @@ class IntelligenceHarvester:
                     urgency = max(1, min(10, int(item.get("urgency_score", 5))))
                     sentiment = max(-1.0, min(1.0, float(item.get("sentiment_score", 0.0))))
                     tickers = [str(t).upper() for t in item.get("entities_tickers", [])]
+                    consensus = self._parse_consensus(item.get("consensus"))
 
                     raw_headline_zh = str(item.get("headline_zh", "")).strip()
                     raw_summary = str(item.get("summary", "")).strip()
@@ -523,6 +644,9 @@ class IntelligenceHarvester:
                         summary=summary,
                         raw_title=raw.title,
                         headline_zh=headline_zh,
+                        tier=raw.tier,
+                        thread_id=raw.thread_id,
+                        consensus=consensus,
                     )
                     structured_results.append(se)
                     self.recent_structured_events.append(se)
@@ -590,16 +714,29 @@ class IntelligenceHarvester:
                     raw.title, raw.raw_content, raw.source, raw.domain, urgency, sentiment, tickers
                 )
 
+                # Forum consensus without the LLM: a deterministic split of
+                # the single event score (bullish/bearish/neutral shares),
+                # not a measured reply distribution (item 12B).
+                s2 = round(sentiment, 2)
+                consensus = {
+                    "bullish": round(max(0.0, s2), 2),
+                    "bearish": round(max(0.0, -s2), 2),
+                    "neutral": round(1.0 - abs(s2), 2),
+                } if raw.thread_id else None
+
                 se = StructuredEvent(
                     timestamp=iso_now,
                     source=raw.source,
                     domain=raw.domain,
                     entities_tickers=tickers,
                     urgency_score=urgency,
-                    sentiment_score=round(sentiment, 2),
+                    sentiment_score=s2,
                     summary=summary_zh,
                     raw_title=raw.title,
                     headline_zh=headline_zh,
+                    tier=raw.tier,
+                    thread_id=raw.thread_id,
+                    consensus=consensus,
                 )
                 structured_results.append(se)
                 self.recent_structured_events.append(se)
@@ -614,6 +751,30 @@ class IntelligenceHarvester:
     @staticmethod
     def _contains_cjk(text: str) -> bool:
         return bool(text and re.search(r"[\u4e00-\u9fff]", text))
+
+    @staticmethod
+    def _parse_consensus(value: Any) -> Optional[Dict[str, float]]:
+        """Validates an LLM-returned reply-sentiment distribution.
+
+        Returns normalized bullish/bearish/neutral shares summing to 1.0,
+        or None when the value is missing, malformed, or all zeros.
+        """
+        if not isinstance(value, dict):
+            return None
+        try:
+            b = max(0.0, float(value.get("bullish", 0.0)))
+            be = max(0.0, float(value.get("bearish", 0.0)))
+            n = max(0.0, float(value.get("neutral", 0.0)))
+        except (TypeError, ValueError):
+            return None
+        total = b + be + n
+        if total <= 0.0:
+            return None
+        return {
+            "bullish": round(b / total, 2),
+            "bearish": round(be / total, 2),
+            "neutral": round(n / total, 2),
+        }
 
     @classmethod
     def ensure_traditional_chinese(cls, event: StructuredEvent) -> Tuple[str, str]:

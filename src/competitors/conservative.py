@@ -12,6 +12,9 @@ class ConservativeCompetitor(BaseCompetitor):
     - Default Genome: 25% Position / Spot 1x (Leverage Disabled) / 1.0% Tight Stop-Loss / 1.8% Take-Profit
     - Supports cross-generation genetic evolution via CompetitorGenome
     """
+    # News sensitivity (item 12C): conservative barely moves on news.
+    NEWS_SENSITIVITY: float = 0.3
+
     def __init__(self, portfolio_id: str = "comp_cons", initial_cash: Decimal = Decimal("100000.00")):
         default_genome = CompetitorGenome(
             position_ratio=Decimal("0.25"),
@@ -20,7 +23,8 @@ class ConservativeCompetitor(BaseCompetitor):
             take_profit_pct=Decimal("0.018"),
             generation=1,
             leverage_enabled=False,
-            leverage=Decimal("1.0")
+            leverage=Decimal("1.0"),
+            news_sensitivity=0.3
         )
         super().__init__(
             portfolio_id=portfolio_id,
@@ -38,6 +42,7 @@ class ConservativeCompetitor(BaseCompetitor):
         broker: BrokerSim,
         timestamp: float,
         side: OrderSide = OrderSide.BUY,
+        sizing_multiplier: Decimal = Decimal("1.0"),
     ) -> Optional[OrderTicket]:
         if self.portfolio.is_circuit_breaker_tripped:
             return None
@@ -47,7 +52,7 @@ class ConservativeCompetitor(BaseCompetitor):
             tp_pct = self.genome.take_profit_pct if self.genome.take_profit_pct is not None else Decimal("0.018")
             target_price = (market_price * (Decimal("1") + tp_pct)).quantize(Decimal("0.01"))
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 
@@ -68,7 +73,7 @@ class ConservativeCompetitor(BaseCompetitor):
             tp_pct = self.genome.take_profit_pct if self.genome.take_profit_pct is not None else Decimal("0.018")
             target_price = (market_price * (Decimal("1") - tp_pct)).quantize(Decimal("0.01"))
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 

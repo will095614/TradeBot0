@@ -3235,7 +3235,10 @@ function updateUiClockDisplay() {
       if (statusPill.className !== nextPillCls) {
         statusPill.className = nextPillCls;
       }
-      const nextPillHtml = `<span class="ss-badge__dot"></span><span class="ss-badge__label">${isOnline ? 'ONLINE (24/7)' : 'STANDBY / LOCAL NLP'}</span>`;
+      // Item 12 / A3 option 2: when the current regime came from the local
+      // keyword fallback, say so on the pill instead of generic STANDBY.
+      const isFallback = macro.fallback === true;
+      const nextPillHtml = `<span class="ss-badge__dot"></span><span class="ss-badge__label">${isOnline ? 'ONLINE (24/7)' : (isFallback ? 'STANDBY / KEYWORD FALLBACK' : 'STANDBY / LOCAL NLP')}</span>`;
       if (statusPill._lastHtml !== nextPillHtml) {
         statusPill.innerHTML = nextPillHtml;
         statusPill._lastHtml = nextPillHtml;
@@ -3257,6 +3260,11 @@ function updateUiClockDisplay() {
       } else {
         const remTokens = Math.max(0, 100000 - (omni.tokens_used || 0)).toLocaleString();
         quotaPct.textContent = `${qPct.toFixed(1)}% Available (${remTokens} rem)`;
+        // Item 12 / A4-4: when the daily quota is exceeded the digest slows
+        // down; say so instead of silently showing a normal quota bar.
+        if (omni.quota_throttled === true) {
+          quotaPct.textContent += ' — Digest throttled';
+        }
       }
     }
 
@@ -3273,7 +3281,12 @@ function updateUiClockDisplay() {
       const saved = omni.tokens_saved || 0;
       const tot = used + saved;
       const pct = tot > 0 ? ((saved / tot) * 100).toFixed(1) : (omni.dedup_pct ? omni.dedup_pct.toFixed(1) : '0.0');
-      tokensSub.textContent = `${pct}% SHA-256 Dedup Saved`;
+      // Item 12 / A4-3: token "saved" is no longer a claimed figure, so the
+      // dedup line reports the counted hits instead of a fabricated percent.
+      const hits = omni.dedup_hits;
+      tokensSub.textContent = (typeof hits === 'number' && hits > 0)
+        ? `${hits.toLocaleString()} dupes skipped (SHA-256)`
+        : `${pct}% SHA-256 Dedup Saved`;
     }
 
     const ingEl = document.getElementById('omniIngestModel');

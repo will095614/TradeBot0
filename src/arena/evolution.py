@@ -124,7 +124,11 @@ class GeneticEvolver:
             cooldown_bars=max(parent1.cooldown_bars, parent2.cooldown_bars),
             generation=next_gen,
             leverage_enabled=new_lev_enabled,
-            leverage=new_lev
+            leverage=new_lev,
+            # News sensitivity is inherited unchanged (item 12C phase 1):
+            # crossover blends genes, but this one is a fixed per-strategy
+            # slot value, never a blended or mutated gene.
+            news_sensitivity=parent1.news_sensitivity
         )
 
     # Genes eligible for runner-up fine-tuning: (field, low, high, quantum).
@@ -206,7 +210,9 @@ class GeneticEvolver:
             cooldown_bars=genome.cooldown_bars,
             generation=next_gen,
             leverage_enabled=genome.leverage_enabled,
-            leverage=genome.leverage
+            leverage=genome.leverage,
+            # Not in _FINE_TUNE_GENES: the runner-up keeps its sensitivity.
+            news_sensitivity=genome.news_sensitivity
         )
         return new_g, tuned
 
@@ -258,7 +264,8 @@ class GeneticEvolver:
                     cooldown_bars=old_g.cooldown_bars,
                     generation=next_gen,
                     leverage_enabled=old_g.leverage_enabled,
-                    leverage=old_g.leverage
+                    leverage=old_g.leverage,
+                    news_sensitivity=old_g.news_sensitivity
                 )
                 action = "ELITE_CHAMPION_PRESERVED"
                 logs.append(
@@ -299,7 +306,8 @@ class GeneticEvolver:
                         cooldown_bars=new_g.cooldown_bars,
                         generation=next_gen,
                         leverage_enabled=new_g.leverage_enabled,
-                        leverage=new_g.leverage
+                        leverage=new_g.leverage,
+                        news_sensitivity=new_g.news_sensitivity
                     )
                 action = "CROSSOVER_MUTATED"
                 logs.append(

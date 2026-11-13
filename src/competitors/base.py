@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Dict, Any
 from src.arena.order import OrderTicket, OrderSide, OrderType, PositionSide, ExecutionReason
@@ -26,6 +26,11 @@ class CompetitorGenome:
     generation: int = 1
     leverage_enabled: bool = False
     leverage: Decimal = Decimal("1.0")
+    # News sensitivity (item 12C): how much macro news scales this
+    # strategy's position size (0.0 = news-blind, 1.0 = full effect).
+    # Fixed per strategy slot; evolution never mutates it. Kept last so
+    # positional construction order of the other genes is unchanged.
+    news_sensitivity: float = 0.5
 
     def __post_init__(self) -> None:
         """Validate gene ranges (unleveraged-equity risk semantics).
@@ -62,6 +67,10 @@ class CompetitorGenome:
         if self.generation < 1:
             raise ValueError(f"CompetitorGenome.generation={self.generation} must be >= 1")
         _range("leverage", self.leverage, Decimal("1.0"), Decimal("5.0"))
+        if not 0.0 <= float(self.news_sensitivity) <= 1.0:
+            raise ValueError(
+                f"CompetitorGenome.news_sensitivity={self.news_sensitivity} out of range [0.0, 1.0]"
+            )
 
 
 class BaseCompetitor(ABC):
@@ -70,6 +79,10 @@ class BaseCompetitor(ABC):
     All competitors share the identical market signal input but differ in risk, exit, and leverage genes.
     Supports genetic evolution across generations.
     """
+    # News sensitivity for this strategy slot (item 12C, phase 1): fixed
+    # per strategy, never mutated by evolution. Subclasses override.
+    NEWS_SENSITIVITY: float = 0.5
+
     def __init__(
         self,
         portfolio_id: str,
@@ -94,6 +107,16 @@ class BaseCompetitor(ABC):
         self.last_exit_ts: float = 0.0
 
     def reset_for_new_generation(self, new_genome: CompetitorGenome, preserve_portfolio: bool = True) -> None:
+        # News sensitivity is a property of the strategy slot, not the
+        # genome lineage: a genome crossed from another strategy's
+        # champion must not change this slot's sensitivity (item 12C:
+        # fixed per strategy in phase 1).
+        try:
+            sens = float(getattr(new_genome, "news_sensitivity", self.NEWS_SENSITIVITY))
+        except (TypeError, ValueError):
+            sens = float(self.NEWS_SENSITIVITY)
+        if sens != float(self.NEWS_SENSITIVITY):
+            new_genome = replace(new_genome, news_sensitivity=float(self.NEWS_SENSITIVITY))
         self.genome = new_genome
         self.max_position_ratio = new_genome.position_ratio
         gen_tag = f" [G{new_genome.generation}]" if new_genome.generation > 1 else ""
@@ -169,7 +192,8 @@ class BaseCompetitor(ABC):
         entry_price: Decimal,
         stop_price: Decimal,
         broker: BrokerSim,
-        risk_budget: Optional[Decimal] = None
+        risk_budget: Optional[Decimal] = None,
+        sizing_multiplier: Decimal = Decimal("1.0"),
     ) -> Decimal:
         """
         Dynamic R-Multiple Volatility & Stop-Distance Adjusted Sizing (day-trader-skill Budget Manager).
@@ -188,6 +212,11 @@ class BaseCompetitor(ABC):
             if risk_budget is not None
             else (self.portfolio.total_equity * self.genome.risk_per_trade_pct)
         )
+        # News sizing (item 12C): scale the risk budget by the news factor.
+        # The position-ratio cap below is NOT scaled: it stays the safety
+        # max, so an optimistic regime can never push size past the cap.
+        sizing_multiplier = max(Decimal("0.5"), min(Decimal("1.5"), sizing_multiplier))
+        budget = budget * sizing_multiplier
         risk_qty = (budget / stop_dist).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
         max_cap_val = self.portfolio.total_equity * self.genome.position_ratio
         safe_cap_qty = self.compute_safe_buy_qty(max_cap_val, entry_price, broker)
@@ -202,6 +231,7 @@ class BaseCompetitor(ABC):
         broker: BrokerSim,
         timestamp: float,
         side: OrderSide = OrderSide.BUY,
+        sizing_multiplier: Decimal = Decimal("1.0"),
     ) -> Optional[OrderTicket]:
         """
         Translates a raw strategy signal into a sized, risk-managed OrderTicket.

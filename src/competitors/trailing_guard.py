@@ -13,6 +13,9 @@ class TrailingGuardCompetitor(BaseCompetitor):
     - Initial Stop-Loss: Fixed 1.5% (automatically ratchets to Breakeven at +1.0% gain)
     - Trailing Lock: Activates 0.6% trailing stop at +2.0% profit to capture peaks
     """
+    # News sensitivity (item 12C): trend follower, news impact is indirect.
+    NEWS_SENSITIVITY: float = 0.5
+
     def __init__(self, portfolio_id: str = "comp_trail", initial_cash: Decimal = Decimal("100000.00")):
         default_genome = CompetitorGenome(
             position_ratio=Decimal("0.40"),
@@ -23,7 +26,8 @@ class TrailingGuardCompetitor(BaseCompetitor):
             trailing_distance_pct=Decimal("0.006"),
             generation=1,
             leverage_enabled=True,
-            leverage=Decimal("2.0")
+            leverage=Decimal("2.0"),
+            news_sensitivity=0.5
         )
         super().__init__(
             portfolio_id=portfolio_id,
@@ -51,6 +55,7 @@ class TrailingGuardCompetitor(BaseCompetitor):
         broker: BrokerSim,
         timestamp: float,
         side: OrderSide = OrderSide.BUY,
+        sizing_multiplier: Decimal = Decimal("1.0"),
     ) -> Optional[OrderTicket]:
         if self.portfolio.is_circuit_breaker_tripped:
             return None
@@ -109,7 +114,7 @@ class TrailingGuardCompetitor(BaseCompetitor):
             self.trailing_active = False
 
             stop_price = (market_price * (Decimal("1") - self.genome.stop_loss_pct)).quantize(Decimal("0.01"))
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 
@@ -130,7 +135,7 @@ class TrailingGuardCompetitor(BaseCompetitor):
             self.trailing_active = False
 
             stop_price = (market_price * (Decimal("1") + self.genome.stop_loss_pct)).quantize(Decimal("0.01"))
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 

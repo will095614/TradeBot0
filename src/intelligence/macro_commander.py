@@ -2,15 +2,44 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.arena.order import OrderSide
 from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.forum_collector import ForumCollector
 from src.intelligence.ingestion import IntelligenceHarvester, StructuredEvent
 
 logger = logging.getLogger(__name__)
+
+# Item 12 / A3 option 2: a keyword-fallback regime older than this (seconds)
+# steps down to neutral instead of letting stale keyword scores veto trades.
+FALLBACK_MAX_AGE_SEC = 1800.0
+
+# Weighted sentiment (item 12C / C1): tier weights, 60-minute half-life,
+# 60-minute evidence window, at most the 30 freshest events.
+TIER_WEIGHTS = {0: 1.5, 1: 1.2, 2: 1.0, 3: 0.7}
+WEIGHTED_WINDOW_MIN = 60.0
+WEIGHTED_MAX_EVENTS = 30
+WEIGHTED_HALF_LIFE_MIN = 60.0
+
+
+def _event_age_min(timestamp: str, now: float) -> float:
+    """Minutes between an event's ISO8601 timestamp and `now`.
+
+    Unparseable timestamps are treated as fresh (age 0): a malformed
+    timestamp must not silently drop a real event from the weighted
+    score. Future timestamps (clock skew) clamp to 0.
+    """
+    try:
+        dt = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (now - dt.timestamp()) / 60.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _safe_float(value: Any, default: float) -> float:
@@ -33,6 +62,16 @@ class MacroRegimeState:
     active_headline: str = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
     confidence: float = 0.50
     last_synthesis_ts: float = 0.0
+    # Fallback provenance (item 12 / A3 option 2): True while the current
+    # bias came from the local keyword fallback instead of the LLM, and the
+    # timestamp the fallback first took over (for the 30-minute expiry).
+    fallback: bool = False
+    fallback_since_ts: float = 0.0
+    # Weighted sentiment (item 12C): deterministic tier/urgency/time-decay
+    # scores from the latest synthesis; 0.0/0.0/0.0 means no usable evidence.
+    weighted_sentiment: float = 0.0  # S in [-1, 1]
+    weighted_urgency: float = 0.0  # U in [0, 10]
+    weighted_coverage: float = 0.0  # N, decay-weighted event count
     veto_count_today: int = 0
     total_evaluations: int = 0
     status: str = "ONLINE"  # "ONLINE", "STANDBY", "OFFLINE"
@@ -46,6 +85,11 @@ class MacroRegimeState:
             "active_headline": self.active_headline,
             "confidence": round(self.confidence, 2),
             "last_synthesis_time": time.strftime("%H:%M:%S", time.localtime(self.last_synthesis_ts)) if self.last_synthesis_ts else "",
+            "fallback": self.fallback,
+            "fallback_since": time.strftime("%H:%M:%S", time.localtime(self.fallback_since_ts)) if self.fallback_since_ts else "",
+            "weighted_sentiment": round(self.weighted_sentiment, 3),
+            "weighted_urgency": round(self.weighted_urgency, 2),
+            "weighted_coverage": round(self.weighted_coverage, 2),
             "veto_count_today": self.veto_count_today,
             "total_evaluations": self.total_evaluations,
             "status": self.status,
@@ -71,6 +115,7 @@ class MacroCommander:
     def __init__(self, client: OmniRouteClient, harvester: Optional[IntelligenceHarvester] = None) -> None:
         self.client = client
         self.harvester = harvester or IntelligenceHarvester(client=client)
+        self.forum_collector = ForumCollector(client=client)
         self.current_state = MacroRegimeState()
         self.synthesis_lock = asyncio.Lock()
         self.last_synthesis_time: float = 0.0
@@ -161,10 +206,20 @@ class MacroCommander:
             await self.client.check_health()
             try:
                 raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 3.5)
+                structured_all: List[StructuredEvent] = []
                 if raw_events:
-                    structured = await self.harvester.process_batch(raw_events)
-                    if structured:
-                        return await self.synthesize_regime(structured)
+                    structured_all.extend(await self.harvester.process_batch(raw_events))
+                # Forum batch (item 12B): StockTwits streams are collected on
+                # their own cadence and scored in a separate batch, so forum
+                # chatter never crowds breaking news out of the 6-event cap.
+                try:
+                    forum_events = await self.forum_collector.collect_async()
+                    if forum_events:
+                        structured_all.extend(await self.harvester.process_batch(forum_events))
+                except Exception as ex:
+                    logger.warning("Forum collection failed, continuing with news only: %s", ex)
+                if structured_all:
+                    return await self.synthesize_regime(structured_all)
             except Exception as ex:
                 if "cannot schedule new futures after shutdown" in str(ex):
                     logger.debug("Live feed harvest skipped during shutdown: %s", ex)
@@ -191,6 +246,8 @@ class MacroCommander:
         tokens_used = int(raw_used) if isinstance(raw_used, (int, float)) else 0
         raw_saved = getattr(self.client, "total_tokens_saved", 0)
         tokens_saved = int(raw_saved) if isinstance(raw_saved, (int, float)) else 0
+        raw_hits = getattr(self.client, "total_dedup_hits", 0)
+        dedup_hits = int(raw_hits) if isinstance(raw_hits, (int, float)) else 0
 
         status_text = "ONLINE" if is_online else "STANDBY"
 
@@ -220,6 +277,9 @@ class MacroCommander:
                 "tokens_used": tokens_used,
                 "tokens_saved": tokens_saved,
                 "dedup_pct": dedup_pct,
+                "dedup_hits": dedup_hits,
+                "quota_throttled": self.is_quota_throttled(),
+                "digest_interval_sec": self.digest_interval_sec(),
                 "total_requests": int(getattr(self.client, "total_requests", 0)),
                 "successful_requests": int(getattr(self.client, "successful_requests", 0)),
                 "retried_requests": int(getattr(self.client, "retried_requests", 0)),
@@ -264,6 +324,113 @@ class MacroCommander:
 
         return True, "PASSED"
 
+    def _expire_fallback_if_stale(self, now: float) -> None:
+        """Steps an expired keyword fallback down to neutral (item 12 / A3).
+
+        A fallback regime older than FALLBACK_MAX_AGE_SEC (30 minutes)
+        stops vetoing: the keyword scores that produced it are stale, and a
+        directional veto must come from a live LLM synthesis, not from
+        half-hour-old keyword soup.
+        """
+        if not self.current_state.fallback:
+            return
+        if self.current_state.fallback_since_ts <= 0.0:
+            return
+        if now - self.current_state.fallback_since_ts <= FALLBACK_MAX_AGE_SEC:
+            return
+        self.current_state.regime = "NORMAL"
+        self.current_state.directional_bias = "BIDIRECTIONAL"
+        self.current_state.risk_multiplier = 1.0
+        self.current_state.confidence = 0.50
+        self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+        logger.info("Keyword fallback regime expired after 30m without LLM; stepped down to BIDIRECTIONAL")
+
+    def is_quota_throttled(self) -> bool:
+        """True while measured token usage has reached the daily quota.
+
+        The `is True` guard matters: mock clients answer any attribute with
+        a truthy mock, which must never read as "over quota" (item 12 /
+        A4-4). Only a real boolean True counts.
+        """
+        fn = getattr(self.client, "is_over_quota", None)
+        if not callable(fn):
+            return False
+        try:
+            return fn() is True
+        except Exception as e:
+            logger.debug("Quota check failed, assuming under quota: %s", e)
+            return False
+
+    def digest_interval_sec(self, base_sec: float = 300.0) -> float:
+        """Effective digest cadence (item 12 / A4-4).
+
+        Once the daily quota is reached, the digest slows from the base
+        cadence to at least 900s so the gateway is not hammered while over
+        budget. Never shortens a longer user-configured interval.
+        """
+        if self.is_quota_throttled():
+            return max(float(base_sec), 900.0)
+        return float(base_sec)
+
+    def compute_weighted_sentiment(
+        self, events: List[StructuredEvent], now: Optional[float] = None
+    ) -> Tuple[float, float, float]:
+        """Deterministic tier/urgency/time-decay weighted sentiment (item 12C).
+
+        Returns (S, U, N): weighted sentiment in [-1, 1], weighted urgency
+        in [1, 10], decay-weighted event count. Only events from the last
+        60 minutes count (at most the 30 freshest); with no usable evidence
+        all three are 0.0. The LLM path uses these as a prompt reference;
+        the keyword fallback uses them for direction (C1 thresholds).
+        """
+        now = time.time() if now is None else now
+        scored = []
+        for e in events:
+            age_min = _event_age_min(e.timestamp, now)
+            if age_min > WEIGHTED_WINDOW_MIN:
+                continue
+            try:
+                tier_w = TIER_WEIGHTS.get(int(getattr(e, "tier", 2)), 1.0)
+            except (TypeError, ValueError):
+                tier_w = 1.0
+            urg = max(1, min(10, int(e.urgency_score)))
+            urg_w = 0.5 + urg / 10.0
+            decay = 0.5 ** (age_min / WEIGHTED_HALF_LIFE_MIN)
+            scored.append((tier_w * urg_w * decay, float(e.sentiment_score), float(urg), decay))
+        if not scored:
+            return 0.0, 0.0, 0.0
+        # Freshest first (largest decay), keep at most 30.
+        scored.sort(key=lambda item: -item[3])
+        scored = scored[:WEIGHTED_MAX_EVENTS]
+        total_w = sum(w for w, _, _, _ in scored)
+        if total_w <= 0.0:
+            return 0.0, 0.0, 0.0
+        s = sum(w * sent for w, sent, _, _ in scored) / total_w
+        u = sum(w * urg for w, _, urg, _ in scored) / total_w
+        n = sum(d for _, _, _, d in scored)
+        return max(-1.0, min(1.0, s)), max(0.0, min(10.0, u)), n
+
+    def news_sizing_multiplier(self, news_sensitivity: float = 0.5) -> float:
+        """Per-strategy news sizing factor (item 12C / C2).
+
+        base = 1 + (risk_multiplier - 1) * ((confidence - 0.5) / 0.5):
+        no confidence (0.5, e.g. keyword fallback) means news does not
+        move size at all; full confidence means the full risk_multiplier.
+        The per-strategy factor interpolates between 1.0 and base by the
+        strategy's news_sensitivity (0.0 = news-blind, 1.0 = full effect).
+        Callers pass competitor.genome.news_sensitivity. Result is clamped
+        to [0.5, 1.5], the risk_multiplier range.
+        """
+        try:
+            rm = max(0.5, min(1.5, float(self.current_state.risk_multiplier)))
+            conf = max(0.5, min(1.0, float(self.current_state.confidence)))
+            sens = max(0.0, min(1.0, float(news_sensitivity)))
+        except (TypeError, ValueError):
+            return 1.0
+        base = 1.0 + (rm - 1.0) * ((conf - 0.5) / 0.5)
+        mult = 1.0 + (base - 1.0) * sens
+        return max(0.5, min(1.5, mult))
+
     async def synthesize_regime(self, recent_events: List[StructuredEvent]) -> MacroRegimeState:
         """
         Performs Stage 2 cross-market synthesis by prompting LLM_MODEL_COMMANDER
@@ -274,6 +441,12 @@ class MacroCommander:
             if not recent_events:
                 self.current_state.last_synthesis_ts = now
                 self.current_state.status = "ONLINE" if self.client.is_gateway_online else "STANDBY"
+                self.current_state.weighted_sentiment = 0.0
+                self.current_state.weighted_urgency = 0.0
+                self.current_state.weighted_coverage = 0.0
+                # No fresh evidence: an expired fallback still steps down
+                # (item 12 / A3), even with nothing new to synthesize.
+                self._expire_fallback_if_stale(now)
                 return self.current_state
 
             # Ingest structured events into curated timeline (newest first), ensuring Traditional Chinese headline & summary
@@ -296,6 +469,9 @@ class MacroCommander:
                         "headline": zh_head,
                         "summary": zh_sum,
                         "raw_title": e.raw_title,
+                        "tier": e.tier,
+                        "thread_id": e.thread_id,
+                        "consensus": e.consensus,
                         "strategy_actions": [],
                     })
             if len(self.curated_events) > 60:
@@ -307,6 +483,14 @@ class MacroCommander:
                 sent_tag = f"+{e.sentiment_score:.2f}" if e.sentiment_score >= 0 else f"{e.sentiment_score:.2f}"
                 lines.append(f"- [{e.source} | Urg {e.urgency_score}/10 | Sent {sent_tag}] {e.summary}")
             intel_digest = "\n".join(lines)
+
+            # Weighted reference (item 12C / C1): deterministic tier /
+            # urgency / time-decay scores. The LLM still judges, but it
+            # sees the same numbers the keyword fallback would use.
+            w_s, w_u, w_n = self.compute_weighted_sentiment(recent_events, now)
+            self.current_state.weighted_sentiment = w_s
+            self.current_state.weighted_urgency = w_u
+            self.current_state.weighted_coverage = w_n
 
             system_prompt = (
                 "You are the Supreme Macro Commander governing a 6-strategy crypto trading arena.\n"
@@ -325,7 +509,13 @@ class MacroCommander:
                 "CRITICAL REQUIREMENT: The 'active_headline' MUST be written in Traditional Chinese (繁體中文), under 25 words summarizing the current macro narrative."
             )
 
-            user_prompt = f"Analyze this live intelligence digest and declare the macro regime:\n\n{intel_digest}"
+            user_prompt = (
+                f"Analyze this live intelligence digest and declare the macro regime:\n\n{intel_digest}\n\n"
+                f"Weighted reference (deterministic, tier/urgency/60-min half-life): "
+                f"S={w_s:+.2f}, U={w_u:.1f}, N={w_n:.1f}. "
+                f"Treat N<2 as insufficient evidence for a directional call; "
+                f"HOLD_CASH needs S<-0.65, U>=9 and confidence>=0.8."
+            )
 
             parsed = None
             if self.client.is_gateway_online:
@@ -362,24 +552,26 @@ class MacroCommander:
                 self.current_state.confidence = conf
                 self.current_state.active_headline = headline
                 self.current_state.status = "ONLINE"
+                # LLM is back in charge: the fallback provenance clears.
+                self.current_state.fallback = False
+                self.current_state.fallback_since_ts = 0.0
                 logger.info("Macro Commander Regime Updated: %s | Bias: %s | Headline: %s", regime, bias, headline)
             else:
-                # Fallback: if LLM unreachable or unparseable, compute deterministic sentiment aggregate.
-                # Conservative bar on purpose: without the LLM this is keyword
-                # soup, so a single bearish word (sentiment -0.45) plus a
-                # common urgency-7 word ("rate"/"sec"/"fed") must NOT flip the
-                # whole arena into a directional veto. |avg_sent| >= 0.60
-                # needs at least two net directional words and urgency >= 8
-                # needs a genuinely severe keyword (item 6).
-                avg_sent = sum(e.sentiment_score for e in recent_events) / len(recent_events)
-                max_urg = max(e.urgency_score for e in recent_events)
-
-                if avg_sent > 0.60 and max_urg >= 8:
+                # Fallback (item 12C / C1): if the LLM is unreachable or
+                # unparseable, direction comes from the weighted scores
+                # (S/U/N) instead of the old unweighted average + max.
+                # The bar is deliberately conservative: one extreme event
+                # (N < 1.9) can never flip the arena, and HOLD_CASH is never
+                # set here -- it needs live LLM confidence >= 0.8, which a
+                # keyword fallback by definition does not have. Confidence
+                # resets to 0.50 ("no confidence"), so news sizing (C2) is
+                # neutral until the LLM is back.
+                if w_s > 0.45 and w_u >= 7 and w_n >= 1.9:
                     self.current_state.regime = "BULLISH_SURGE"
                     self.current_state.directional_bias = "LONG_ONLY"
                     self.current_state.risk_multiplier = 1.25
                     self.current_state.active_headline = recent_events[-1].summary[:80]
-                elif avg_sent < -0.60 and max_urg >= 8:
+                elif w_s < -0.45 and w_u >= 7 and w_n >= 1.9:
                     self.current_state.regime = "BEARISH_PANIC"
                     self.current_state.directional_bias = "SHORT_ONLY"
                     self.current_state.risk_multiplier = 0.75
@@ -389,6 +581,16 @@ class MacroCommander:
                     self.current_state.directional_bias = "BIDIRECTIONAL"
                     self.current_state.risk_multiplier = 1.0
                     self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+                self.current_state.confidence = 0.50
+
+                # Emergency backup only (item 12 / A3 option 2): the keyword
+                # fallback is marked as such, and after 30 minutes without
+                # the LLM it steps down to neutral instead of letting stale
+                # keyword scores keep vetoing trades.
+                if not self.current_state.fallback:
+                    self.current_state.fallback = True
+                    self.current_state.fallback_since_ts = now
+                self._expire_fallback_if_stale(now)
 
                 self.current_state.status = "STANDBY" if not self.client.is_gateway_online else "ONLINE"
 

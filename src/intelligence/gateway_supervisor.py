@@ -184,7 +184,11 @@ class GatewaySupervisor:
             if he.code in (401, 403):
                 return {"ok": False, "message": "Invalid Key / Unauthorized (HTTP 401)", "latency_ms": elapsed_ms}
             elif he.code == 429:
-                return {"ok": True, "message": "Key valid (Rate limit 429 active)", "latency_ms": elapsed_ms}
+                # 429 only proves the key was accepted far enough to be rate
+                # limited; it cannot prove the key is valid. Never report it
+                # as verified (item 12 / A4-1): the wizard must show it as
+                # unconfirmed and let the user retry later.
+                return {"ok": False, "message": "Key status unconfirmed (rate limited, HTTP 429) — retry later", "latency_ms": elapsed_ms}
             return {"ok": False, "message": f"Provider error (HTTP {he.code})", "latency_ms": elapsed_ms}
         except (urllib.error.URLError, socket.timeout, TimeoutError) as te:
             elapsed_ms = int((time.perf_counter() - t0) * 1000)

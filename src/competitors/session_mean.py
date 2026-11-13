@@ -22,6 +22,10 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
     - Risk & Exit: Tight institutional stop just under the mean (~1.2%), target set to 2.2R (~2.6%).
     - Dynamic Sizing: Quant dynamic R-Multiple sizing up to 50% position cap.
     """
+    # News sensitivity (item 12C): mean reversion often runs against the
+    # news direction, so it barely moves on news.
+    NEWS_SENSITIVITY: float = 0.3
+
     def __init__(self, portfolio_id: str = "comp_vwap", initial_cash: Decimal = Decimal("100000.00")):
         default_genome = CompetitorGenome(
             position_ratio=Decimal("0.50"),
@@ -30,7 +34,8 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
             take_profit_pct=Decimal("0.026"),
             generation=1,
             leverage_enabled=False,
-            leverage=Decimal("1.0")
+            leverage=Decimal("1.0"),
+            news_sensitivity=0.3
         )
         super().__init__(
             portfolio_id=portfolio_id,
@@ -48,6 +53,7 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
         broker: BrokerSim,
         timestamp: float,
         side: OrderSide = OrderSide.BUY,
+        sizing_multiplier: Decimal = Decimal("1.0"),
     ) -> Optional[OrderTicket]:
         if self.portfolio.is_circuit_breaker_tripped:
             return None
@@ -73,7 +79,7 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
             target_dist = stop_dist * Decimal("2.2")  # 2.2R Institutional Reward
             target_price = (market_price + target_dist).quantize(Decimal("0.01"))
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 
@@ -110,7 +116,7 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
             target_dist = stop_dist * Decimal("2.2")  # 2.2R Institutional Reward
             target_price = (market_price - target_dist).quantize(Decimal("0.01"))
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
 

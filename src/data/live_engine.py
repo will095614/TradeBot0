@@ -823,6 +823,20 @@ class LiveArenaEngine:
             "orb_low": orb_low,
         }
 
+    def _sizing_multiplier_for(self, competitor: Any) -> Decimal:
+        """Per-strategy news sizing factor for one entry (item 12C / C2).
+
+        The same factor the strategy's evaluate_signal receives, so the TP
+        stretch below and the position size use one consistent number.
+        Unknown competitors (mocks without a genome) read as 0.5.
+        """
+        sens = getattr(getattr(competitor, "genome", None), "news_sensitivity", 0.5)
+        try:
+            sens_f = float(sens)
+        except (TypeError, ValueError):
+            sens_f = 0.5
+        return Decimal(str(self.macro_commander.news_sizing_multiplier(sens_f)))
+
     def _try_enter_ticket(self, competitor: Any, ticket: OrderTicket, price: Decimal, ts: float, event_label: str) -> bool:
         """Submit a strategy-built ticket through the live-only gates.
 
@@ -858,6 +872,7 @@ class LiveArenaEngine:
             broker=self.broker,
             timestamp=ts,
             side=side,
+            sizing_multiplier=self._sizing_multiplier_for(competitor),
         )
         if ticket is None:
             return False
@@ -923,14 +938,17 @@ class LiveArenaEngine:
             )
             return False
 
-        # Macro Trend Take-Profit Expansion (R-Multiple expanded when riding macro regime)
-        if tp is not None and self.macro_commander.current_state.risk_multiplier > 1.0:
+        # Macro Trend Take-Profit Expansion (item 12C / C2): TP stretches by
+        # the same per-strategy news sizing factor the position size uses,
+        # so an optimistic-but-unconfident regime no longer stretches TP.
+        sizing_mult = self._sizing_multiplier_for(competitor)
+        if tp is not None and sizing_mult > Decimal("1.0"):
             if side == OrderSide.BUY and self.macro_commander.current_state.directional_bias == "LONG_ONLY":
                 r_dist = price - sl
-                tp = (price + r_dist * Decimal(str(round(2.0 * self.macro_commander.current_state.risk_multiplier, 2)))).quantize(Decimal("0.01"))
+                tp = (price + r_dist * Decimal(str(round(2.0 * float(sizing_mult), 2)))).quantize(Decimal("0.01"))
             elif side == OrderSide.SELL and self.macro_commander.current_state.directional_bias == "SHORT_ONLY":
                 r_dist = sl - price
-                tp = (price - r_dist * Decimal(str(round(2.0 * self.macro_commander.current_state.risk_multiplier, 2)))).quantize(Decimal("0.01"))
+                tp = (price - r_dist * Decimal(str(round(2.0 * float(sizing_mult), 2)))).quantize(Decimal("0.01"))
 
         mc_odds = self.mc_evaluator.evaluate_bracket(price, sl, tp, atr=self.live_atr, recent_candles=self.candles)
         self.strategy_telemetry[pid]["mc_stats"] = mc_odds.to_dict()
@@ -947,7 +965,7 @@ class LiveArenaEngine:
             if tp != ticket.take_profit:
                 ticket = replace(ticket, take_profit=tp)
         else:
-            qty = competitor.compute_r_multiple_qty(price, sl, self.broker, risk_budget=risk_budget)
+            qty = competitor.compute_r_multiple_qty(price, sl, self.broker, risk_budget=risk_budget, sizing_multiplier=sizing_mult)
             if qty <= Decimal("0"):
                 return False
             ticket = OrderTicket(
@@ -1712,8 +1730,9 @@ class LiveArenaEngine:
                         # Publish updated double-buffered state snapshot for lock-free UI IPC consumption
                         self._publish_state_snapshot()
 
-                        # Automated periodic background intelligence digest refresh (every 5m / 300s)
-                        if (now - self.last_intel_refresh_ts) >= self.intel_refresh_interval_sec and not self._is_refreshing_intel:
+                        # Automated periodic background intelligence digest refresh (every 5m / 300s;
+                        # slowed to >= 900s while the daily token quota is exceeded, item 12 / A4-4)
+                        if (now - self.last_intel_refresh_ts) >= self.macro_commander.digest_interval_sec(self.intel_refresh_interval_sec) and not self._is_refreshing_intel:
                             if os.environ.get("ARENA_FAST_TEST") != "1":
                                 threading.Thread(target=self.refresh_intel_digest, daemon=True).start()
 
@@ -2179,6 +2198,7 @@ class LiveArenaEngine:
                             "generation": g.generation,
                             "leverage_enabled": g.leverage_enabled,
                             "leverage": str(g.leverage),
+                            "news_sensitivity": g.news_sensitivity,
                         }
                     })
 
@@ -2242,6 +2262,7 @@ class LiveArenaEngine:
                                     generation=int(gd.get("generation", 1)),
                                     leverage_enabled=bool(gd.get("leverage_enabled", False)),
                                     leverage=Decimal(str(gd.get("leverage", "1.0"))),
+                                    news_sensitivity=float(gd.get("news_sensitivity", getattr(c, "NEWS_SENSITIVITY", 0.5))),
                                 )
                             except ValueError as e:
                                 # Stored genome fails validation (e.g. written by an older

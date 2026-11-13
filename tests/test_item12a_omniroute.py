@@ -1,0 +1,145 @@
+"""Item 12A tests: 429 is not verification, dedup counts hits (no token
+figure), fallback regime is marked and expires after 30 minutes, quota
+soft-throttles the digest cadence."""
+import asyncio
+import io
+import time
+import urllib.error
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from src.intelligence.gateway_supervisor import GatewaySupervisor
+from src.intelligence.ingestion import IntelligenceHarvester, RawEvent, StructuredEvent
+from src.intelligence.macro_commander import MacroCommander, MacroRegimeState
+from src.intelligence.omniroute_client import OmniRouteClient
+
+
+def _offline_commander():
+    mock_client = MagicMock()
+    mock_client.is_gateway_online = False
+    mock_client.chat_json = AsyncMock(return_value=None)
+    return MacroCommander(mock_client)
+
+
+def _now_iso():
+    # Weighted sentiment (item 12C) only counts events from the last 60
+    # minutes, so threshold fixtures must be fresh at run time.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _strong_bearish_events():
+    # Three events, not two: C1 defines N = SUM(decay), so two fresh
+    # events give N ~= 1.9996 and never reach the N >= 2 direction gate.
+    return [
+        StructuredEvent(timestamp=_now_iso(), source="Test", domain="macro", entities_tickers=["FED"], urgency_score=9, sentiment_score=-0.70, summary="Strong bearish 1"),
+        StructuredEvent(timestamp=_now_iso(), source="Test", domain="macro", entities_tickers=["FED"], urgency_score=8, sentiment_score=-0.85, summary="Strong bearish 2"),
+        StructuredEvent(timestamp=_now_iso(), source="Test", domain="macro", entities_tickers=["FED"], urgency_score=9, sentiment_score=-0.80, summary="Strong bearish 3"),
+    ]
+
+
+@patch("urllib.request.urlopen")
+def test_key_rate_limit_429_is_not_verified(mock_urlopen):
+    """A4-1: 429 proves the key was accepted far enough to be rate limited,
+    not that it is valid. It must never be reported as verified."""
+    gs = GatewaySupervisor()
+    mock_urlopen.side_effect = urllib.error.HTTPError(
+        url="https://api.groq.com", code=429, msg="Too Many Requests",
+        hdrs={}, fp=io.BytesIO(b'{"error":"rate limited"}'),
+    )
+    res = gs.test_single_key("groq", "gsk_rate_limited_key_12345678")
+    assert res["ok"] is False
+    assert "429" in res["message"]
+    assert "unconfirmed" in res["message"].lower()
+    assert "valid" not in res["message"].lower()
+
+
+def test_dedup_hits_counted_not_token_estimate():
+    """A4-3: a duplicate event counts one dedup hit and claims no tokens."""
+    client = OmniRouteClient()
+    harvester = IntelligenceHarvester(client=client)
+    ev = RawEvent(source="Test", domain="crypto", title="Dup title", url="https://example.com/x", timestamp=2000.0)
+    assert harvester.push_raw_events([ev]) == [ev]
+    assert harvester.push_raw_events([ev]) == []
+    assert client.total_dedup_hits == 1
+    assert client.total_tokens_saved == 0
+
+
+def test_fallback_regime_is_marked_and_expires():
+    """A3 option 2: a keyword-fallback regime is marked fallback=True; after
+    30 minutes without the LLM it steps down to BIDIRECTIONAL."""
+    commander = _offline_commander()
+    state = asyncio.run(commander.synthesize_regime(_strong_bearish_events()))
+    assert state.directional_bias == "SHORT_ONLY"
+    assert state.fallback is True
+    assert state.fallback_since_ts > 0.0
+
+    # 31 minutes later, still no LLM: the same strong events must NOT keep
+    # vetoing -- the stale fallback steps down to neutral.
+    commander.current_state.fallback_since_ts = time.time() - 1860.0
+    state = asyncio.run(commander.synthesize_regime(_strong_bearish_events()))
+    assert state.directional_bias == "BIDIRECTIONAL"
+    assert state.regime == "NORMAL"
+    assert state.risk_multiplier == 1.0
+
+
+def test_fallback_clears_when_llm_recovers():
+    """A3 option 2: a fresh LLM synthesis clears the fallback provenance."""
+    commander = _offline_commander()
+    state = asyncio.run(commander.synthesize_regime(_strong_bearish_events()))
+    assert state.fallback is True
+
+    commander.client.is_gateway_online = True
+    commander.client.chat_json = AsyncMock(return_value={
+        "regime": "BULLISH_SURGE",
+        "directional_bias": "LONG_ONLY",
+        "risk_multiplier": 1.25,
+        "confidence": 0.8,
+        "active_headline": "LLM back online",
+    })
+    state = asyncio.run(commander.synthesize_regime(_strong_bearish_events()))
+    assert state.directional_bias == "LONG_ONLY"
+    assert state.fallback is False
+    assert state.fallback_since_ts == 0.0
+
+
+def test_empty_digest_expires_stale_fallback():
+    """A3 option 2: with no new events at all, an expired fallback still
+    steps down instead of sitting on a stale directional veto."""
+    commander = _offline_commander()
+    commander.current_state.fallback = True
+    commander.current_state.fallback_since_ts = time.time() - 1860.0
+    commander.current_state.directional_bias = "SHORT_ONLY"
+    commander.current_state.regime = "BEARISH_PANIC"
+    state = asyncio.run(commander.synthesize_regime([]))
+    assert state.directional_bias == "BIDIRECTIONAL"
+    assert state.regime == "NORMAL"
+
+
+def test_quota_throttling_slows_digest():
+    """A4-4: at/over the daily quota the digest slows to >= 900s; under
+    quota it keeps the configured base cadence."""
+    client = OmniRouteClient()
+    commander = MacroCommander(client)
+    assert client.is_over_quota() is False
+    assert commander.digest_interval_sec() == 300.0
+    assert commander.is_quota_throttled() is False
+
+    client.total_tokens_used = 100000
+    assert client.is_over_quota() is True
+    assert commander.digest_interval_sec() == 900.0
+    assert commander.digest_interval_sec(600.0) == 900.0
+    assert commander.digest_interval_sec(1200.0) == 1200.0
+    assert commander.is_quota_throttled() is True
+
+    tel = commander.get_intel_hub_telemetry()
+    assert tel["omniroute"]["quota_throttled"] is True
+    assert tel["omniroute"]["digest_interval_sec"] == 900.0
+    assert tel["omniroute"]["dedup_hits"] == 0
+
+
+def test_regime_state_dict_exposes_fallback():
+    """A3: the view model (macro_commander.to_dict) carries the fallback
+    provenance the frontend pill reads."""
+    d = MacroRegimeState().to_dict()
+    assert d["fallback"] is False
+    assert d["fallback_since"] == ""
