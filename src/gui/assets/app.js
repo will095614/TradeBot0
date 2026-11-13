@@ -2050,8 +2050,11 @@ function drawPriceChart(state) {
   }
 
   let minP = Infinity, maxP = -Infinity;
-  if (useCandles && targetCandles.length > 0) {
-    targetCandles.forEach(c => {
+  // Full mode scales to the whole loaded history; Focus ('auto')
+  // keeps the tight recent window (targetCandles).
+  const rangeCandles = (scaleMode === 'full') ? rawCandles : targetCandles;
+  if (useCandles && rangeCandles.length > 0) {
+    rangeCandles.forEach(c => {
       if (c.l < minP) minP = c.l;
       if (c.h > maxP) maxP = c.h;
     });
@@ -2080,8 +2083,19 @@ function drawPriceChart(state) {
           minP = Math.min(minP, s.entry_price);
           maxP = Math.max(maxP, s.entry_price);
         }
-        if (s.stop_loss && s.stop_loss > 0) minP = Math.min(minP, s.stop_loss);
-        if (s.take_profit && s.take_profit > 0) maxP = Math.max(maxP, s.take_profit);
+        // Brackets extend both sides: for a long the SL sits below
+        // and the TP above; for a short it is the other way round.
+        // The old code only covered the long direction, so distant
+        // short brackets never widened the scale and Full looked
+        // identical to Focus.
+        if (s.stop_loss && s.stop_loss > 0) {
+          minP = Math.min(minP, s.stop_loss);
+          maxP = Math.max(maxP, s.stop_loss);
+        }
+        if (s.take_profit && s.take_profit > 0) {
+          minP = Math.min(minP, s.take_profit);
+          maxP = Math.max(maxP, s.take_profit);
+        }
       }
     });
   }
