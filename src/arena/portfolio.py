@@ -53,6 +53,14 @@ class Portfolio:
         self.is_circuit_breaker_tripped: bool = False
 
     @property
+    def max_drawdown(self) -> Decimal:
+        return self.max_drawdown_pct
+
+    @max_drawdown.setter
+    def max_drawdown(self, value: Decimal) -> None:
+        self.max_drawdown_pct = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    @property
     def unrealized_pnl(self) -> Decimal:
         if self.position_qty <= Decimal("0") or self.current_market_price <= Decimal("0"):
             return Decimal("0.00")
@@ -89,6 +97,38 @@ class Portfolio:
         if self.gross_loss <= Decimal("0"):
             return float(self.gross_profit) if self.gross_profit > Decimal("0") else 0.0
         return round(float(self.gross_profit / self.gross_loss), 2)
+
+    def reset(self, initial_cash: Optional[Decimal] = None) -> None:
+        """
+        Completely resets the portfolio to its initial flat state, clearing all
+        positions, locked margin, entry fees, realized PnL, trade history, and drawdowns.
+        """
+        if initial_cash is not None:
+            self.initial_cash = initial_cash.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            self.cash = self.initial_cash
+        else:
+            self.cash = self.initial_cash
+
+        self.position_qty = Decimal("0.0000")
+        self.position_side = PositionSide.FLAT
+        self.avg_entry_price = Decimal("0.00")
+        self.open_position_entry_fee = Decimal("0.00")
+        self.margin_locked = Decimal("0.00")
+
+        self.realized_pnl = Decimal("0.00")
+        self.total_fees_paid = Decimal("0.00")
+        self.gross_profit = Decimal("0.00")
+        self.gross_loss = Decimal("0.00")
+        self.win_count = 0
+        self.loss_count = 0
+
+        self.current_market_price = Decimal("0.00")
+        self.peak_equity = self.cash
+        self.max_drawdown_pct = Decimal("0.00")
+
+        self.trade_history.clear()
+        self.equity_history.clear()
+        self.is_circuit_breaker_tripped = False
 
     def update_market_price(
         self,

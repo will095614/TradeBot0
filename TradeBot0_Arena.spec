@@ -2,13 +2,15 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('src/gui/assets', 'src/gui/assets')]
-binaries = []
+binaries = [('src/compat/win7/api-ms-win-core-path-l1-1-0.dll', '.')]
 hiddenimports = ['clr']
 tmp_ret = collect_all('webview')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('clr_loader')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pythonnet')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('websockets')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 

@@ -13,17 +13,30 @@ from src.intelligence.ingestion import IntelligenceHarvester, StructuredEvent
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(value: Any, default: float) -> float:
+    """Parses an untrusted numeric value (LLM output / feed data).
+
+    Returns `default` when the value is missing or not a number, instead of
+    raising. A failed parse must never take down the veto pipeline (item 6).
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class MacroRegimeState:
     regime: str = "NORMAL"  # "BULLISH_SURGE", "BEARISH_PANIC", "HIGH_VOLATILITY_CHOP", "NORMAL"
     directional_bias: str = "BIDIRECTIONAL"  # "LONG_ONLY", "SHORT_ONLY", "BIDIRECTIONAL", "HOLD_CASH"
     risk_multiplier: float = 1.0  # 0.5 to 1.5
-    active_headline: str = "宏觀多空維持均衡結構，即時情報流同步運作中"
+    active_headline: str = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
     confidence: float = 0.50
     last_synthesis_ts: float = 0.0
     veto_count_today: int = 0
     total_evaluations: int = 0
     status: str = "ONLINE"  # "ONLINE", "STANDBY", "OFFLINE"
+    latest_event: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -36,6 +49,7 @@ class MacroRegimeState:
             "veto_count_today": self.veto_count_today,
             "total_evaluations": self.total_evaluations,
             "status": self.status,
+            "latest_event": self.latest_event,
         }
 
 
@@ -51,7 +65,7 @@ class MacroCommander:
         "comp_atr": "Strategy 3 (ATR)",
         "comp_trail": "Strategy 4 (TRAIL)",
         "comp_orb": "Strategy 5 (ORB)",
-        "comp_vwap": "Strategy 6 (VWAP)",
+        "comp_vwap": "Strategy 6 (Mean)",
     }
 
     def __init__(self, client: OmniRouteClient, harvester: Optional[IntelligenceHarvester] = None) -> None:
@@ -64,71 +78,47 @@ class MacroCommander:
         self._seed_default_events()
 
     def _seed_default_events(self) -> None:
-        now = time.time()
+        # No fabricated news: the intel timeline starts empty and is filled
+        # only by real harvested events (synthesize_regime). The old version
+        # seeded five invented headlines attributed to real outlets
+        # (CoinDesk / SEC / Bloomberg) and presented them as genuine
+        # intelligence in the Intel Hub (item 6).
         self.current_state.regime = "NORMAL"
         self.current_state.directional_bias = "BIDIRECTIONAL"
         self.current_state.risk_multiplier = 1.0
-        self.current_state.active_headline = "宏觀多空維持均衡結構，即時情報流同步運作中"
-        self.current_state.confidence = 0.85
+        self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+        # No real data yet: neutral confidence, not the old 0.85.
+        self.current_state.confidence = 0.50
         self.current_state.status = "ONLINE" if self.client.is_gateway_online else "STANDBY"
 
-        self.curated_events = [
-            {
-                "id": "evt_seed_1",
-                "time": time.strftime("%H:%M:%S", time.localtime(now - 12)),
-                "source": "CoinDesk / SEC",
-                "domain": "crypto",
-                "urgency": 7,
-                "sentiment": 0.45,
-                "headline": "全球以太坊現貨流動性持續穩健，二層擴容協議鏈上結算量攀升",
-                "summary": "以太坊主網與主流 L2 結算流動性維持健康擴張，機構投資人持續評估現貨質押與鏈上資產配置策略。",
-                "strategy_actions": [],
-            },
-            {
-                "id": "evt_seed_2",
-                "time": time.strftime("%H:%M:%S", time.localtime(now - 75)),
-                "source": "ForexLive / FRED",
-                "domain": "macro",
-                "urgency": 6,
-                "sentiment": 0.20,
-                "headline": "聯準會貨幣政策觀察：核心通膨平穩收斂，流動性預期保持偏多",
-                "summary": "全球主要央行貨幣供給維持擴張基調，利差交易持穩，跨市場風險偏好獲得宏觀流動性支撐。",
-                "strategy_actions": [],
-            },
-            {
-                "id": "evt_seed_3",
-                "time": time.strftime("%H:%M:%S", time.localtime(now - 180)),
-                "source": "Decrypt / Protocol",
-                "domain": "tech",
-                "urgency": 5,
-                "sentiment": 0.30,
-                "headline": "數位資產基礎設施與 AI 運算架構深度整合，資料中心電力需求激增",
-                "summary": "高性能晶片算力需求外溢至分散式能源與加密運算設施，帶動科技與數位資產間的跨領域資本投入。",
-                "strategy_actions": [],
-            },
-            {
-                "id": "evt_seed_4",
-                "time": time.strftime("%H:%M:%S", time.localtime(now - 320)),
-                "source": "Bloomberg / SEC EDGAR",
-                "domain": "corporate",
-                "urgency": 5,
-                "sentiment": 0.15,
-                "headline": "上市企業持續評估儲備多元化策略，機構合規託管方案普及率提升",
-                "summary": "企業財報揭露更多加密資產託管與合規審計標準，場外大宗交易市場展現更成熟之流動性深度。",
-                "strategy_actions": [],
-            },
-            {
-                "id": "evt_seed_5",
-                "time": time.strftime("%H:%M:%S", time.localtime(now - 500)),
-                "source": "Global Wire Ingestion",
-                "domain": "geopolitics",
-                "urgency": 4,
-                "sentiment": 0.05,
-                "headline": "即時情報監聽器就緒：多域新聞流同步中 (CoinDesk · Decrypt · ForexLive)",
-                "summary": "情報系統啟動完成，已排程即時抓取主流加密及總體經濟新聞源。當前網關運作中，宏觀指令依即時情報動態評估。",
-                "strategy_actions": [],
-            },
-        ]
+        self.curated_events = []
+        self.current_state.latest_event = None
+
+    def ensure_traditional_chinese_seed_events(self) -> None:
+        """
+        Guarantees that all events currently in curated_events have Traditional Chinese
+        headlines and summaries. Used during bootstrap and reset before UI reveal.
+        """
+        for evt in self.curated_events:
+            head = evt.get("headline", "")
+            sum_txt = evt.get("summary", "")
+            if not IntelligenceHarvester._contains_cjk(head) or not IntelligenceHarvester._contains_cjk(sum_txt):
+                dummy_event = StructuredEvent(
+                    raw_title=head or evt.get("raw_title", ""),
+                    source=evt.get("source", ""),
+                    domain=evt.get("domain", "crypto"),
+                    urgency_score=evt.get("urgency", 5),
+                    sentiment_score=evt.get("sentiment", 0.0),
+                    headline_zh="",
+                    summary=sum_txt,
+                )
+                zh_h, zh_s = IntelligenceHarvester.ensure_traditional_chinese(dummy_event)
+                evt["headline"] = zh_h
+                evt["summary"] = zh_s
+        if not IntelligenceHarvester._contains_cjk(self.current_state.active_headline):
+            self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+        if self.curated_events:
+            self.current_state.latest_event = self.curated_events[0]
 
     def record_strategy_action(self, strat_id: str, name: str, action: str, badge_cls: str = "buy", is_macro_action: bool = False) -> None:
         """
@@ -137,7 +127,9 @@ class MacroCommander:
         """
         display_name = self.STRAT_LABELS.get(strat_id, name)
         if not self.curated_events:
-            self._seed_default_events()
+            # No real event yet: nothing honest to annotate. Never re-seed
+            # fabricated events just to have something to attach to (item 6).
+            return
 
         active_evt = self.curated_events[0] if self.curated_events else None
         if not active_evt:
@@ -158,6 +150,7 @@ class MacroCommander:
         })
         if len(acts) > 6:
             acts.pop()
+        self.current_state.latest_event = active_evt
 
     async def refresh_digest_async(self) -> MacroRegimeState:
         """
@@ -173,7 +166,10 @@ class MacroCommander:
                     if structured:
                         return await self.synthesize_regime(structured)
             except Exception as ex:
-                logger.warning("Error harvesting live feeds in refresh_digest_async: %s", ex)
+                if "cannot schedule new futures after shutdown" in str(ex):
+                    logger.debug("Live feed harvest skipped during shutdown: %s", ex)
+                else:
+                    logger.warning("Error harvesting live feeds in refresh_digest_async: %s", ex)
 
             recent = self.harvester.get_latest_events(10)
             if recent:
@@ -188,43 +184,67 @@ class MacroCommander:
         Returns complete intelligence diagnostic telemetry for the Macro Intel Hub panel.
         Honest metrics: reports 0 tokens when total_requests is 0.
         """
-        is_online = self.client.is_gateway_online
-        total_reqs = self.client.total_requests
-        if total_reqs == 0:
-            tokens_used = 0
-            tokens_saved = 0
-            status_text = "STANDBY" if not is_online else "ONLINE"
-        else:
-            tokens_used = self.client.total_tokens_used
-            tokens_saved = self.client.total_tokens_saved
-            status_text = "ONLINE" if is_online else "STANDBY"
+        is_online = bool(getattr(self.client, "is_gateway_online", False))
+        total_reqs = getattr(self.client, "total_requests", 0)
+        total_reqs = int(total_reqs) if isinstance(total_reqs, (int, float)) else 0
+        raw_used = getattr(self.client, "total_tokens_used", 0)
+        tokens_used = int(raw_used) if isinstance(raw_used, (int, float)) else 0
+        raw_saved = getattr(self.client, "total_tokens_saved", 0)
+        tokens_saved = int(raw_saved) if isinstance(raw_saved, (int, float)) else 0
+
+        status_text = "ONLINE" if is_online else "STANDBY"
+
+        # Unknown quota is reported as None, never as a fabricated 100.0%
+        # (item 6). The frontend already treats a non-number as unknown.
+        quota_pct: Optional[float] = None
+        if hasattr(self.client, "get_quota_pct") and callable(self.client.get_quota_pct):
+            try:
+                q_val = self.client.get_quota_pct()
+                if isinstance(q_val, (int, float)):
+                    quota_pct = float(q_val)
+            except Exception as e:
+                logger.debug("Failed to read quota from client, falling back to estimate: %s", e)
+        elif tokens_used > 0:
+            quota_pct = max(0.0, round((1.0 - (tokens_used / 100000.0)) * 100.0, 1))
+
+        tot_tokens = tokens_used + tokens_saved
+        dedup_pct = round((tokens_saved / tot_tokens) * 100.0, 1) if tot_tokens > 0 else 0.0
 
         return {
             "omniroute": {
                 "status": status_text,
-                "endpoint": self.client.base_url,
-                "model_ingest": self.client.model_ingest,
-                "model_commander": self.client.model_commander,
-                "quota_pct": 100.0,
+                "endpoint": str(getattr(self.client, "base_url", "http://localhost:20128/v1")),
+                "model_ingest": str(getattr(self.client, "model_ingest", "auto")),
+                "model_commander": str(getattr(self.client, "model_commander", "auto")),
+                "quota_pct": quota_pct,
                 "tokens_used": tokens_used,
                 "tokens_saved": tokens_saved,
-                "total_requests": self.client.total_requests,
-                "successful_requests": self.client.successful_requests,
-                "retried_requests": self.client.retried_requests,
-                "failed_requests": self.client.failed_requests,
-                "concurrency_limit": self.client.max_concurrent,
+                "dedup_pct": dedup_pct,
+                "total_requests": int(getattr(self.client, "total_requests", 0)),
+                "successful_requests": int(getattr(self.client, "successful_requests", 0)),
+                "retried_requests": int(getattr(self.client, "retried_requests", 0)),
+                "failed_requests": int(getattr(self.client, "failed_requests", 0)),
+                "concurrency_limit": int(getattr(self.client, "max_concurrent", 25)),
             },
             "macro_state": self.current_state.to_dict(),
             "events": self.curated_events[:25],
         }
 
-    def check_trade_veto(self, side: OrderSide, competitor_name: str) -> Tuple[bool, str]:
+    def check_trade_veto(self, side: OrderSide, competitor_name: str, is_close: bool = False) -> Tuple[bool, str]:
         """
         Enforces Strict Veto (Option A) against incoming orders from any of the 6 competitors.
+        The veto only ever blocks OPENING orders. Closing / reducing a
+        position lowers risk, so a close is never vetoed: under HOLD_CASH a
+        trader must still be able to sell a long (or cover a short) to stop
+        the bleeding instead of being locked inside a deteriorating market.
         Returns:
             (True, "PASSED") if trade complies with macro regime.
             (False, reason) if trade is strictly vetoed.
         """
+        # Closing a position is risk-reducing: never veto it (item 6).
+        if is_close:
+            return True, "PASSED"
+
         bias = self.current_state.directional_bias
 
         if bias == "LONG_ONLY" and side == OrderSide.SELL:
@@ -299,10 +319,10 @@ class MacroCommander:
                 '  "regime": "BULLISH_SURGE" | "BEARISH_PANIC" | "HIGH_VOLATILITY_CHOP" | "NORMAL",\n'
                 '  "directional_bias": "LONG_ONLY" | "SHORT_ONLY" | "BIDIRECTIONAL" | "HOLD_CASH",\n'
                 '  "risk_multiplier": float between 0.5 and 1.5,\n'
-                '  "active_headline": "繁體中文重點標題（約15字以內，精準描述主導市場之宏觀事件）",\n'
+                '  "active_headline": "Concise headline (under 15 words summarizing the macro narrative)",\n'
                 '  "confidence": float between 0.5 and 1.0\n'
                 "}\n"
-                "CRITICAL REQUIREMENT: The 'active_headline' MUST be strictly written in Traditional Chinese (繁體中文)."
+                "CRITICAL REQUIREMENT: The 'active_headline' MUST be written in Traditional Chinese (繁體中文), under 25 words summarizing the current macro narrative."
             )
 
             user_prompt = f"Analyze this live intelligence digest and declare the macro regime:\n\n{intel_digest}"
@@ -329,8 +349,11 @@ class MacroCommander:
                 if bias not in {"LONG_ONLY", "SHORT_ONLY", "BIDIRECTIONAL", "HOLD_CASH"}:
                     bias = "BIDIRECTIONAL"
 
-                risk_mult = max(0.5, min(1.5, float(parsed.get("risk_multiplier", 1.0))))
-                conf = max(0.0, min(1.0, float(parsed.get("confidence", 0.70))))
+                # LLM numbers are untrusted text: a non-numeric value (e.g.
+                # "high") falls back to the safe default instead of raising
+                # out of the veto pipeline (item 6).
+                risk_mult = max(0.5, min(1.5, _safe_float(parsed.get("risk_multiplier"), 1.0)))
+                conf = max(0.0, min(1.0, _safe_float(parsed.get("confidence"), 0.70)))
                 headline = str(parsed.get("active_headline", "Macro regime updated from live stream"))
 
                 self.current_state.regime = regime
@@ -341,16 +364,22 @@ class MacroCommander:
                 self.current_state.status = "ONLINE"
                 logger.info("Macro Commander Regime Updated: %s | Bias: %s | Headline: %s", regime, bias, headline)
             else:
-                # Fallback: if LLM unreachable or unparseable, compute deterministic sentiment aggregate
+                # Fallback: if LLM unreachable or unparseable, compute deterministic sentiment aggregate.
+                # Conservative bar on purpose: without the LLM this is keyword
+                # soup, so a single bearish word (sentiment -0.45) plus a
+                # common urgency-7 word ("rate"/"sec"/"fed") must NOT flip the
+                # whole arena into a directional veto. |avg_sent| >= 0.60
+                # needs at least two net directional words and urgency >= 8
+                # needs a genuinely severe keyword (item 6).
                 avg_sent = sum(e.sentiment_score for e in recent_events) / len(recent_events)
                 max_urg = max(e.urgency_score for e in recent_events)
 
-                if avg_sent > 0.40 and max_urg >= 7:
+                if avg_sent > 0.60 and max_urg >= 8:
                     self.current_state.regime = "BULLISH_SURGE"
                     self.current_state.directional_bias = "LONG_ONLY"
                     self.current_state.risk_multiplier = 1.25
                     self.current_state.active_headline = recent_events[-1].summary[:80]
-                elif avg_sent < -0.40 and max_urg >= 7:
+                elif avg_sent < -0.60 and max_urg >= 8:
                     self.current_state.regime = "BEARISH_PANIC"
                     self.current_state.directional_bias = "SHORT_ONLY"
                     self.current_state.risk_multiplier = 0.75
@@ -359,9 +388,12 @@ class MacroCommander:
                     self.current_state.regime = "NORMAL"
                     self.current_state.directional_bias = "BIDIRECTIONAL"
                     self.current_state.risk_multiplier = 1.0
-                    self.current_state.active_headline = "宏觀多空維持均衡結構，即時情報流同步運作中"
+                    self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
 
                 self.current_state.status = "STANDBY" if not self.client.is_gateway_online else "ONLINE"
+
+            if self.curated_events:
+                self.current_state.latest_event = self.curated_events[0]
 
             return self.current_state
 

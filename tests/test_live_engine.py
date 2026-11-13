@@ -138,17 +138,19 @@ def test_anti_churn_cooldown_prevents_same_timestamp_reentry():
     assert engine.comp_b.portfolio.position_qty > Decimal("0.0000")  # Entered!
 
 
-def test_resilient_quote_cache_fallback():
+def test_no_cached_price_when_feed_down():
+    # Offline mode removed (item 3): when every live source fails, the fetch
+    # must report offline instead of returning the last price as if live.
     engine = LiveArenaEngine(initial_cash=Decimal("3000.00"))
-    # Seed latest_quote
+    # Seed latest_quote with a perfectly good price
     cached_q = _quote("3550.00")
     engine.latest_quote = cached_q
-    # Test fetch_realtime_eth_quote fallback by simulating connection error
     import unittest.mock as mock
     with mock.patch.object(engine.session, "get", side_effect=Exception("Network Timeout")):
         q = engine.fetch_realtime_eth_quote()
-        assert q.price == Decimal("3550.00")
-        assert "Cache" in q.source
+        assert q.is_offline is True
+        assert q.price == Decimal("0.00")
+        assert q.source == "Market Offline (No Feed)"
 
 
 def test_strategy_palette_and_bracket_state_complete():
@@ -257,7 +259,41 @@ def test_offline_feed_safety_blocks_mock_fills():
     assert state["quote"]["is_offline"] is True
 
 
-def test_lifecycle_sequence_warmup_before_live_orders():
+def _fixture_bars(n=120):
+    """Deterministic test-only candles so bootstrap has a warm chart.
+
+    Tests run with ARENA_FAST_TEST=1, so the live feed returns no bars and
+    the test SQLite cache is empty; previously the (now deleted) synthetic
+    fallback supplied these. Fixture data, never production data.
+    """
+    import time
+    from decimal import Decimal
+    from src.data.eth_feed import CandleBar
+
+    now = time.time()
+    bars = []
+    price = 3500.0
+    for i in range(n):
+        bars.append(CandleBar(
+            timestamp=now - (n - i) * 60.0,
+            open_=Decimal(f"{price:.2f}"),
+            high=Decimal(f"{price + 5:.2f}"),
+            low=Decimal(f"{price - 5:.2f}"),
+            close=Decimal(f"{price:.2f}"),
+            volume=Decimal("15.00"),
+            ema_fast=Decimal(f"{price:.2f}"),
+            ema_slow=Decimal(f"{price:.2f}"),
+            rsi=Decimal("50.00"),
+            atr=Decimal("12.00"),
+        ))
+        price += 1.0
+    return bars
+
+
+def test_lifecycle_sequence_warmup_before_live_orders(monkeypatch):
+    # Tests run with ARENA_FAST_TEST=1, so no real bars are fetched; seed the
+    # bootstrap with deterministic fixture bars (test-only data).
+    monkeypatch.setattr("src.data.live_engine.ETHFeed.fetch_historical_bars", staticmethod(lambda *a, **k: _fixture_bars()))
     engine = LiveArenaEngine(initial_cash=Decimal("500000.00"), symbol="ETH/USD")
     assert engine.is_bootstrapped is False
     assert engine.live_orders_enabled is False
@@ -364,3 +400,44 @@ def test_live_engine_bidirectional_long_and_short_execution():
 
 
 
+
+
+def test_auto_evolve_fires_on_closed_trades():
+    """Evolution optimization (item 4b): auto-evolution fires after 30 closed
+    trades (not opens), earliest 30 minutes after the previous evolution;
+    the 6-hour cap still fires on time alone."""
+    from src.arena.order import OrderSide, OrderTicket, OrderType
+
+    engine = LiveArenaEngine(initial_cash=Decimal("3000.00"))
+    engine.latest_quote = _quote("3500.00")
+    now = time.time()
+    engine.last_evolve_ts = now
+
+    # 6-hour cap still works with zero trades.
+    assert engine._auto_evolve_reason(now=now + 21601) == "time"
+
+    def _round_trips(n):
+        broker = engine.broker
+        broker.on_tick(price=Decimal("3500.00"), timestamp=now)
+        for _ in range(n):
+            buy = OrderTicket("comp_cons", "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty=Decimal("0.1"), timestamp=now)
+            assert broker.submit_order(buy) is not None
+            sell = OrderTicket("comp_cons", "ETH/USD", OrderSide.SELL, OrderType.MARKET, qty=Decimal("0.1"), timestamp=now)
+            assert broker.submit_order(sell) is not None
+        engine._harvest_fills()
+
+    _round_trips(29)
+    assert engine._closed_trades_since_evolve == 29
+    assert engine._auto_evolve_due(now=now + 100) is False
+    assert engine._auto_evolve_due(now=now + 2000) is False  # debounce ok, still < 30
+
+    _round_trips(1)
+    assert engine._closed_trades_since_evolve == 30
+    assert engine._auto_evolve_due(now=now + 100) is False  # debounce blocks
+    assert engine._auto_evolve_reason(now=now + 1801) == "trades"
+    assert engine._auto_evolve_due(now=now + 1801) is True
+
+    # Evolving resets the counter.
+    engine.evolve_now(trigger="manual")
+    assert engine._closed_trades_since_evolve == 0
+    assert engine._auto_evolve_due(now=now + 1801) is False

@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Dict, Any
-from src.arena.order import OrderTicket
+from src.arena.order import OrderTicket, OrderSide, OrderType, PositionSide, ExecutionReason
 from src.arena.portfolio import Portfolio
 from src.arena.broker_sim import BrokerSim
 
@@ -11,7 +11,7 @@ from src.arena.broker_sim import BrokerSim
 @dataclass(frozen=True)
 class CompetitorGenome:
     """
-    Evolvable Risk, Exit & Leverage Parameter Genome (Style B: Homogeneous Strategy, Heterogeneous Genes).
+    Evolvable Risk, Exit & Leverage Parameter Genome (Homogeneous Strategy, Heterogeneous Genes).
     """
     position_ratio: Decimal = Decimal("0.40")
     risk_per_trade_pct: Decimal = Decimal("0.015")
@@ -26,6 +26,42 @@ class CompetitorGenome:
     generation: int = 1
     leverage_enabled: bool = False
     leverage: Decimal = Decimal("1.0")
+
+    def __post_init__(self) -> None:
+        """Validate gene ranges (unleveraged-equity risk semantics).
+
+        Bounds mirror the evolution clamps in GeneticEvolver.crossover_and_mutate,
+        so any genome the evolver can produce passes, and anything outside is
+        rejected at construction instead of silently trading on nonsense genes.
+        """
+        def _range(name: str, value: Decimal, low: Decimal, high: Decimal) -> None:
+            if value < low or value > high:
+                raise ValueError(f"CompetitorGenome.{name}={value} out of range [{low}, {high}]")
+
+        _range("position_ratio", self.position_ratio, Decimal("0.20"), Decimal("0.75"))
+        _range("risk_per_trade_pct", self.risk_per_trade_pct, Decimal("0.008"), Decimal("0.030"))
+        _range("stop_loss_pct", self.stop_loss_pct, Decimal("0.006"), Decimal("0.035"))
+        if self.take_profit_pct is not None:
+            _range("take_profit_pct", self.take_profit_pct, Decimal("0.015"), Decimal("0.065"))
+            # Risk:reward sanity: TP must pay at least 1.5R (same rule the evolver enforces).
+            if self.take_profit_pct < self.stop_loss_pct * Decimal("1.5"):
+                raise ValueError(
+                    f"CompetitorGenome.take_profit_pct={self.take_profit_pct} < 1.5x stop_loss_pct={self.stop_loss_pct}"
+                )
+        _range("atr_risk_pct", self.atr_risk_pct, Decimal("0.008"), Decimal("0.025"))
+        _range("atr_stop_mult", self.atr_stop_mult, Decimal("1.0"), Decimal("2.5"))
+        _range("atr_target_mult", self.atr_target_mult, Decimal("2.0"), Decimal("4.5"))
+        if self.atr_target_mult < self.atr_stop_mult * Decimal("1.5"):
+            raise ValueError(
+                f"CompetitorGenome.atr_target_mult={self.atr_target_mult} < 1.5x atr_stop_mult={self.atr_stop_mult}"
+            )
+        _range("trailing_trigger_pct", self.trailing_trigger_pct, Decimal("1.2"), Decimal("3.5"))
+        _range("trailing_distance_pct", self.trailing_distance_pct, Decimal("0.004"), Decimal("0.012"))
+        if self.cooldown_bars < 0:
+            raise ValueError(f"CompetitorGenome.cooldown_bars={self.cooldown_bars} must be >= 0")
+        if self.generation < 1:
+            raise ValueError(f"CompetitorGenome.generation={self.generation} must be >= 1")
+        _range("leverage", self.leverage, Decimal("1.0"), Decimal("5.0"))
 
 
 class BaseCompetitor(ABC):
@@ -76,6 +112,36 @@ class BaseCompetitor(ABC):
             self.portfolio.name = self.name
             self.portfolio.leverage = eff_lev
             self.portfolio.leverage_enabled = new_genome.leverage_enabled
+            if self.portfolio.is_circuit_breaker_tripped:
+                # Generation boundary = fresh risk clock. Resetting the flag
+                # alone is not enough: max_drawdown_pct is sticky, so the
+                # next bar (broker_sim) or order (risk_guard) would re-trip
+                # the breaker immediately and the strategy would stay dead
+                # forever while its equity-ranked genome is kept as ELITE.
+                # Clear the drawdown clock as well so the strategy gets one
+                # clean evaluation window next generation.
+                self.portfolio.is_circuit_breaker_tripped = False
+                self.portfolio.max_drawdown_pct = Decimal("0.00")
+                self.portfolio.peak_equity = self.portfolio.total_equity
+
+    def _close_ticket(self, broker: BrokerSim, timestamp: float) -> Optional[OrderTicket]:
+        """Market ticket closing the full open position, if any.
+
+        Side is the opposite of the current position (BUY covers a short,
+        SELL exits a long), so a SELL signal closes either direction.
+        """
+        if self.portfolio.position_qty <= Decimal("0"):
+            return None
+        close_side = OrderSide.BUY if self.portfolio.position_side == PositionSide.SHORT else OrderSide.SELL
+        return OrderTicket(
+            portfolio_id=self.portfolio_id,
+            symbol=broker.symbol,
+            side=close_side,
+            order_type=OrderType.MARKET,
+            qty=self.portfolio.position_qty,
+            reason=ExecutionReason.SIGNAL_EXIT,
+            timestamp=timestamp
+        )
 
     def compute_safe_buy_qty(
         self,
@@ -108,20 +174,22 @@ class BaseCompetitor(ABC):
         """
         Dynamic R-Multiple Volatility & Stop-Distance Adjusted Sizing (day-trader-skill Budget Manager).
         Sizes position so max loss if stopped out <= risk_budget (equity * risk_per_trade_pct).
-        Strictly bounded by genome.position_ratio (scaled with leverage) and broker available margin.
+        Risk budget and position cap are struck on UNLEVERAGED total equity:
+        leverage only affects margin affordability (inside compute_safe_buy_qty),
+        never the amount of equity risked or the notional cap.
+        Strictly bounded by genome.position_ratio (unleveraged equity basis) and broker available margin.
         """
         if entry_price <= Decimal("0"):
             return Decimal("0")
         # For ETH/Crypto, minimum stop distance is $2.00
         stop_dist = max(Decimal("2.00"), abs(entry_price - stop_price))
-        eff_lev = self.genome.leverage if self.genome.leverage_enabled and self.genome.leverage > Decimal("0") else Decimal("1.0")
         budget = (
             risk_budget
             if risk_budget is not None
-            else (self.portfolio.total_equity * self.genome.risk_per_trade_pct * eff_lev)
+            else (self.portfolio.total_equity * self.genome.risk_per_trade_pct)
         )
         risk_qty = (budget / stop_dist).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
-        max_cap_val = self.portfolio.total_equity * self.genome.position_ratio * eff_lev
+        max_cap_val = self.portfolio.total_equity * self.genome.position_ratio
         safe_cap_qty = self.compute_safe_buy_qty(max_cap_val, entry_price, broker)
         return min(risk_qty, safe_cap_qty)
 
@@ -132,9 +200,21 @@ class BaseCompetitor(ABC):
         market_price: Decimal,
         indicators: Dict[str, Any],
         broker: BrokerSim,
-        timestamp: float
+        timestamp: float,
+        side: OrderSide = OrderSide.BUY,
     ) -> Optional[OrderTicket]:
         """
         Translates a raw strategy signal into a sized, risk-managed OrderTicket.
+
+        Single entry/exit contract shared by backtest (TimeMachine) and live
+        (LiveArenaEngine): the strategy owns bracket math (SL / TP / sizing)
+        from its genome; the caller owns signal generation and live-only gates
+        (MTF, macro veto, MC EV gate, cooldown).
+        - signal "BUY": entry intent in the direction of `side`
+          (BUY = open long, SELL = open short).
+        - signal "SELL": close the existing position, if any (opposite side
+          of the current position; BUY to cover a short, SELL to exit a long).
+        - signal "HOLD": no new ticket (trailing management still runs where
+          implemented).
         """
         pass

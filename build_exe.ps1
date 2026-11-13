@@ -17,9 +17,11 @@ if (Test-Path "dist\TradeBot0_Arena.exe") {
 Write-Host "[*] Packaging Single Standalone TradeBot0_Arena.exe via PyInstaller (--onefile)..." -ForegroundColor Cyan
 .\.venv\Scripts\pyinstaller.exe --noconfirm --onefile --windowed --name "TradeBot0_Arena" `
     --add-data "src/gui/assets;src/gui/assets" `
+    --add-binary "src/compat/win7/api-ms-win-core-path-l1-1-0.dll;." `
     --collect-all webview `
     --collect-all clr_loader `
     --collect-all pythonnet `
+    --collect-all websockets `
     --hidden-import clr `
     --exclude-module dearpygui `
     main.py

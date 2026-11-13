@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional
 import time
@@ -34,10 +35,57 @@ class BrokerSim:
         self.competitor_caps: Dict[str, Decimal] = {}
         self.active_stops: Dict[str, OrderTicket] = {}    # portfolio_id -> active stop loss order
         self.active_targets: Dict[str, OrderTicket] = {}  # portfolio_id -> active take profit order
+        self.pending_orders: Dict[str, OrderTicket] = {}  # order_id -> resting LIMIT / STOP_MARKET awaiting trigger
         self.current_price: Decimal = Decimal("0.00")
+        self.current_atr: Decimal = Decimal("12.00")
+        self.pool_depth: Decimal = Decimal("200.0")
         self.execution_audit: List[FillEvent] = []
         self.rejection_audit: List[tuple[str, str]] = []
         self._seq_counter: int = 0
+
+    def reset_seq(self, start: int = 0) -> None:
+        """Raises the fill-sequence floor, never lowers it.
+
+        fill_seq is globally increasing: the ledger uses it as PRIMARY KEY
+        with INSERT OR REPLACE, so reusing a number would silently overwrite
+        an earlier fill. Warmup purges clear the in-memory audit but must
+        never rewind the counter.
+        """
+        self._seq_counter = max(self._seq_counter, int(start))
+
+    def compute_execution_slippage(
+        self,
+        side: OrderSide,
+        order_type: OrderType,
+        qty: Decimal,
+        mid_price: Decimal,
+        atr: Decimal = Decimal("12.0"),
+    ) -> Decimal:
+        """
+        Computes dynamic execution fill price factoring in half-spread,
+        quadratic orderbook liquidity depth exhaustion, and ATR volatility adverse selection.
+        """
+        if order_type == OrderType.LIMIT:
+            return mid_price
+
+        # 1. Base half-spread (0.01% or configured slippage_pct)
+        base_spread_pct = self.slippage_pct if self.slippage_pct > Decimal("0") else Decimal("0.0001")
+        half_spread = mid_price * base_spread_pct
+
+        # 2. Quadratic Market Depth impact
+        pool_depth = self.pool_depth if self.pool_depth > Decimal("0") else Decimal("200.0")
+        depth_ratio = min(Decimal("1.5"), qty / pool_depth)
+        impact_pct = Decimal("0.0005") * (depth_ratio ** 2)
+
+        # 3. Volatility adverse selection
+        vol_impact = (atr / mid_price) * Decimal("0.015") if mid_price > Decimal("0") else Decimal("0")
+
+        total_slippage = half_spread + (mid_price * (impact_pct + vol_impact))
+
+        if side == OrderSide.BUY:
+            return (mid_price + total_slippage).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        else:
+            return max(Decimal("0.01"), (mid_price - total_slippage).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP))
 
     def register_portfolio(
         self,
@@ -49,7 +97,49 @@ class BrokerSim:
 
     def submit_order(self, ticket: OrderTicket) -> Optional[FillEvent]:
         """
-        Executes an order ticket in paper arena mode without interactive blockage.
+        Public order entry: MARKET orders fill immediately; LIMIT and
+        STOP_MARKET orders only fill once the market touches their price.
+
+        An untriggered LIMIT / STOP_MARKET order is parked in
+        ``pending_orders`` (it is NOT a rejection and is NOT logged in
+        ``rejection_audit``) and re-evaluated on every ``on_tick`` against
+        the bar's high/low. ``on_tick`` bracket exits (SL / TP / liquidation /
+        circuit breaker) already evaluated their own triggers, so they call
+        ``_execute_fill`` directly and bypass this gate.
+        """
+        # Resting orders need a real market price to judge the trigger;
+        # before the first tick there is nothing to compare against.
+        if ticket.price is not None and self.current_price > Decimal("0"):
+            if ticket.order_type == OrderType.LIMIT:
+                if not self._limit_hit(ticket.side, ticket.price, self.current_price, self.current_price):
+                    self.pending_orders[ticket.order_id] = ticket
+                    return None
+            elif ticket.order_type == OrderType.STOP_MARKET:
+                if not self._stop_hit(ticket.side, ticket.price, self.current_price, self.current_price):
+                    self.pending_orders[ticket.order_id] = ticket
+                    return None
+        return self._execute_fill(ticket)
+
+    @staticmethod
+    def _limit_hit(side: OrderSide, limit_price: Decimal, low: Decimal, high: Decimal) -> bool:
+        """True when the bar traded at or through a LIMIT price."""
+        if side == OrderSide.BUY:
+            return low <= limit_price
+        return high >= limit_price
+
+    @staticmethod
+    def _stop_hit(side: OrderSide, stop_price: Decimal, low: Decimal, high: Decimal) -> bool:
+        """True when the bar traded at or through a STOP trigger price."""
+        if side == OrderSide.BUY:
+            return high >= stop_price
+        return low <= stop_price
+
+    def _execute_fill(self, ticket: OrderTicket) -> Optional[FillEvent]:
+        """
+        Immediate fill path: RiskGuard validation + execution + bracket
+        registration. The caller must already have evaluated any trigger
+        (public ``submit_order`` for resting orders, ``on_tick`` for
+        bracket exits whose trigger was checked against the bar high/low).
         """
         portfolio = self.portfolios.get(ticket.portfolio_id)
         if not portfolio:
@@ -66,16 +156,34 @@ class BrokerSim:
 
         # Determine execution price:
         # LIMIT orders fill at their limit price without adverse taker slippage;
-        # MARKET / STOP_MARKET orders fill with realistic slippage around reference price.
+        # MARKET / STOP_MARKET orders fill with realistic depth & volatility slippage around reference price.
         if ticket.order_type == OrderType.LIMIT and ticket.price is not None:
-            fill_price = ticket.price
+            fill_price = ticket.price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        elif self.slippage_pct <= Decimal("0"):
+            fill_price = ref_price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         else:
-            if ticket.side == OrderSide.BUY:
-                fill_price = ref_price * (Decimal("1") + self.slippage_pct)
-            else:
-                fill_price = ref_price * (Decimal("1") - self.slippage_pct)
+            fill_price = self.compute_execution_slippage(
+                side=ticket.side,
+                order_type=ticket.order_type,
+                qty=ticket.qty,
+                mid_price=ref_price,
+                atr=self.current_atr,
+            )
+            # Ensure dynamic depth/volatility slippage on opening orders never exceeds available cash margin
+            is_closing = (
+                (portfolio.position_side == PositionSide.LONG and ticket.side == OrderSide.SELL)
+                or (portfolio.position_side == PositionSide.SHORT and ticket.side == OrderSide.BUY)
+            )
+            if not is_closing and portfolio.position_qty >= Decimal("0"):
+                eff_lev = portfolio.leverage if portfolio.leverage_enabled and portfolio.leverage > Decimal("0") else Decimal("1.0")
+                trade_val = (ticket.qty * fill_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                req_margin = (trade_val / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                est_fee = (trade_val * portfolio.fee_rate).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                if (req_margin + est_fee) > portfolio.cash:
+                    # Fallback to base slippage price validated by RiskGuard
+                    mult = (Decimal("1") + self.slippage_pct) if ticket.side == OrderSide.BUY else (Decimal("1") - self.slippage_pct)
+                    fill_price = (ref_price * mult).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
 
-        fill_price = fill_price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         fee = (ticket.qty * fill_price * portfolio.fee_rate).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
 
         self._seq_counter += 1
@@ -177,7 +285,7 @@ class BrokerSim:
                             else stop_order.reason
                         )
 
-                    stop_fill = self.submit_order(OrderTicket(
+                    stop_fill = self._execute_fill(OrderTicket(
                         portfolio_id=p_id,
                         symbol=self.symbol,
                         side=exit_side,
@@ -197,18 +305,59 @@ class BrokerSim:
                 target_hit = (low_price <= target_order.price) if is_short else (high_price >= target_order.price)
                 if target_hit:
                     trigger_p = (min(bar_open, target_order.price) if is_short else max(bar_open, target_order.price)) if open_price is not None else target_order.price
-                    target_fill = self.submit_order(OrderTicket(
+                    # Take-profit pays the same execution slippage as a stop
+                    # fill (half-spread + depth + volatility adverse
+                    # selection): a LIMIT fill lands exactly on
+                    # ticket.price, so the slippage-adjusted price is baked
+                    # into the ticket instead of booking the win at the
+                    # exact target while the SL leg next to it pays slippage.
+                    # Gated on slippage_pct > 0: the venue convention is
+                    # that slippage 0 means no slippage anywhere.
+                    if self.slippage_pct > Decimal("0"):
+                        tp_price = self.compute_execution_slippage(
+                            side=exit_side,
+                            order_type=OrderType.MARKET,
+                            qty=p.position_qty,
+                            mid_price=trigger_p,
+                            atr=self.current_atr,
+                        )
+                    else:
+                        tp_price = trigger_p
+                    target_fill = self._execute_fill(OrderTicket(
                         portfolio_id=p_id,
                         symbol=self.symbol,
                         side=exit_side,
                         order_type=OrderType.LIMIT,
                         qty=p.position_qty,
-                        price=trigger_p,
+                        price=tp_price,
                         reason=ExecutionReason.TAKE_PROFIT,
                         timestamp=ts
                     ))
                     if target_fill:
                         fills.append(target_fill)
+
+        # 1b. Evaluate resting (pending) LIMIT / STOP_MARKET orders against
+        # this bar's high/low. A triggered order fills now: LIMIT at its
+        # limit price, STOP_MARKET at market with slippage around the stop.
+        # Validation runs again at fill time; an order that no longer
+        # passes is dropped (rejection is logged by _execute_fill).
+        if self.pending_orders:
+            for order_id in list(self.pending_orders.keys()):
+                ticket = self.pending_orders.get(order_id)
+                if ticket is None or ticket.price is None:
+                    continue
+                if ticket.order_type == OrderType.LIMIT:
+                    hit = self._limit_hit(ticket.side, ticket.price, low_price, high_price)
+                elif ticket.order_type == OrderType.STOP_MARKET:
+                    hit = self._stop_hit(ticket.side, ticket.price, low_price, high_price)
+                else:
+                    hit = False
+                if not hit:
+                    continue
+                del self.pending_orders[order_id]
+                pending_fill = self._execute_fill(replace(ticket, timestamp=ts))
+                if pending_fill:
+                    fills.append(pending_fill)
 
         # 2. Update end-of-bar valuation & check 15% drawdown circuit breaker
         for p_id, p in self.portfolios.items():
@@ -218,7 +367,7 @@ class BrokerSim:
                 if p.total_equity <= (p.margin_locked * Decimal("0.10")):
                     p.is_circuit_breaker_tripped = True
                     liq_exit_side = OrderSide.BUY if p.position_side == PositionSide.SHORT else OrderSide.SELL
-                    liq_fill = self.submit_order(OrderTicket(
+                    liq_fill = self._execute_fill(OrderTicket(
                         portfolio_id=p_id,
                         symbol=self.symbol,
                         side=liq_exit_side,
@@ -236,7 +385,7 @@ class BrokerSim:
                 p.is_circuit_breaker_tripped = True
                 if p.position_qty > Decimal("0"):
                     cb_exit_side = OrderSide.BUY if p.position_side == PositionSide.SHORT else OrderSide.SELL
-                    cb_fill = self.submit_order(OrderTicket(
+                    cb_fill = self._execute_fill(OrderTicket(
                         portfolio_id=p_id,
                         symbol=self.symbol,
                         side=cb_exit_side,
@@ -250,3 +399,5 @@ class BrokerSim:
                         fills.append(cb_fill)
 
         return fills
+
+    execute_order = submit_order

@@ -7,7 +7,7 @@ from src.competitors.conservative import ConservativeCompetitor
 from src.competitors.atr_dynamic import ATRDynamicCompetitor
 from src.competitors.trailing_guard import TrailingGuardCompetitor
 from src.competitors.orb import ORBCompetitor
-from src.competitors.vwap import VWAPPullbackCompetitor
+from src.competitors.session_mean import SessionMeanPullbackCompetitor
 from src.arena.leaderboard import Leaderboard
 
 def test_all_four_competitors_initialization_and_first_buy():
@@ -18,7 +18,7 @@ def test_all_four_competitors_initialization_and_first_buy():
     comp_c = ATRDynamicCompetitor()
     comp_d = TrailingGuardCompetitor()
     comp_e = ORBCompetitor()
-    comp_f = VWAPPullbackCompetitor()
+    comp_f = SessionMeanPullbackCompetitor()
     
     competitors = [comp_a, comp_b, comp_c, comp_d, comp_e, comp_f]
     for c in competitors:
@@ -32,7 +32,7 @@ def test_all_four_competitors_initialization_and_first_buy():
     indicators = {
         "atr": Decimal("35.00"),
         "orb_high": Decimal("2480.00"),
-        "vwap": Decimal("2500.00")
+        "mean_ref": Decimal("2500.00")
     }
     
     # Send BUY signal to all competitors
@@ -49,18 +49,22 @@ def test_all_four_competitors_initialization_and_first_buy():
         fill = broker.submit_order(ticket)
         assert fill is not None
         
-    # Check that positions reflect their specific risk budgets and leverage
-    # A (Aggressive 3x Lev ~70% of 100,000 * 3 = $210,000 / 2500 = 84 BTC)
-    assert comp_a.portfolio.position_qty == Decimal("84.0000")
+    # Check that positions reflect their specific risk budgets on UNLEVERAGED equity.
+    # Leverage affects only margin affordability, never the risk budget or notional cap.
+    # A (Aggressive: risk 2.5% of 100,000 = $2,500 / $87.50 stop = 28.5714 ETH,
+    #    capped by 70% position cap $70,000 / 2500 = 28.0000 ETH)
+    assert comp_a.portfolio.position_qty == Decimal("28.0000")
     # B (Conservative Spot 1x ~25% of 100,000 = $25,000 / 2500 = 10 BTC)
     assert comp_b.portfolio.position_qty == Decimal("10.0000")
     # C (ATR Dynamic 2x Lev)
     assert comp_c.portfolio.position_qty > Decimal("0")
-    # D (Trailing Guard 2x Lev ~40% of 100,000 * 2 = $80,000 / 2500 = 32 BTC)
-    assert comp_d.portfolio.position_qty == Decimal("32.0000")
-    # E (ORB Breakout 2.5x Lev ~45% of 100,000 * 2.5 = $112,500 / 2500 = 45 BTC)
-    assert comp_e.portfolio.position_qty == Decimal("45.0000")
-    # F (VWAP Pullback Spot 1x ~50% of 100,000 = $50,000 / 2500 = 20 BTC)
+    # D (Trailing Guard: risk 1.5% of 100,000 = $1,500 / $37.50 stop = 40 ETH,
+    #    capped by 40% position cap $40,000 / 2500 = 16.0000 ETH)
+    assert comp_d.portfolio.position_qty == Decimal("16.0000")
+    # E (ORB Breakout: risk 1.5% of 100,000 = $1,500 / $45 stop = 33.3333 ETH,
+    #    capped by 45% position cap $45,000 / 2500 = 18.0000 ETH)
+    assert comp_e.portfolio.position_qty == Decimal("18.0000")
+    # F (Session Mean Pullback Spot 1x ~50% of 100,000 = $50,000 / 2500 = 20 BTC)
     assert comp_f.portfolio.position_qty == Decimal("20.0000")
     
     # Check Leaderboard generation
@@ -108,34 +112,34 @@ def test_orb_competitor_box_breakout_and_r_multiple():
     assert ticket_buy.qty > Decimal("0")
 
 
-def test_vwap_competitor_pullback_and_r_multiple():
+def test_session_mean_competitor_pullback_and_r_multiple():
     broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
-    comp = VWAPPullbackCompetitor()
+    comp = SessionMeanPullbackCompetitor()
     broker.register_portfolio(comp.portfolio, max_position_ratio=comp.max_position_ratio)
     assert comp.portfolio.cash == Decimal("100000.00")
 
-    vwap = Decimal("2500.00")
+    mean_ref = Decimal("2500.00")
     atr = Decimal("20.00")
 
-    # 1. Price too far above VWAP (> 0.85 * 20 = 17 away): should NOT trigger pullback buy
+    # 1. Price too far above the session mean (> 0.85 * 20 = 17 away): should NOT trigger pullback buy
     far_price = Decimal("2530.00")
     broker.on_tick(far_price, timestamp=100.0)
     ticket_far = comp.evaluate_signal(
         signal="BUY",
         market_price=far_price,
-        indicators={"vwap": vwap, "atr": atr, "rsi": Decimal("50.00")},
+        indicators={"mean_ref": mean_ref, "atr": atr, "rsi": Decimal("50.00")},
         broker=broker,
         timestamp=100.0
     )
     assert ticket_far is None
 
-    # 2. Price pulls back near VWAP (within 17): triggers pullback BUY
+    # 2. Price pulls back near the session mean (within 17): triggers pullback BUY
     pullback_price = Decimal("2506.00")
     broker.on_tick(pullback_price, timestamp=110.0)
     ticket_buy = comp.evaluate_signal(
         signal="BUY",
         market_price=pullback_price,
-        indicators={"vwap": vwap, "atr": atr, "rsi": Decimal("48.00")},
+        indicators={"mean_ref": mean_ref, "atr": atr, "rsi": Decimal("48.00")},
         broker=broker,
         timestamp=110.0
     )
@@ -147,3 +151,44 @@ def test_vwap_competitor_pullback_and_r_multiple():
     assert ticket_buy.take_profit == Decimal("2541.20")
     assert ticket_buy.qty > Decimal("0")
 
+
+
+def test_evaluate_signal_short_entries_mirror_long_brackets():
+    """Item 2: evaluate_signal supports short entries (new `side` param).
+
+    Live routes short entries through evaluate_signal, so the mirrored
+    bracket must be the exact mirror of the long bracket, and a SELL
+    signal must close a short with a BUY ticket.
+    """
+    broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
+    comp = AggressiveCompetitor()
+    broker.register_portfolio(comp.portfolio, max_position_ratio=comp.max_position_ratio)
+    broker.on_tick(Decimal("2500.00"), timestamp=100.0)
+
+    ticket = comp.evaluate_signal(
+        signal="BUY",
+        market_price=Decimal("2500.00"),
+        indicators={"atr": Decimal("35.00")},
+        broker=broker,
+        timestamp=100.0,
+        side=OrderSide.SELL,
+    )
+    assert ticket is not None
+    assert ticket.side == OrderSide.SELL
+    # Aggressive genome SL 3.5%: short stop sits above entry, no TP (uncapped).
+    assert ticket.stop_loss == Decimal("2587.50")
+    assert ticket.take_profit is None
+    fill = broker.submit_order(ticket)
+    assert fill is not None
+    assert comp.portfolio.position_side.value == "SHORT"
+
+    close_ticket = comp.evaluate_signal(
+        signal="SELL",
+        market_price=Decimal("2500.00"),
+        indicators={},
+        broker=broker,
+        timestamp=110.0,
+    )
+    assert close_ticket is not None
+    assert close_ticket.side == OrderSide.BUY
+    assert close_ticket.qty == comp.portfolio.position_qty

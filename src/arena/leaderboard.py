@@ -115,16 +115,19 @@ class Leaderboard:
         max_dd_pct: float,
         sharpe: float,
         sortino: float,
-        is_tripped: bool
+        is_tripped: bool,
+        closed_trades: int = 0,
     ) -> float:
         """
-        Composite Fitness Function for Genetic Algorithm (Style B):
-        Rewards risk-adjusted returns (ROI + Sharpe + Sortino) while heavily penalizing
-        deep drawdowns and circuit-breaker violations.
+        Composite Multi-Objective Fitness Function for Genetic Algorithm:
+        Rewards risk-adjusted returns (ROI + Sharpe + Sortino) while penalizing
+        quadratic drawdown excursions, overtrading churn, and circuit-breaker violations.
         """
         penalty = -50.0 if is_tripped else 0.0
-        dd_penalty = max_dd_pct * 1.25
-        score = (roi_pct * 2.0) + (sharpe * 1.5) + (sortino * 1.0) - dd_penalty + penalty
+        dd_linear = max_dd_pct * 1.25
+        dd_quad = ((max_dd_pct / 15.0) ** 2) * 2.0
+        churn_penalty = max(0.0, (closed_trades - 50) / 100.0) * 1.5
+        score = (roi_pct * 2.0) + (sharpe * 1.5) + (sortino * 1.0) - dd_linear - dd_quad - churn_penalty + penalty
         return round(score, 2)
 
     @classmethod
@@ -141,7 +144,8 @@ class Leaderboard:
                 float(p.max_drawdown_pct),
                 sharpe,
                 sortino,
-                p.is_circuit_breaker_tripped
+                p.is_circuit_breaker_tripped,
+                closed_trades=closed_count,
             )
 
             stats = CompetitorStats(

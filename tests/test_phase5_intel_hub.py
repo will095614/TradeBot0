@@ -25,17 +25,36 @@ def test_intel_hub_telemetry_structure():
     assert "omniroute" in tel
     assert tel["omniroute"]["status"] == "ONLINE"
     assert tel["omniroute"]["endpoint"] == "http://localhost:20128/v1"
-    assert tel["omniroute"]["quota_pct"] == 100.0
+    assert tel["omniroute"]["quota_pct"] is None  # mock client reports no usable quota: unknown, not fabricated 100.0 (item 6)
     assert tel["omniroute"]["concurrency_limit"] == 25
     assert "macro_state" in tel
     assert "events" in tel
-    assert len(tel["events"]) >= 5
+    assert tel["events"] == []  # no fabricated seed events at construction (item 6)
 
 
 def test_record_strategy_actions_mapped_to_events():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from src.intelligence.ingestion import StructuredEvent
+
     mock_client = MagicMock()
     mock_client.is_gateway_online = False
+    mock_client.chat_json = AsyncMock(return_value=None)
     commander = MacroCommander(mock_client)
+
+    # Actions annotate the latest REAL event: synthesize one first (the
+    # old test relied on fabricated seed events, removed in item 6).
+    asyncio.run(commander.synthesize_regime([
+        StructuredEvent(
+            timestamp="2026-11-13T00:00:00Z",
+            source="CoinDesk",
+            domain="crypto",
+            entities_tickers=["ETH"],
+            urgency_score=5,
+            sentiment_score=0.1,
+            summary="Test event for strategy action mapping",
+        )
+    ]))
 
     # Record action for Strategy 1 (comp_agg)
     commander.record_strategy_action("comp_agg", "AGG", "Opened LONG 5.00 ETH", "buy")
@@ -56,7 +75,7 @@ def test_live_engine_refresh_intel_digest():
 
     state_before = engine.get_ui_state()
     assert "intel_hub" in state_before
-    assert state_before["cadence_sec"] == 5.0
+    assert state_before["cadence_sec"] == 1.0
 
     # Call refresh_intel_digest
     res = engine.refresh_intel_digest()

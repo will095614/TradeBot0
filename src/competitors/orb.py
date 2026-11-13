@@ -40,12 +40,13 @@ class ORBCompetitor(BaseCompetitor):
         market_price: Decimal,
         indicators: Dict[str, Any],
         broker: BrokerSim,
-        timestamp: float
+        timestamp: float,
+        side: OrderSide = OrderSide.BUY,
     ) -> Optional[OrderTicket]:
         if self.portfolio.is_circuit_breaker_tripped:
             return None
 
-        if signal == "BUY" and self.portfolio.position_qty == Decimal("0"):
+        if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
             orb_high = indicators.get("orb_high")
             orb_low = indicators.get("orb_low")
 
@@ -80,15 +81,41 @@ class ORBCompetitor(BaseCompetitor):
                 timestamp=timestamp
             )
 
-        elif signal == "SELL" and self.portfolio.position_qty > Decimal("0"):
+        elif signal == "BUY" and side == OrderSide.SELL and self.portfolio.position_qty == Decimal("0"):
+            orb_high = indicators.get("orb_high")
+            orb_low = indicators.get("orb_low")
+
+            if orb_high is not None and orb_low is not None:
+                orb_h = Decimal(str(orb_high))
+                orb_l = Decimal(str(orb_low))
+                orb_mid = (orb_h + orb_l) / Decimal("2")
+                # Breakdown condition: must pierce or trade below the range floor
+                if market_price > orb_l:
+                    return None
+                stop_dist = max(Decimal("10.00"), orb_mid - market_price)
+            else:
+                stop_dist = max(Decimal("10.00"), market_price * self.genome.stop_loss_pct)
+
+            stop_price = max(Decimal("0.01"), (market_price + stop_dist).quantize(Decimal("0.01")))
+            target_dist = stop_dist * Decimal("2.0")  # Strict 2.0R Target
+            target_price = (market_price - target_dist).quantize(Decimal("0.01"))
+
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            if qty <= Decimal("0"):
+                return None
+
             return OrderTicket(
                 portfolio_id=self.portfolio_id,
                 symbol=broker.symbol,
                 side=OrderSide.SELL,
                 order_type=OrderType.MARKET,
-                qty=self.portfolio.position_qty,
-                reason=ExecutionReason.SIGNAL_EXIT,
+                qty=qty,
+                stop_loss=stop_price,
+                take_profit=target_price,
+                reason=ExecutionReason.SIGNAL_ENTRY,
                 timestamp=timestamp
             )
+        elif signal == "SELL":
+            return self._close_ticket(broker, timestamp)
 
         return None

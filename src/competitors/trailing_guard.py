@@ -49,7 +49,8 @@ class TrailingGuardCompetitor(BaseCompetitor):
         market_price: Decimal,
         indicators: Dict[str, Any],
         broker: BrokerSim,
-        timestamp: float
+        timestamp: float,
+        side: OrderSide = OrderSide.BUY,
     ) -> Optional[OrderTicket]:
         if self.portfolio.is_circuit_breaker_tripped:
             return None
@@ -98,19 +99,12 @@ class TrailingGuardCompetitor(BaseCompetitor):
 
             if signal == "SELL":
                 self.highest_price_since_entry = Decimal("0")
+                self.lowest_price_since_entry = Decimal("0")
                 self.trailing_active = False
-                return OrderTicket(
-                    portfolio_id=self.portfolio_id,
-                    symbol=broker.symbol,
-                    side=OrderSide.SELL,
-                    order_type=OrderType.MARKET,
-                    qty=self.portfolio.position_qty,
-                    reason=ExecutionReason.SIGNAL_EXIT,
-                    timestamp=timestamp
-                )
+                return self._close_ticket(broker, timestamp)
 
         # Opening new position
-        if signal == "BUY" and self.portfolio.position_qty == Decimal("0"):
+        if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
             self.highest_price_since_entry = market_price
             self.trailing_active = False
 
@@ -123,6 +117,27 @@ class TrailingGuardCompetitor(BaseCompetitor):
                 portfolio_id=self.portfolio_id,
                 symbol=broker.symbol,
                 side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                qty=qty,
+                stop_loss=stop_price,
+                take_profit=None,
+                reason=ExecutionReason.SIGNAL_ENTRY,
+                timestamp=timestamp
+            )
+
+        elif signal == "BUY" and side == OrderSide.SELL and self.portfolio.position_qty == Decimal("0"):
+            self.lowest_price_since_entry = market_price
+            self.trailing_active = False
+
+            stop_price = (market_price * (Decimal("1") + self.genome.stop_loss_pct)).quantize(Decimal("0.01"))
+            qty = self.compute_r_multiple_qty(market_price, stop_price, broker)
+            if qty <= Decimal("0"):
+                return None
+
+            return OrderTicket(
+                portfolio_id=self.portfolio_id,
+                symbol=broker.symbol,
+                side=OrderSide.SELL,
                 order_type=OrderType.MARKET,
                 qty=qty,
                 stop_loss=stop_price,

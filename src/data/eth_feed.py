@@ -1,11 +1,14 @@
 from __future__ import annotations
 from decimal import Decimal
 from typing import List, Optional
+import logging
 import os
 import time
 import warnings
 import pandas as pd
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", message=".*inplace.*")
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -176,8 +179,8 @@ class ETHFeed:
                 df = yf.download(ticker, period=period, interval=interval, progress=False, timeout=3.5)
             if df is not None and not df.empty:
                 return df
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("yfinance fetch failed, trying CCXT fallback: %s", e)
 
         # Automatic CCXT Public Exchange Fallback (Kraken ETH/USD, zero API key needed)
         try:
@@ -194,8 +197,8 @@ class ETHFeed:
                 df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="ms", utc=True)
                 df = df.set_index("Timestamp")
                 return df
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("CCXT fallback fetch failed, no bars available: %s", e)
 
         return pd.DataFrame()
 

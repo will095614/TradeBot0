@@ -1,9 +1,15 @@
-# TradeBot0 Core Financial & Arena Dependencies
-pytest>=8.0.0
-yfinance>=0.2.40
-pandas>=2.2.0
-numpy>=1.26.0
-ccxt>=4.3.0
-requests>=2.31.0
-pywebview>=5.0.0
-pyinstaller>=6.5.0
+# TradeBot0 直接依賴
+# 版本以 2026-11-13 實測可用的 .venv 為準；.venv 內另有 graphify 等工具依賴，不列在此
+aiohttp==3.14.5
+ccxt==4.5.91
+numpy==2.5.4
+pandas==3.1.0
+pywebview==6.2.1
+requests==2.34.2
+websockets==17.4
+yfinance==1.7.0
+
+# 開發與建置
+pytest==9.2.0
+pytest-asyncio==1.4.1
+pyinstaller==6.22.3

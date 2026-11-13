@@ -121,6 +121,19 @@ def _clean_html_text(raw_html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _contains_word(text: str, word: str) -> bool:
+    """Word-boundary keyword match.
+
+    Plain `word in text` substring matching misfires constantly on financial
+    text: "bear" matches "bearing", "ai" matches "said", "ban" matches
+    "bank", "sec" matches "second", "eth" matches "method". A keyword only
+    counts when it appears as a whole word (item 6).
+    """
+    if not text or not word:
+        return False
+    return re.search(r"\b" + re.escape(word.strip().lower()) + r"\b", text.lower()) is not None
+
+
 def parse_rss_atom(xml_text: str, source_name: str, domain: str) -> List[RawEvent]:
     """
     Parses RSS 2.0 and Atom feeds into a standardized list of RawEvent items.
@@ -204,7 +217,10 @@ def parse_polymarket_events(data: Any) -> List[RawEvent]:
         if not isinstance(item, dict):
             continue
         title = item.get("title") or item.get("question") or ""
-        vol = float(item.get("volume24hr") or 0.0)
+        try:
+            vol = float(item.get("volume24hr") or 0.0)
+        except (TypeError, ValueError):
+            vol = 0.0
         slug = item.get("slug") or ""
         url = f"https://polymarket.com/event/{slug}" if slug else "https://polymarket.com"
 
@@ -217,8 +233,8 @@ def parse_polymarket_events(data: Any) -> List[RawEvent]:
                 try:
                     pairs = [f"{o}: {float(p)*100:.0f}%" for o, p in zip(outcomes, outcome_prices)]
                     odds_str = " | Odds: " + ", ".join(pairs)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to format Polymarket odds, omitting: %s", e)
 
         if title:
             full_title = f"[Polymarket 24h Vol ${vol:,.0f}] {title}{odds_str}"
@@ -246,7 +262,10 @@ def parse_reddit_posts(data: Any, subreddit: str, domain: str) -> List[RawEvent]
     for child in children:
         d = child.get("data", {})
         title = d.get("title", "").strip()
-        score = int(d.get("score", 0))
+        try:
+            score = int(d.get("score", 0))
+        except (TypeError, ValueError):
+            score = 0
         permalink = d.get("permalink", "")
         url = f"https://reddit.com{permalink}" if permalink else f"https://reddit.com/r/{subreddit}"
 
@@ -313,8 +332,8 @@ class InterruptDebouncer:
                 p_ann = str(params[0].annotation).lower()
                 if "batch" in p_name or "events" in p_name or "list" in p_ann:
                     is_batch = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to inspect dispatch function signature, using per-event dispatch: %s", e)
 
         if is_batch:
             try:
@@ -374,10 +393,15 @@ class IntelligenceHarvester:
         Returns newly discovered, deduplicated RawEvents.
         """
         if os.environ.get("ARENA_FAST_TEST") == "1":
+            # Test fixture only: clearly marked synthetic data for the test
+            # suite (conftest sets ARENA_FAST_TEST=1). Never presented as
+            # real news: source is "Test Feed" and titles carry a [TEST]
+            # marker, so these events can never be mistaken for genuine
+            # intelligence in the veto pipeline (item 6).
             now = time.time()
             return [
-                RawEvent(source="CoinDesk", domain="crypto", title="Ethereum L2 Scaling Inflows Rise 15%", url="https://coindesk.com", timestamp=now),
-                RawEvent(source="ForexLive", domain="macro", title="Fed Reiterates Rate Path Stability in Policy Note", url="https://forexlive.com", timestamp=now),
+                RawEvent(source="Test Feed", domain="crypto", title="[TEST] Ethereum L2 Scaling Inflows Rise 15%", url="https://coindesk.com", timestamp=now),
+                RawEvent(source="Test Feed", domain="macro", title="[TEST] Fed Reiterates Rate Path Stability in Policy Note", url="https://forexlive.com", timestamp=now),
             ]
 
         feed_targets = [
@@ -399,6 +423,9 @@ class IntelligenceHarvester:
                     for e in parsed[:max_per_source]:
                         if self.dedup.is_new(e.title, e.url):
                             fresh_events.append(e)
+                        else:
+                            if hasattr(self.client, "record_tokens_saved"):
+                                self.client.record_tokens_saved(420)
             except Exception as ex:
                 logger.debug("Live feed fetch error for %s: %s", source_name, ex)
 
@@ -410,6 +437,9 @@ class IntelligenceHarvester:
         for e in raw_events:
             if self.dedup.is_new(e.title, e.url):
                 fresh.append(e)
+            else:
+                if hasattr(self.client, "record_tokens_saved"):
+                    self.client.record_tokens_saved(420)
         return fresh
 
     async def process_batch(self, events: List[RawEvent]) -> List[StructuredEvent]:
@@ -451,13 +481,15 @@ class IntelligenceHarvester:
             f"{news_block}"
         )
 
-        parsed_json = await self.client.chat_json(
-            model=self.client.model_ingest,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.0,
-            max_tokens=2500,
-        )
+        parsed_json = None
+        if not (hasattr(self.client, "is_gateway_online") and self.client.is_gateway_online is False):
+            parsed_json = await self.client.chat_json(
+                model=self.client.model_ingest,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.0,
+                max_tokens=2500,
+            )
 
         structured_results: List[StructuredEvent] = []
         iso_now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -519,8 +551,8 @@ class IntelligenceHarvester:
                 bull_words = ["surge", "soar", "gain", "rally", "rise", "jump", "record", "ath", "inflow", "boost", "bull", "approve", "expand", "profit", "deal", "launch", "breakout", "adoption"]
                 bear_words = ["crash", "plunge", "drop", "fall", "dump", "hack", "exploit", "lawsuit", "sue", "ban", "freeze", "investigate", "fraud", "bear", "fine", "outflow", "liquidation", "slump"]
 
-                bull_cnt = sum(1 for w in bull_words if w in combined_text)
-                bear_cnt = sum(1 for w in bear_words if w in combined_text)
+                bull_cnt = sum(1 for w in bull_words if _contains_word(combined_text, w))
+                bear_cnt = sum(1 for w in bear_words if _contains_word(combined_text, w))
 
                 if bull_cnt > bear_cnt:
                     sentiment = min(0.85, 0.25 * (bull_cnt - bear_cnt) + 0.2)
@@ -528,28 +560,28 @@ class IntelligenceHarvester:
                     sentiment = max(-0.85, -0.25 * (bear_cnt - bull_cnt) - 0.2)
 
                 # Real urgency rubric
-                if any(w in combined_text for w in ["emergency", "black swan", "halt", "freeze", "war", "ban", "indict", "billion"]):
+                if any(_contains_word(combined_text, w) for w in ["emergency", "black swan", "halt", "freeze", "war", "ban", "indict", "billion"]):
                     urgency = 9
-                elif any(w in combined_text for w in ["lawsuit", "sues", "sec", "fed", "rate", "subpoena", "hack", "etf", "tariff"]):
+                elif any(_contains_word(combined_text, w) for w in ["lawsuit", "sues", "sec", "fed", "rate", "subpoena", "hack", "etf", "tariff"]):
                     urgency = 7
-                elif any(w in combined_text for w in ["deal", "tax", "report", "policy", "million", "launch", "upgrade"]):
+                elif any(_contains_word(combined_text, w) for w in ["deal", "tax", "report", "policy", "million", "launch", "upgrade"]):
                     urgency = 6
 
                 # Ticker & Entity detection
                 tickers = []
-                if "eth" in combined_text or "ethereum" in combined_text or "ether" in combined_text:
+                if _contains_word(combined_text, "eth") or _contains_word(combined_text, "ethereum") or _contains_word(combined_text, "ether"):
                     tickers.append("ETH")
-                if "btc" in combined_text or "bitcoin" in combined_text:
+                if _contains_word(combined_text, "btc") or _contains_word(combined_text, "bitcoin"):
                     tickers.append("BTC")
-                if "sol" in combined_text or "solana" in combined_text:
+                if _contains_word(combined_text, "sol") or _contains_word(combined_text, "solana"):
                     tickers.append("SOL")
-                if "xrp" in combined_text or "ripple" in combined_text:
+                if _contains_word(combined_text, "xrp") or _contains_word(combined_text, "ripple"):
                     tickers.append("XRP")
-                if "fed" in combined_text or "fomc" in combined_text or "rate" in combined_text or "powell" in combined_text:
+                if _contains_word(combined_text, "fed") or _contains_word(combined_text, "fomc") or _contains_word(combined_text, "rate") or _contains_word(combined_text, "powell"):
                     tickers.append("FED")
-                if "sec" in combined_text or "cftc" in combined_text:
+                if _contains_word(combined_text, "sec") or _contains_word(combined_text, "cftc"):
                     tickers.append("SEC")
-                if "ai" in combined_text or "anthropic" in combined_text or "openai" in combined_text or "nvidia" in combined_text:
+                if _contains_word(combined_text, "ai") or _contains_word(combined_text, "anthropic") or _contains_word(combined_text, "openai") or _contains_word(combined_text, "nvidia"):
                     tickers.append("AI")
                 if not tickers:
                     tickers.append("ETH" if raw.domain == "crypto" else "MACRO")
@@ -632,9 +664,9 @@ class IntelligenceHarvester:
         # Identify primary entities in Traditional Chinese
         entities_zh: List[str] = []
         entity_map = [
-            (("ethereum", "ether", "eth ", "eth's", "vitalik"), "以太坊 (ETH)"),
+            (("ethereum", "ether", "eth", "vitalik"), "以太坊 (ETH)"),
             (("bitcoin", "btc"), "比特幣 (BTC)"),
-            (("solana", "sol "), "Solana (SOL)"),
+            (("solana", "sol"), "Solana (SOL)"),
             (("xrp", "ripple"), "瑞波幣 (XRP)"),
             (("dogecoin", "doge"), "狗狗幣 (DOGE)"),
             (("stablecoin", "usdt", "usdc", "tether", "circle"), "穩定幣市場"),
@@ -649,7 +681,7 @@ class IntelligenceHarvester:
             (("whale", "institutional", "microstrategy", "strategy", "treasury reserve"), "機構與巨鯨部位"),
         ]
         for keys, label_zh in entity_map:
-            if any(k in combined for k in keys) and label_zh not in entities_zh:
+            if any(_contains_word(combined, k) for k in keys) and label_zh not in entities_zh:
                 entities_zh.append(label_zh)
 
         domain_label_map = {
@@ -663,28 +695,28 @@ class IntelligenceHarvester:
         primary_subject = "、".join(entities_zh[:2]) if entities_zh else domain_label_map.get(domain, "全球金融市場")
 
         # Identify action / theme in Traditional Chinese
-        if any(w in combined for w in ["hack", "exploit", "stolen", "breach", "phishing"]):
+        if any(_contains_word(combined, w) for w in ["hack", "exploit", "stolen", "breach", "phishing"]):
             action_head = "爆出資安漏洞與異常資金流動警報"
             action_body = "鏈上監測顯示相關協議或平台出現安全事件，市場短線避險情緒升溫，建議留意資金外溢與波動風險"
-        elif any(w in combined for w in ["lawsuit", "sues", "sued", "indict", "probe", "subpoena", "ban", "crackdown", "fine"]):
+        elif any(_contains_word(combined, w) for w in ["lawsuit", "sues", "sued", "indict", "probe", "subpoena", "ban", "crackdown", "fine"]):
             action_head = "面臨監管審查與法律合規挑戰"
             action_body = "監管機構針對相關業務展開合規調查或訴訟程序，政策不確定性可能引發相關板塊短線波動"
-        elif any(w in combined for w in ["etf", "inflow", "institutional", "blackrock", "fidelity", "accumulate", "buy", "purchases"]):
+        elif any(_contains_word(combined, w) for w in ["etf", "inflow", "institutional", "blackrock", "fidelity", "accumulate", "buy", "purchases"]):
             action_head = "機構資金配置與場外流動性動態更新"
             action_body = "機構投資人與大型資金池持續調整數位資產部位，現貨市場籌碼結構與流動性深度出現顯著變化"
-        elif any(w in combined for w in ["fed", "fomc", "powell", "rate", "cpi", "inflation", "jobs", "payroll", "yield", "treasury", "dollar", "dxy"]):
+        elif any(_contains_word(combined, w) for w in ["fed", "fomc", "powell", "rate", "cpi", "inflation", "jobs", "payroll", "yield", "treasury", "dollar", "dxy"]):
             action_head = "釋出最新總經政策與利率預期訊號"
             action_body = "總體經濟指標與央行官員談話牽動美元流動性預期，跨市場風險資產與加密貨幣定價同步反應"
-        elif any(w in combined for w in ["tariff", "trade war", "sanction", "geopolit", "war", "red sea", "middle east"]):
+        elif any(_contains_word(combined, w) for w in ["tariff", "trade war", "sanction", "geopolit", "war", "red sea", "middle east"]):
             action_head = "國際貿易政策與地緣局勢最新進展"
             action_body = "跨國關稅政策與地緣局勢變動影響全球供應鏈與避險資金流向，市場密切評估通膨與風險溢價"
-        elif any(w in combined for w in ["surge", "soar", "rally", "jump", "breakout", "record", "ath", "gain", "bull"]):
+        elif any(_contains_word(combined, w) for w in ["surge", "soar", "rally", "jump", "breakout", "record", "ath", "gain", "bull"]):
             action_head = "買盤動能強勁推動價格與活躍度攀升"
             action_body = "受市場利多催化與資金流入帶動，相關資產買盤動能明顯轉強，短線多頭結構維持優勢"
-        elif any(w in combined for w in ["crash", "plunge", "drop", "fall", "dump", "slump", "liquidation", "outflow", "bear"]):
+        elif any(_contains_word(combined, w) for w in ["crash", "plunge", "drop", "fall", "dump", "slump", "liquidation", "outflow", "bear"]):
             action_head = "遭遇獲利了結與短線回調修正壓力"
             action_body = "市場出現階段性賣壓與槓桿部位清算，短線價格回測支撐區間，量化策略維持嚴格風控止損"
-        elif any(w in combined for w in ["launch", "upgrade", "partner", "expand", "integrate", "mainnet", "testnet", "adopt"]):
+        elif any(_contains_word(combined, w) for w in ["launch", "upgrade", "partner", "expand", "integrate", "mainnet", "testnet", "adopt"]):
             action_head = "宣布生態技術升級與重大策略合作"
             action_body = "底層網路效能升級與跨平台機構合作持續推進，有助於提升鏈上結算效率與長期基本面價值"
         else:

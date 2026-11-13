@@ -123,6 +123,19 @@ class OmniRouteClient:
         self.retried_requests: int = 0
         self.total_tokens_used: int = 0
         self.total_tokens_saved: int = 0
+        self.daily_quota_limit: int = int(os.getenv("DAILY_TOKEN_QUOTA", "100000"))
+
+    def record_tokens_saved(self, tokens: int) -> None:
+        """Records tokens saved via deduplication buffers or cache hits."""
+        if tokens > 0:
+            self.total_tokens_saved += int(tokens)
+
+    def get_quota_pct(self) -> float:
+        """Calculates dynamic available quota percentage against daily budget."""
+        if self.daily_quota_limit <= 0:
+            return 100.0
+        remaining = max(0, self.daily_quota_limit - self.total_tokens_used)
+        return round((remaining / self.daily_quota_limit) * 100.0, 1)
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         try:
@@ -146,8 +159,8 @@ class OmniRouteClient:
             if self._session and not self._session.closed and self._owns_session:
                 try:
                     await self._session.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to close previous session: %s", e)
             timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
             self._session = aiohttp.ClientSession(timeout=timeout)
             self._session_loop = current_loop
@@ -167,7 +180,8 @@ class OmniRouteClient:
                     self.is_gateway_online = bool(data.get("ok", True))
                 else:
                     self.is_gateway_online = False
-        except Exception:
+        except Exception as e:
+            logger.debug("Gateway health check failed: %s", e)
             self.is_gateway_online = False
 
         self.last_health_check_ts = asyncio.get_running_loop().time()
@@ -217,15 +231,22 @@ class OmniRouteClient:
                         if status == 200:
                             body = await resp.json()
                             self.is_gateway_online = True
-                            self.successful_requests += 1
                             usage = body.get("usage", {})
                             if isinstance(usage, dict):
-                                self.total_tokens_used += int(usage.get("total_tokens", 0))
+                                try:
+                                    self.total_tokens_used += int(usage.get("total_tokens", 0))
+                                except (TypeError, ValueError):
+                                    logger.debug("OmniRoute usage.total_tokens not numeric: %r", usage.get("total_tokens"))
                             choices = body.get("choices", [])
                             if choices and "message" in choices[0]:
                                 content = choices[0]["message"].get("content", "")
                                 parsed = extract_json(content)
                                 if parsed is not None:
+                                    # Count a success only once usable JSON is
+                                    # actually in hand: a 200 with unparseable
+                                    # content is not a successful request
+                                    # (item 6).
+                                    self.successful_requests += 1
                                     return parsed
                                 logger.warning("OmniRoute 200 OK returned unparseable content: %s", content[:150])
                             return None
@@ -288,13 +309,13 @@ class OmniRouteClient:
                     loop.create_task(self._session.close())
                 elif self._session_loop is None or not self._session_loop.is_closed():
                     asyncio.run(self._session.close())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to close session synchronously: %s", e)
             self._session = None
 
     def __del__(self) -> None:
         try:
             self.close_sync()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to close session in destructor: %s", e)
 

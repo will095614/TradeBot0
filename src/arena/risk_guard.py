@@ -61,13 +61,14 @@ class RiskGuard:
         order_val = (ticket.qty * effective_order_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         eff_lev = portfolio.leverage if portfolio.leverage_enabled and portfolio.leverage > Decimal("0") else Decimal("1.0")
 
-        # Check maximum single position cap relative to total equity with leverage
-        max_allowed_val = (portfolio.total_equity * max_position_ratio * eff_lev * Decimal("1.005")).quantize(
+        # Check maximum single position cap relative to UNLEVERAGED total equity.
+        # Leverage affects only the margin required (below), never the notional cap.
+        max_allowed_val = (portfolio.total_equity * max_position_ratio * Decimal("1.005")).quantize(
             PRECISION_CASH, rounding=ROUND_HALF_UP
         )
         current_pos_val = (portfolio.position_qty * market_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         if (current_pos_val + order_val) > max_allowed_val:
-            return False, f"Order exceeds max position cap ({max_position_ratio * eff_lev * Decimal('100')}%)"
+            return False, f"Order exceeds max position cap ({max_position_ratio * Decimal('100')}% of equity)"
 
         # Check cash margin sufficiency including fee buffer
         required_margin = (order_val / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)

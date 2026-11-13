@@ -19,7 +19,7 @@ from src.competitors.conservative import ConservativeCompetitor
 from src.competitors.atr_dynamic import ATRDynamicCompetitor
 from src.competitors.trailing_guard import TrailingGuardCompetitor
 from src.competitors.orb import ORBCompetitor
-from src.competitors.vwap import VWAPPullbackCompetitor
+from src.competitors.session_mean import SessionMeanPullbackCompetitor
 from src.data.eth_feed import ETHFeed, CandleBar
 
 
@@ -41,7 +41,7 @@ class TimeMachineArena:
         self.comp_c = ATRDynamicCompetitor(initial_cash=initial_cash)
         self.comp_d = TrailingGuardCompetitor(initial_cash=initial_cash)
         self.comp_e = ORBCompetitor(initial_cash=initial_cash)
-        self.comp_f = VWAPPullbackCompetitor(initial_cash=initial_cash)
+        self.comp_f = SessionMeanPullbackCompetitor(initial_cash=initial_cash)
         self.competitors = [
             self.comp_a, self.comp_b, self.comp_c,
             self.comp_d, self.comp_e, self.comp_f
@@ -70,10 +70,17 @@ class TimeMachineArena:
             bar_vol = bar.volume if bar.volume > Decimal("0") else Decimal("100.0")
             cum_vol += bar_vol
             cum_pv += (typ_price * bar_vol)
+            # Backtest bars carry volume, so this IS the genuine session VWAP.
+            # It is passed as "mean_ref": live has no per-bar volume and passes
+            # the session typical-price mean under the same key.
             vwap = (cum_pv / cum_vol).quantize(Decimal("0.01")) if cum_vol > 0 else bar.close
 
-            orb_high = max(b.high for b in window_bars)
-            orb_low = min(b.low for b in window_bars)
+            # ORB range is built from CLOSED bars only: including the current
+            # bar makes its own high the range ceiling, so a breakout can
+            # almost never trigger (ORB was dead in backtest).
+            orb_window = window_bars[:-1]
+            orb_high = max(b.high for b in orb_window) if orb_window else bar.high
+            orb_low = min(b.low for b in orb_window) if orb_window else bar.low
             orb_mid = (orb_high + orb_low) / Decimal("2")
 
             # 1. Advance exchange venue with full OHLC candle prices (checks intra-bar stops & targets)
@@ -91,7 +98,7 @@ class TimeMachineArena:
                 "atr": bar.atr,
                 "high": bar.high,
                 "low": bar.low,
-                "vwap": vwap,
+                "mean_ref": vwap,
                 "orb_high": orb_high,
                 "orb_low": orb_low,
                 "orb_mid": orb_mid,
@@ -121,7 +128,7 @@ class TimeMachineArena:
         preserve_portfolio: bool = True
     ) -> List[str]:
         """
-        Triggers Style B Genetic Evolution (Elitism + Crossover + Mutation).
+        Triggers Genetic Evolution (Elitism + Crossover + Mutation).
         If preserve_portfolio is True (default), open positions, active brackets,
         and compounding equity are preserved across generations.
         """
@@ -191,7 +198,7 @@ class TimeMachineArena:
         md.extend([
             "\n## 2. Arena Tactical Synthesis & Lessons",
             synthesis,
-            "\n## 3. Active Competitor Genomes (Style B Parameters)",
+            "\n## 3. Active Competitor Genomes (Parameters)",
             "| Portfolio ID | Gen | Position Cap | Stop Loss % | Take Profit % | ATR Risk % | Trailing Trigger / Dist |",
             "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
         ])

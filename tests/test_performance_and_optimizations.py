@@ -255,14 +255,22 @@ def test_stageshow_ui_design_system_integrity():
 
     # Unified Stageshow + AIMRAN Liquid Glass components in HTML & JS
     for marker in [
-        "ss-window-lights", "ss-seg__thumb", "ss-badge", "ss-meter",
+        "lg-brand-emblem", "ss-seg__thumb", "ss-badge", "ss-meter",
         "chartScrubReadout", "rightTabSeg", "lg-glass", "lg-spot-card",
-        "lg-seg", "lg-switch", "lg-orbits"
+        "lg-seg", "lg-switch", "lg-orbits", "spatial-dock-bar",
+        "lg-dock-pod--island", "spatial-upper-stage", "lg-vessel-card",
+        "lg-fluid-tube", "lg-optical-iris", "strategies-bento-dock",
+        "isoClockPill"
     ]:
         assert marker in html, f"Missing unified UI element {marker} in index.html"
 
+    for wall in ['data-wallpaper="ocean"', 'data-wallpaper="aurora"', 'data-wallpaper="sunset"', 'data-wallpaper="emerald"']:
+        assert wall in css, f"Missing AIMRAN wallpaper preset {wall} in app.css"
+
     assert "function syncSegThumb" in js
     assert "function trackLgSpotlight" in js
+    assert "function setLgWallpaper" in js
+    assert "lg-strat-orb" in js
     assert "chartScrubReadout" in js
 
     # 100% DOM ID parity check: every static getElementById in app.js must exist in index.html
@@ -272,6 +280,343 @@ def test_stageshow_ui_design_system_integrity():
     assert not missing_ids, f"DOM IDs referenced in app.js but missing in index.html: {missing_ids}"
 
 
+def test_phase1_websocket_feed_parsing_and_fast_path_fallback():
+    import time
+    from src.data.ws_feed import StreamingCryptoFeed
+    from src.data.live_engine import LiveArenaEngine
 
+    received = []
+    feed = StreamingCryptoFeed(on_quote_callback=lambda q: received.append(q))
+    sample_payload = {
+        "c": "2645.50",
+        "b": "2645.40",
+        "a": "2645.60",
+        "h": "2710.00",
+        "l": "2590.00",
+        "v": "145230.75",
+        "P": "2.15",
+    }
+    quote = feed._parse_binance_ticker(sample_payload)
+    assert quote is not None
+    assert quote.price == Decimal("2645.50")
+    assert quote.bid == Decimal("2645.40")
+    assert quote.ask == Decimal("2645.60")
+    assert quote.source.startswith("Binance WS")
+    assert quote.is_offline is False
+
+    # Verify LiveArenaEngine uses WebSocket fast-path when connected & fresh (< 3.0s)
+    engine = LiveArenaEngine()
+    assert engine.ws_feed is engine.quote_manager.ws_feed  # single shared socket
+    engine._handle_ws_quote(quote)
+    engine.ws_feed.connected = True
+    engine.ws_feed.last_msg_ts = time.time()
+
+    fast_q = engine.fetch_realtime_crypto_quote()
+    assert fast_q.price == Decimal("2645.50")
+    assert fast_q.source.startswith("Binance WS")
+
+    # Stale WS (> 3s) with all REST providers failing must report offline,
+    # never return the stale WS quote or a cached price as if live.
+    import unittest.mock as mock
+    engine.ws_feed.last_msg_ts = time.time() - 10.0
+    with mock.patch.object(engine.session, "get", side_effect=Exception("Network Timeout")):
+        fb = engine.fetch_realtime_crypto_quote()
+    assert fb.is_offline is True
+    assert fb.price == Decimal("0.00")
+
+
+def test_phase2_sqlite_wal_persistence_and_cold_start_hydration(tmp_path):
+    from src.data.persistence import ArenaStorage
+
+    db_file = tmp_path / "test_arena.db"
+    store = ArenaStorage(db_path=str(db_file))
+
+    with store._get_connection() as conn:
+        mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    bars = [
+        {"t": 1700000000.0 + i * 60, "o": 2500.0 + i, "h": 2510.0 + i, "l": 2495.0 + i, "c": 2505.0 + i}
+        for i in range(40)
+    ]
+    store.save_candles_batch(bars)
+    loaded = store.load_latest_candles(limit=40)
+    assert len(loaded) == 40
+    assert loaded[0]["t"] == 1700000000.0
+    assert loaded[-1]["c"] == 2505.0 + 39
+
+    store.record_fill({
+        "seq": 1,
+        "timestamp": 1700001000.0,
+        "portfolio_id": "comp_agg",
+        "side": "BUY",
+        "position_side": "LONG",
+        "qty": 2.5,
+        "price": 2520.0,
+        "realized_pnl": 0.0,
+        "reason": "SIGNAL_ENTRY",
+    })
+    fills = store.load_recent_fills(limit=10)
+    assert len(fills) == 1
+    assert fills[0]["portfolio_id"] == "comp_agg"
+    assert fills[0]["qty"] == 2.5
+
+
+def test_phase3_dynamic_depth_and_volatility_slippage():
+    from src.arena.broker_sim import BrokerSim
+    from src.arena.order import OrderSide, OrderType
+
+    broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0001"))
+    p_small = broker.compute_execution_slippage(
+        OrderSide.BUY, OrderType.MARKET, Decimal("1.0"), Decimal("2500.00"), Decimal("10.00")
+    )
+    p_whale = broker.compute_execution_slippage(
+        OrderSide.BUY, OrderType.MARKET, Decimal("150.0"), Decimal("2500.00"), Decimal("45.00")
+    )
+    assert p_whale > p_small > Decimal("2500.00")
+
+    s_small = broker.compute_execution_slippage(
+        OrderSide.SELL, OrderType.MARKET, Decimal("1.0"), Decimal("2500.00"), Decimal("10.00")
+    )
+    s_whale = broker.compute_execution_slippage(
+        OrderSide.SELL, OrderType.MARKET, Decimal("150.0"), Decimal("2500.00"), Decimal("45.00")
+    )
+    assert s_whale < s_small < Decimal("2500.00")
+
+
+def test_phase4_mtf_trend_confluence_gatekeeper():
+    from src.arena.order import OrderSide
+    from src.data.live_engine import LiveArenaEngine
+
+    engine = LiveArenaEngine()
+    # Populate 60 synthetic 1h bars in a strong uptrend
+    engine.candles_1h = [
+        {"t": float(i * 3600), "o": 2000.0 + i * 10, "h": 2015.0 + i * 10, "l": 1995.0 + i * 10, "c": 2010.0 + i * 10}
+        for i in range(60)
+    ]
+    engine._update_mtf_regimes({"t": float(60 * 3600), "o": 2600.0, "h": 2620.0, "l": 2595.0, "c": 2615.0})
+    assert engine.htf_bias == "BULLISH"
+    assert engine.is_entry_permitted_by_mtf(OrderSide.BUY) is True
+    assert engine.is_entry_permitted_by_mtf(OrderSide.SELL) is False
+
+    # Populate 60 synthetic 1h bars in a strong downtrend
+    engine.candles_1h = [
+        {"t": float(i * 3600), "o": 3000.0 - i * 10, "h": 3005.0 - i * 10, "l": 2985.0 - i * 10, "c": 2990.0 - i * 10}
+        for i in range(60)
+    ]
+    engine._update_mtf_regimes({"t": float(60 * 3600), "o": 2400.0, "h": 2405.0, "l": 2380.0, "c": 2385.0})
+    assert engine.htf_bias == "BEARISH"
+    assert engine.is_entry_permitted_by_mtf(OrderSide.BUY) is False
+    assert engine.is_entry_permitted_by_mtf(OrderSide.SELL) is True
+
+
+def test_phase5_multi_objective_composite_fitness():
+    from types import SimpleNamespace
+    from src.arena.evolution import GeneticEvolver
+
+    steady_champ = SimpleNamespace(
+        roi_pct=Decimal("8.5"),
+        sharpe_ratio=2.4,
+        sortino_ratio=3.0,
+        max_drawdown_pct=Decimal("2.0"),
+        closed_trades=18,
+        status="ACTIVE",
+    )
+    reckless_gambler = SimpleNamespace(
+        roi_pct=Decimal("9.0"),
+        sharpe_ratio=0.4,
+        sortino_ratio=0.5,
+        max_drawdown_pct=Decimal("18.5"),
+        closed_trades=110,
+        status="ACTIVE",
+    )
+    f_steady = GeneticEvolver.calculate_composite_fitness(steady_champ)
+    f_reckless = GeneticEvolver.calculate_composite_fitness(reckless_gambler)
+    assert f_steady > f_reckless
+
+
+def test_phase6_modular_view_model_and_state_delta_streaming():
+    from src.data.live_engine import LiveArenaEngine, LiveQuote
+
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    q = LiveQuote(
+        price=Decimal("2600.00"),
+        bid=Decimal("2599.90"),
+        ask=Decimal("2600.10"),
+        high_24h=Decimal("2650.00"),
+        low_24h=Decimal("2550.00"),
+        volume_24h=Decimal("10000.00"),
+        change_24h_pct=Decimal("1.20"),
+        source="UnitTest",
+        timestamp=1700000000.0,
+    )
+    engine.latest_quote = q
+    engine._update_candle(1700000000.0, Decimal("2600.00"))
+
+    first_payload = engine.get_ui_state_delta(force_full=True)
+    assert first_payload["is_delta"] is False
+    assert "candles" in first_payload
+    assert "fills" in first_payload
+
+    # Consecutive poll with unchanged candle and fills omits redundant arrays
+    second_payload = engine.get_ui_state_delta(force_full=False)
+    assert second_payload["is_delta"] is True
+    assert second_payload["candles_unchanged"] is True
+    assert second_payload["fills_unchanged"] is True
+    assert "candles" not in second_payload
+    assert "fills" not in second_payload
+
+
+def test_session_state_save_and_restore_and_shutdown_bridge():
+    import tempfile
+    from src.data.persistence import ArenaStorage
+    from src.data.live_engine import LiveArenaEngine
+    from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
+    from src.arena.portfolio import PositionSide
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_path = tf.name
+
+    store1 = ArenaStorage(db_path=db_path)
+    engine1 = LiveArenaEngine(initial_cash=Decimal("100000.00"), storage=store1)
+    engine1.bootstrap_intraday_session()
+
+    # Modify competitor state: simulate trade and generation advancement
+    comp = engine1.competitors[0]
+    comp.portfolio.cash = Decimal("95000.00")
+    comp.portfolio.position_qty = Decimal("2.1500")
+    comp.portfolio.position_side = PositionSide.LONG
+    comp.portfolio.avg_entry_price = Decimal("2325.50")
+    comp.portfolio.realized_pnl = Decimal("1250.00")
+    engine1.cadence_sec = 2.5
+
+    # Save session state
+    ok = engine1.save_session_state()
+    assert ok is True
+
+    # Initialize a new engine from the same DB and verify state restoration
+    store2 = ArenaStorage(db_path=db_path)
+    engine2 = LiveArenaEngine(initial_cash=Decimal("100000.00"), storage=store2)
+    restore_ok = engine2.restore_session_state()
+    assert restore_ok is True
+    assert engine2.cadence_sec == 2.5
+
+    c2 = engine2.competitors[0]
+    assert c2.portfolio.cash == Decimal("95000.00")
+    assert c2.portfolio.position_qty == Decimal("2.1500")
+    assert c2.portfolio.position_side == PositionSide.LONG
+    assert c2.portfolio.avg_entry_price == Decimal("2325.50")
+    assert c2.portfolio.realized_pnl == Decimal("1250.00")
+
+    # Test dashboard bridge save, cancel, and shutdown methods. The bridge
+    # uses the dashboard's own engine (the current generation); pointing it
+    # at engine1 would trip the item-9 generation fence, since engine2 is
+    # newer -- a superseded engine must not overwrite the new generation.
+    dash = ArenaDashboard(initial_cash=Decimal("100000.00"))
+    bridge = _ArenaBridgeApi(dash)
+
+    res_save = bridge.save_session_state()
+    assert res_save["status"] == "ok"
+    assert res_save["saved"] is True
+
+    dash.closing_prompt_active = True
+    res_cancel = bridge.cancel_shutdown_prompt()
+    assert res_cancel["status"] == "cancelled"
+    assert dash.closing_prompt_active is False
+
+    res_shut = bridge.shutdown(save_progress=True)
+    assert res_shut["status"] == "shutting_down"
+    assert res_shut["saved"] is True
+    assert dash.allow_exit is True
+
+    # Test open_omniroute_console bridge method
+    res_console = bridge.open_omniroute_console()
+    assert res_console["status"] == "ok"
+    assert "20128" in res_console["url"]
+
+    # Test automated intel refresh cadence configuration
+    assert engine1.intel_refresh_interval_sec == 300.0
+    new_interval = engine1.set_intel_refresh_interval(600.0)
+    assert new_interval == 600.0
+    assert engine1.intel_refresh_interval_sec == 600.0
+
+
+def test_pause_time_freezing_and_arena_transitions():
+    import time
+    from pathlib import Path
+    from decimal import Decimal
+    from src.data.live_engine import LiveArenaEngine
+
+    engine = LiveArenaEngine(initial_cash=Decimal("50000.00"))
+    engine.auto_evolve_interval_sec = 3600
+    engine.last_evolve_ts = time.time()
+
+    state1 = engine.get_ui_state()
+    rem1 = state1["next_evolve_sec"]
+    assert rem1 > 0
+
+    # Pause the engine
+    engine.paused = True
+    assert engine.paused is True
+    assert engine._pause_start_ts is not None
+
+    state_paused1 = engine.get_ui_state()
+    assert state_paused1["paused"] is True
+
+    time.sleep(0.05)
+    state_paused2 = engine.get_ui_state()
+    assert state_paused2["paused"] is True
+    # In paused state, countdown must remain completely frozen
+    assert state_paused2["next_evolve_sec"] == state_paused1["next_evolve_sec"]
+
+    # Resume the engine
+    prev_evolve_ts = engine.last_evolve_ts
+    engine.paused = False
+    assert engine.paused is False
+    assert engine._pause_start_ts is None
+    # last_evolve_ts must have been compensated forward
+    assert engine.last_evolve_ts >= prev_evolve_ts
+
+    # Verify frontend assets have the required elements and CSS classes
+    assets_dir = Path(__file__).resolve().parent.parent / "src" / "gui" / "assets"
+    html = (assets_dir / "index.html").read_text(encoding="utf-8")
+    css = (assets_dir / "app.css").read_text(encoding="utf-8")
+
+    assert "globalCursorBackdrop" in html
+    assert "global-cursor-backdrop" in css
+    assert "arena-entering" in css
+    assert "arenaFadeIn" in css
+
+
+def test_window_on_top_configuration():
+    """Validates that pywebview window is configured with on_top=True and bridge exposes topmost controls."""
+    from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
+    import inspect
+
+    dash = ArenaDashboard(initial_cash=Decimal("100000.00"))
+    bridge = _ArenaBridgeApi(dash)
+
+    # Bridge method verification
+    assert hasattr(bridge, "toggle_on_top")
+    assert hasattr(bridge, "is_on_top")
+    assert bridge.is_on_top() is False
+
+    # Mock window instance
+    mock_win = MagicMock()
+    mock_win.on_top = True
+    dash.window = mock_win
+
+    assert bridge.is_on_top() is True
+    res = bridge.toggle_on_top()
+    assert res is False
+    assert mock_win.on_top is False
+
+    # Verify dashboard.py source contains maximized=True, on_top=False, and startup foreground maximize logic
+    dash_src = inspect.getsource(dash.run)
+    assert "on_top=False" in dash_src
+    assert "maximized=True" in dash_src
+    assert "SW_MAXIMIZE" in dash_src
+    assert "HWND_NOTOPMOST" in dash_src
+    assert "_activate_foreground_startup" in dash_src
 
 

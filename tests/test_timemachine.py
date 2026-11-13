@@ -42,7 +42,9 @@ def test_timemachine_simulation_with_synthetic_bars():
         assert r.rank in [1, 2, 3, 4, 5, 6]
         assert r.equity > Decimal("0")
         
-    assert os.path.exists(os.path.join("memory", "arena_report.md"))
+    # The report lands under ARENA_MEMORY_DIR (redirected to a tmp dir by conftest).
+    mem_dir = os.environ.get("ARENA_MEMORY_DIR", "memory")
+    assert os.path.exists(os.path.join(mem_dir, "arena_report.md"))
 
 
 def test_timemachine_evolution_preserves_portfolio():
@@ -139,3 +141,44 @@ def test_monte_carlo_ev_gate_odds_evaluation():
     assert "Blocked" in odds_absurd.verdict
 
 
+
+
+def test_orb_window_excludes_current_bar():
+    """Item 2 regression: ORB range must come from closed bars only.
+
+    Before the fix the current bar was included in the ORB window, so its
+    own high became the range ceiling and a breakout could (almost) never
+    trigger: 60 BUY bars produced 0 ORB fills.
+    """
+    arena = TimeMachineArena(symbol="ETH/USD", initial_cash=Decimal("500000.00"))
+    bars = []
+    for i in range(15):
+        price = Decimal("2495.00")
+        bars.append(CandleBar(
+            timestamp=1000.0 + (i * 900),
+            open_=price - Decimal("2.00"),
+            high=Decimal("2500.00"),
+            low=Decimal("2490.00"),
+            close=price,
+            volume=Decimal("100.0"),
+            ema_fast=price + Decimal("1.00"),
+            ema_slow=price - Decimal("5.00"),
+            rsi=Decimal("55.00"),
+            atr=Decimal("25.00")
+        ))
+    bars.append(CandleBar(
+        timestamp=1000.0 + (15 * 900),
+        open_=Decimal("2505.00"),
+        high=Decimal("2515.00"),
+        low=Decimal("2500.00"),
+        close=Decimal("2510.00"),
+        volume=Decimal("100.0"),
+        ema_fast=Decimal("2508.00"),
+        ema_slow=Decimal("2500.00"),
+        rsi=Decimal("56.00"),
+        atr=Decimal("25.00")
+    ))
+    rankings = arena.run_simulation(bars)
+    assert len(rankings) == 6
+    # The breakout bar closes above the prior 15-bar high (2500): ORB must fire.
+    assert arena.comp_e.portfolio.position_qty > Decimal("0")
