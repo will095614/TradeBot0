@@ -3611,8 +3611,10 @@ function updateUiClockDisplay() {
       if (pwdBadge._copiedTimer) clearTimeout(pwdBadge._copiedTimer);
       if (pwdBadge._copiedOriginal === undefined) pwdBadge._copiedOriginal = pwdBadge.innerHTML;
       pwdBadge.textContent = 'copied!';
+      pwdBadge.classList.add('pwd-copied');
       pwdBadge._copiedTimer = setTimeout(() => {
         pwdBadge.innerHTML = pwdBadge._copiedOriginal;
+        pwdBadge.classList.remove('pwd-copied');
         pwdBadge._copiedOriginal = undefined;
         pwdBadge._copiedTimer = undefined;
       }, 2000);

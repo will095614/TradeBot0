@@ -4866,7 +4866,7 @@ body:not(.arena-ready) .lg-glass {
   border: 1px solid rgba(56, 189, 248, 0.36);
   border-radius: 4px;
   cursor: pointer;
-  user-select: all;
+  user-select: none;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   vertical-align: middle;
 }
