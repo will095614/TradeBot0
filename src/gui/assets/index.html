@@ -602,19 +602,12 @@
               <div class="intel-status-line" id="intelFallbackLine">Using local backup analysis</div>
               <div class="intel-status-line intel-diagnosis-line" id="intelDiagnosisLine"></div>
             </div>
-            <!-- Advanced: the three engineering cards (Controller,
-                 Token Utilization, Async Concurrency) live here,
-                 collapsed by default. The body stays in the layout
-                 (visibility + opacity only) so toggling never shifts
-                 anything around it. -->
+            <!-- The three engineering cards (Controller, Token
+                 Utilization, Async Concurrency) are always shown --
+                 the Advanced toggle was removed at the user's request
+                 (2026-11-15). -->
             <div class="intel-advanced-section">
-              <button type="button" class="intel-advanced-toggle" id="btnIntelAdvanced" onclick="toggleIntelAdvanced()" aria-expanded="false" aria-controls="intelAdvancedBody">
-                <span>Advanced</span>
-                <svg class="ss-svg-icon intel-advanced-chevron" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M3.5 6L8 10.5 12.5 6"></path>
-                </svg>
-              </button>
-              <div class="intel-advanced-body" id="intelAdvancedBody">
+              <div>
                 <div class="intel-metrics-row">
                   <div class="intel-metric lg-glass lg-spot-card omni-console-card">
                     <span class="intel-metric-lbl">OmniRoute Controller</span>

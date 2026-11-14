@@ -3524,19 +3524,6 @@ function updateUiClockDisplay() {
     }
   }
 
-  // AI panels (I2/I3/I4): the Advanced section hides the three
-  // engineering cards (Controller / Token Utilization / Async
-  // Concurrency) behind one toggle, collapsed by default. The body
-  // is toggled with visibility + opacity only -- it always occupies
-  // its space, so opening or closing it never shifts the layout.
-  function toggleIntelAdvanced() {
-    const body = document.getElementById('intelAdvancedBody');
-    const btn = document.getElementById('btnIntelAdvanced');
-    const expanded = body ? !body.classList.contains('expanded') : false;
-    if (body) body.classList.toggle('expanded', expanded);
-    if (btn) btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-  }
-  window.toggleIntelAdvanced = toggleIntelAdvanced;
 
   window.addEventListener('DOMContentLoaded', () => {
     startUiClock();

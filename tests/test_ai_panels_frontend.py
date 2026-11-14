@@ -107,21 +107,19 @@ def test_intel_hub_header_and_pill_plain():
     assert 'id="intelFallbackLine"' in html
 
 
-def test_intel_advanced_section_collapsed_by_default():
+def test_intel_advanced_cards_always_shown():
     html, js = _html(), _js()
-    assert 'id="btnIntelAdvanced"' in html
-    assert 'aria-expanded="false"' in html
-    assert 'id="intelAdvancedBody"' in html
-    body = html.split('id="intelAdvancedBody"')[1].split('id="btnRefreshDigest"')[0]
+    # The Advanced toggle was removed at the user's request
+    # (2026-11-15): the three engineering cards are always visible.
+    assert 'id="btnIntelAdvanced"' not in html
+    assert "toggleIntelAdvanced" not in js
+    body = html.split('intel-advanced-section')[1].split('id="btnRefreshDigest"')[0]
     for label in ("OmniRoute Controller", "Token Utilization", "Async Concurrency"):
         assert label in body
     assert 'id="btnOpenOmniConsole"' in html
     assert 'id="omniConsolePwd"' in html
     assert 'id="omniTokensVal"' in html
     assert 'id="omniReqCounters"' in html
-    assert "toggleIntelAdvanced" in js
-    assert "intelAdvancedBody" in js
-    assert 'class="intel-advanced-body expanded"' not in html
     assert 'id="macroThrottleLine"' in html
     assert "News updates slowed for now" in html
 
@@ -187,9 +185,6 @@ def test_new_panel_classes_are_defined_in_css():
         "intel-status-line",
         "intel-diagnosis-line",
         "intel-advanced-section",
-        "intel-advanced-toggle",
-        "intel-advanced-chevron",
-        "intel-advanced-body",
         "intel-throttle-line",
         "digest-refresh-progress",
         "digest-refresh-progress-track",

@@ -3561,48 +3561,14 @@ tbody td {
   text-overflow: ellipsis;
 }
 
-/* AI panels (I2/I3/I4): one shared Advanced section holding the
-   three engineering cards, collapsed by default. The body is
-   toggled with visibility + opacity only -- it always occupies its
-   space, so opening or closing it never shifts the layout. */
+/* AI panels (I2/I3/I4): the three engineering cards (Controller,
+   Token Utilization, Async Concurrency) are always shown -- the
+   Advanced toggle was removed at the user's request (2026-11-15),
+   so there is no collapsed state and no toggle styling. */
 .intel-advanced-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-.intel-advanced-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  padding: 3px 9px;
-  border-radius: var(--r-pill);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--ss-text-muted);
-  font-size: 10.5px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: border-color 0.22s ease, color 0.22s ease;
-}
-.intel-advanced-toggle:hover {
-  border-color: rgba(0, 242, 254, 0.42);
-  color: #67E8F9;
-}
-.intel-advanced-chevron {
-  transition: transform 0.25s var(--lg-spring);
-}
-.intel-advanced-toggle[aria-expanded="true"] .intel-advanced-chevron {
-  transform: rotate(180deg);
-}
-.intel-advanced-body {
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
-}
-.intel-advanced-body.expanded {
-  visibility: visible;
-  opacity: 1;
 }
 
 /* AI panels (I3): plain throttle line under the Market Direction
