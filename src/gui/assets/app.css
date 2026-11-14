@@ -4700,11 +4700,16 @@ body:not(.arena-ready) .lg-glass {
 }
 
 .setup-wizard-modal {
-  width: 580px;
+  width: 1080px;
   max-width: 94vw;
   max-height: 92vh;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  /* .ss-modal sets gap: 16px; without this the modal gains 32px of
+     unintended space between header/body/actions (the section margins
+     already set the intended spacing). */
+  gap: 0;
   padding: 18px 24px 14px;
   overflow-y: hidden;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -4712,16 +4717,13 @@ body:not(.arena-ready) .lg-glass {
   transform: scale(0.93) translateY(14px);
   opacity: 0;
   transition: transform 1.35s cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 1.35s cubic-bezier(0.16, 1, 0.3, 1);
+              opacity 1.35s cubic-bezier(0.16, 1, 0.3, 1),
+              padding 0.3s var(--lg-spring);
 }
 
-/* Short windows (< ~1040px tall) cannot fit the whole wizard even
-   compacted: re-enable scrolling there so Save & Launch stays reachable. */
-@media (max-height: 1040px) {
-  .setup-wizard-modal {
-    overflow-y: auto;
-  }
-}
+/* No scroll fallback: the wizard never scrolls at any height. Short
+   windows use the compact mode at the end of this section (tighter
+   spacing, animated) instead of re-enabling overflow. */
 
 /* Cancel-install confirmation sits above the wizard overlay (10001). */
 .install-cancel-confirm-overlay {
@@ -4740,6 +4742,7 @@ body:not(.arena-ready) .lg-glass {
 
 .setup-wizard-header {
   margin-bottom: 12px;
+  transition: margin-bottom 0.3s var(--lg-spring);
 }
 
 .setup-wizard-badge {
@@ -4759,10 +4762,25 @@ body:not(.arena-ready) .lg-glass {
 }
 
 .setup-wizard-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-bottom: 12px;
+  transition: gap 0.3s var(--lg-spring), margin-bottom 0.3s var(--lg-spring);
+}
+
+/* Two-column wizard (2026-11-14): left = the four API key cards, right =
+   the install-wizard side (admin password, gateway, progress, banner).
+   Columns are flex stacks; min-width: 0 lets long text truncate instead
+   of forcing the grid wider. */
+.setup-wizard-column {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-bottom: 12px;
+  min-width: 0;
+  min-height: 0;
+  transition: gap 0.3s var(--lg-spring);
 }
 
 .setup-provider-card {
@@ -4770,7 +4788,7 @@ body:not(.arena-ready) .lg-glass {
   border-radius: 12px;
   background: rgba(14, 18, 26, 0.72);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  transition: border-color 0.22s ease, background 0.22s ease;
+  transition: border-color 0.22s ease, background 0.22s ease, padding 0.3s var(--lg-spring);
 }
 
 .setup-provider-card:focus-within {
@@ -4782,6 +4800,7 @@ body:not(.arena-ready) .lg-glass {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 4px;
 }
 
@@ -4789,6 +4808,7 @@ body:not(.arena-ready) .lg-glass {
   font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 700;
+  flex-shrink: 0;
   color: #FFFFFF;
 }
 
@@ -4796,6 +4816,10 @@ body:not(.arena-ready) .lg-glass {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--ss-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .setup-input-group {
@@ -4804,8 +4828,15 @@ body:not(.arena-ready) .lg-glass {
   gap: 8px;
 }
 
+/* The admin-password card stacks two input rows; without this they touch
+   (measured 0px gap before this fix). */
+.setup-input-group + .setup-input-group {
+  margin-top: 8px;
+}
+
 .setup-key-input {
   flex: 1;
+  min-width: 0;
   height: 32px;
   padding: 0 10px;
   font-family: var(--font-mono);
@@ -4815,7 +4846,7 @@ body:not(.arena-ready) .lg-glass {
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 8px;
   outline: none;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, height 0.3s var(--lg-spring);
 }
 
 .setup-key-input:focus {
@@ -4845,16 +4876,21 @@ body:not(.arena-ready) .lg-glass {
 
 .setup-test-btn {
   height: 32px;
-  padding: 0 14px;
+  width: 64px;
+  flex-shrink: 0;
+  padding: 0;
   font-size: 11px;
   font-weight: 700;
   border-radius: 8px;
   white-space: nowrap;
+  transition: height 0.3s var(--lg-spring), transform 0.2s var(--lg-bounce),
+              background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .setup-provider-status {
   margin-top: 4px;
   min-height: 18px;
+  overflow: hidden;
 }
 
 .setup-status-pill {
@@ -4864,6 +4900,11 @@ body:not(.arena-ready) .lg-glass {
   font-weight: 600;
   padding: 2px 7px;
   border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  vertical-align: middle;
   transition: all 0.22s ease;
 }
 
@@ -4895,6 +4936,7 @@ body:not(.arena-ready) .lg-glass {
   border-radius: 10px;
   background: rgba(0, 242, 254, 0.04);
   border: 1px solid rgba(0, 242, 254, 0.24);
+  transition: padding 0.3s var(--lg-spring);
 }
 
 .setup-checkbox-row {
@@ -4927,13 +4969,49 @@ body:not(.arena-ready) .lg-glass {
   font-family: var(--font-mono);
 }
 
+/* Dynamic gateway note: a fixed two-line slot, always reserved. Hidden
+   state is visibility + opacity -- never display: none -- so showing or
+   hiding the note never moves the install button or anything below it.
+   Text beyond two lines is ellipsised, so the slot height is constant. */
+#gatewayUnavailableNote {
+  min-height: 29px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+}
+
+/* Install button: a fixed 32px slot, always reserved (same visibility
+   rule), so it never pushes the banner or progress bar when it appears. */
+#btnInstallGatewayRuntime {
+  margin-top: 8px;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+}
+
 .setup-wizard-banner {
   padding: 8px 12px;
   border-radius: 8px;
   font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
-  transition: all 0.25s ease;
+  /* Fixed two-line slot, always reserved (visibility + opacity, never
+     display: none): the banner never pushes the progress bar or the
+     actions when it appears, and long messages ellipsise to two lines. */
+  min-height: 48px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring),
+              background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease,
+              min-height 0.3s var(--lg-spring), padding 0.3s var(--lg-spring);
 }
 
 .setup-wizard-banner.info {
@@ -4960,6 +5038,12 @@ body:not(.arena-ready) .lg-glass {
    trustworthy percent, so none is fabricated. */
 .setup-install-progress {
   margin-top: -2px;
+  /* Fixed 8px slot, always reserved (visibility + opacity, never
+     display: none): the bar fading in never moves anything. */
+  min-height: 8px;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
 }
 .setup-install-progress-track {
   height: 6px;
@@ -4989,6 +5073,21 @@ body:not(.arena-ready) .lg-glass {
   justify-content: flex-end;
   gap: 10px;
   margin-top: auto;
+}
+
+/* Compact mode (short windows): tighten spacing instead of scrolling --
+   the wizard never scrolls at any height. Every property changed here
+   has a transition on its base rule above, so the switch animates
+   instead of jumping. */
+@media (max-height: 720px) {
+  .setup-wizard-modal { padding: 12px 20px 10px; }
+  .setup-wizard-header { margin-bottom: 8px; }
+  .setup-wizard-body { gap: 12px; margin-bottom: 8px; }
+  .setup-wizard-column { gap: 6px; }
+  .setup-provider-card { padding: 6px 10px; }
+  .setup-key-input, .setup-eye-btn, .setup-test-btn { height: 30px; }
+  .setup-gateway-options { padding: 8px 10px; }
+  .setup-wizard-banner { min-height: 44px; padding: 6px 10px; }
 }
 
 .pwd-badge {

@@ -3806,13 +3806,17 @@ function updateUiClockDisplay() {
     const b = document.getElementById('setupWizardStatusBanner');
     if (!b) return;
     if (!message) {
-      b.style.display = 'none';
+      // Fixed slot: hide with visibility + opacity, never display: none,
+      // so the reserved banner height never collapses and nothing reflows.
+      b.style.visibility = 'hidden';
+      b.style.opacity = '0';
       b.textContent = '';
       return;
     }
     b.className = `setup-wizard-banner ${type}`;
     b.textContent = message;
-    b.style.display = 'block';
+    b.style.visibility = 'visible';
+    b.style.opacity = '1';
   }
 
   let runtimeInstallPollTimer = null;
@@ -3829,14 +3833,19 @@ function updateUiClockDisplay() {
     if (gwNote) {
       if (res.gateway_unavailable_reason) {
         gwNote.textContent = res.gateway_unavailable_reason + ' The arena still works in Pure Math mode meanwhile.';
-        gwNote.style.display = 'block';
+        gwNote.style.visibility = 'visible';
+        gwNote.style.opacity = '1';
       } else {
-        gwNote.style.display = 'none';
+        gwNote.style.visibility = 'hidden';
+        gwNote.style.opacity = '0';
         gwNote.textContent = '';
       }
     }
     if (gwBtn) {
-      gwBtn.style.display = res.gateway_unavailable_reason ? 'inline-flex' : 'none';
+      // Fixed slot: visibility, never display: none.
+      const showBtn = !!res.gateway_unavailable_reason;
+      gwBtn.style.visibility = showBtn ? 'visible' : 'hidden';
+      gwBtn.style.opacity = showBtn ? '1' : '0';
     }
   }
 
@@ -3852,7 +3861,9 @@ function updateUiClockDisplay() {
     const fill = document.getElementById('setupInstallProgressFill');
     const showBar = (st === 'downloading-node' || st === 'installing-omniroute');
     if (prog) {
-      prog.style.display = showBar ? 'block' : 'none';
+      // Fixed slot: visibility + opacity, never display: none.
+      prog.style.visibility = showBar ? 'visible' : 'hidden';
+      prog.style.opacity = showBar ? '1' : '0';
       if (showBar && fill) {
         if (pct !== null) {
           fill.classList.remove('indeterminate');
