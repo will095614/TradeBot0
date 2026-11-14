@@ -3599,11 +3599,6 @@ function updateUiClockDisplay() {
             }
           });
 
-          const chk = document.getElementById('chkAutoSpawnGateway');
-          if (chk && typeof res.gateway_auto_spawn === 'boolean') {
-            chk.checked = res.gateway_auto_spawn;
-          }
-
           // The backend never sends the password value: only whether a
           // custom password is configured. The badge always shows a mask
           // (item 7); the real password lives in ~/.omniroute/.env.
@@ -3982,8 +3977,6 @@ function updateUiClockDisplay() {
 
   async function saveAndLaunchGateway() {
     const saveBtn = document.getElementById('btnSaveAndLaunch');
-    const chk = document.getElementById('chkAutoSpawnGateway');
-    const autoSpawn = chk ? chk.checked : true;
 
     const keys = {
       deepseek: (document.getElementById('keyDeepSeek')?.value || '').trim(),
@@ -4016,7 +4009,7 @@ function updateUiClockDisplay() {
 
     try {
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.save_and_launch_gateway === 'function') {
-        const res = await window.pywebview.api.save_and_launch_gateway(keys, autoSpawn, adminPw || null);
+        const res = await window.pywebview.api.save_and_launch_gateway(keys, adminPw || null);
         if (res && res.ok) {
           hasCompletedSetup = true;
           setWizardBanner(res.message || 'Credentials saved successfully!', 'success');
@@ -4060,23 +4053,6 @@ function updateUiClockDisplay() {
         saveBtn.disabled = false;
         saveBtn.innerHTML = '<span>Save &amp; Launch Arena</span>';
       }
-    }
-  }
-
-  async function skipToPureMathCore() {
-    setWizardBanner('Activating 100% Pure Math Deterministic Core...', 'info');
-    try {
-      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.skip_to_pure_math === 'function') {
-        await window.pywebview.api.skip_to_pure_math();
-      }
-    } catch (err) {
-      console.debug('skip_to_pure_math err:', err);
-    }
-    hasCompletedSetup = true;
-    closeSetupWizardModal();
-    if (!splashCompleted) {
-      startSplashSequence(false);
-      setSplashTarget(75);
     }
   }
 

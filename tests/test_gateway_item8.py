@@ -1,4 +1,4 @@
-"""Item 8 tests: OmniRoute gateway startup wait, auto-spawn default,
+"""Item 8 tests: OmniRoute gateway startup wait, mandatory auto-spawn,
 daemon log file, and health-probe timeout."""
 import inspect
 import re
@@ -40,7 +40,7 @@ def test_save_and_launch_gateway_waits_30_seconds(tmp_path):
     try:
         with patch.object(dash.gateway_supervisor, "is_port_open", return_value=False), \
              patch.object(dash.gateway_supervisor, "start_daemon", return_value=(True, "ok")) as mock_start:
-            res = bridge.save_and_launch_gateway({"deepseek": "sk-test-item8-000000000000000000000000"}, auto_spawn=True, admin_password="TestAdmin123")
+            res = bridge.save_and_launch_gateway({"deepseek": "sk-test-item8-000000000000000000000000"}, admin_password="TestAdmin123")
         assert res["status"] == "ok"
         assert res["gateway_online"] is True
         mock_start.assert_called_once_with(max_wait_sec=30.0)
@@ -92,7 +92,6 @@ def test_run_auto_spawn_waits_30_seconds(tmp_path, monkeypatch):
     dash.config_manager.save_config({
         "has_completed_onboarding": True,
         "skip_ai_mode": False,
-        "gateway_auto_spawn": True,
     })
     # Item 10 A1: auto-spawn now requires a configured admin password.
     dash.config_manager.set_admin_password("TestAdmin123")
@@ -121,7 +120,6 @@ def test_run_skips_auto_spawn_without_admin_password(tmp_path, monkeypatch):
     dash.config_manager.save_config({
         "has_completed_onboarding": True,
         "skip_ai_mode": False,
-        "gateway_auto_spawn": True,
     })
     fake_supervisor = MagicMock()
     fake_supervisor.is_port_open.return_value = False
@@ -143,17 +141,19 @@ def test_no_14_second_gateway_wait_remains():
     assert src.count("max_wait_sec=30.0") == 2
 
 
-# ------------------------------------------------------- auto-spawn default
-def test_gateway_auto_spawn_default_is_true(tmp_path):
-    assert DEFAULT_SYSTEM_CONFIG["gateway_auto_spawn"] is True
+# ------------------------------------------------------- auto-spawn is mandatory
+def test_gateway_auto_spawn_option_removed(tmp_path):
+    """Auto-launch is mandatory: the gateway_auto_spawn option no longer
+    exists anywhere (no default, no stored key)."""
+    assert "gateway_auto_spawn" not in DEFAULT_SYSTEM_CONFIG
     cm = ConfigManager(data_dir=tmp_path / "data")
-    # No file at all: the merged default spawns the gateway.
-    assert cm.load_config()["gateway_auto_spawn"] is True
-    # A file that never mentions the key still gets the default.
+    # No file at all: no trace of the option.
+    assert "gateway_auto_spawn" not in cm.load_config()
+    # A file that never mentions the key: still no trace.
     (tmp_path / "data" / "system_config.json").write_text(
         '{"has_completed_onboarding": true}', encoding="utf-8"
     )
-    assert cm.load_config()["gateway_auto_spawn"] is True
+    assert "gateway_auto_spawn" not in cm.load_config()
 
 
 # ------------------------------------------------------------ probe timeout

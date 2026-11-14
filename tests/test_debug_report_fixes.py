@@ -146,12 +146,13 @@ def test_get_ui_state_mutation_isolation():
     assert fresh_state["generation"] != 9999
 
 
-def test_setup_status_includes_gateway_auto_spawn():
-    """Verify Finding 7: get_setup_status returns gateway_auto_spawn boolean."""
+def test_setup_status_has_no_gateway_auto_spawn_option():
+    """Auto-launch is mandatory (offline mode removed): the
+    gateway_auto_spawn option was deleted, so get_setup_status must not
+    report it anymore."""
     dashboard = ArenaDashboard(initial_cash=Decimal("100000.00"))
     status = dashboard._bridge.get_setup_status()
-    assert "gateway_auto_spawn" in status
-    assert isinstance(status["gateway_auto_spawn"], bool)
+    assert "gateway_auto_spawn" not in status
 
 
 def _raise_no_network(*args, **kwargs):

@@ -325,7 +325,6 @@ class _ArenaBridgeApi:
                 "skip_ai_mode": bool(cfg.get("skip_ai_mode", False)),
                 "gateway_online": bool(healthy),
                 "port_open": bool(is_open),
-                "gateway_auto_spawn": bool(cfg.get("gateway_auto_spawn", True)),
                 "configured_providers": configured,
                 "cli_available": bool(cli_avail),
                 "gateway_port": int(cfg.get("gateway_port", 20128)),
@@ -345,7 +344,6 @@ class _ArenaBridgeApi:
                 "skip_ai_mode": False,
                 "gateway_online": False,
                 "port_open": False,
-                "gateway_auto_spawn": True,
                 "configured_providers": [],
                 "cli_available": False,
                 "gateway_port": 20128,
@@ -369,11 +367,13 @@ class _ArenaBridgeApi:
             return {"ok": False, "message": f"Verification failed: {e}", "latency_ms": 0}
 
     def save_and_launch_gateway(
-        self, keys: Dict[str, str], auto_spawn: bool = True, admin_password: Optional[str] = None
+        self, keys: Dict[str, str], admin_password: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Persists API keys into ~/.omniroute/.env and launches gateway if requested.
-        Marks onboarding as completed in system_config.json.
+        Persists API keys into ~/.omniroute/.env and always launches the
+        gateway: auto-launch is mandatory (offline mode was removed, so
+        OmniRoute is required to use the app at all). Marks onboarding as
+        completed in system_config.json.
         admin_password (item 10 A1): a user-chosen gateway admin password. It is
         required on first run and for installs that still rely on OmniRoute's
         built-in default password; the value is never logged or returned.
@@ -398,7 +398,6 @@ class _ArenaBridgeApi:
             self._dashboard.config_manager.save_config({
                 "has_completed_onboarding": True,
                 "skip_ai_mode": False,
-                "gateway_auto_spawn": bool(auto_spawn),
                 "configured_providers": configured,
                 "last_setup_ts": time.time(),
             })
@@ -424,7 +423,9 @@ class _ArenaBridgeApi:
                 healthy, _ = self._dashboard.gateway_supervisor.probe_health(timeout=0.6)
                 if healthy:
                     msg = "Connected to active OmniRoute gateway."
-            elif auto_spawn:
+            else:
+                # Auto-launch is mandatory (offline mode removed): the gateway
+                # is always started when the port is not already open.
                 spawn_ok, spawn_msg = self._dashboard.gateway_supervisor.start_daemon(max_wait_sec=30.0)
                 healthy = spawn_ok
                 msg = spawn_msg
@@ -465,24 +466,6 @@ class _ArenaBridgeApi:
         except Exception as e:
             logger.error("Error cancelling gateway runtime install: %s", e)
             return {"ok": False, "message": str(e)}
-
-    def skip_to_pure_math(self) -> Dict[str, Any]:
-        """
-        Bypasses external LLM gateway requirements entirely.
-        TradeBot0 will operate 100% on local deterministic quantitative models.
-        """
-        try:
-            self._dashboard.config_manager.save_config({
-                "has_completed_onboarding": True,
-                "skip_ai_mode": True,
-                "last_setup_ts": time.time(),
-            })
-            self._dashboard.start_engine_if_needed()
-            return {"status": "ok", "ok": True, "skip_ai_mode": True}
-        except Exception as e:
-            logger.error("Error setting pure math mode: %s", e)
-            return {"status": "error", "ok": False, "message": str(e)}
-
 
 class ArenaDashboard:
     """
@@ -627,7 +610,9 @@ class ArenaDashboard:
     def run(self) -> None:
         import webview
 
-        # Auto-launch background OmniRoute daemon if enabled and onboarding is complete.
+        # Auto-launch background OmniRoute daemon on every start once
+        # onboarding is complete. There is no opt-out: offline mode was
+        # removed, so OmniRoute is required to use the app at all.
         # The config is loaded exactly once: the old code loaded it twice in
         # run() (once here, once below before starting the engine) (item 7).
         cfg: Dict[str, Any] = {}
@@ -636,7 +621,6 @@ class ArenaDashboard:
             if (
                 cfg.get("has_completed_onboarding")
                 and not cfg.get("skip_ai_mode")
-                and cfg.get("gateway_auto_spawn", True)
                 # Item 10 A1: never auto-start a gateway whose console is still
                 # protected only by OmniRoute's built-in default password; the
                 # setup wizard forces the user to set one first.

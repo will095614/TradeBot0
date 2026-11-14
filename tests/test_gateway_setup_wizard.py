@@ -249,7 +249,7 @@ def test_bridge_stepwise_simulation_erroneous_then_valid(tmp_path: Path):
     }
     with patch.object(dash.gateway_supervisor, "is_port_open", return_value=True), \
          patch.object(dash.gateway_supervisor, "probe_health", return_value=(True, {"status": "ok"})):
-        res_launch = bridge.save_and_launch_gateway(keys_payload, auto_spawn=True, admin_password="TestAdmin123")
+        res_launch = bridge.save_and_launch_gateway(keys_payload, admin_password="TestAdmin123")
         assert res_launch["status"] == "ok"
         assert res_launch["ok"] is True
         assert res_launch["gateway_online"] is True
@@ -261,24 +261,6 @@ def test_bridge_stepwise_simulation_erroneous_then_valid(tmp_path: Path):
     assert "gemini" in st_final["configured_providers"]
     assert "groq" in st_final["configured_providers"]
     assert "openrouter" in st_final["configured_providers"]
-
-
-def test_bridge_skip_to_pure_math_core(tmp_path: Path):
-    """Verifies that user can bypass external AI keys and operate 100% locally on quant math."""
-    dash = ArenaDashboard()
-    dash.config_manager = ConfigManager(
-        data_dir=tmp_path / "data",
-        omni_env_path=tmp_path / ".omniroute" / ".env"
-    )
-    bridge = _ArenaBridgeApi(dash)
-
-    res = bridge.skip_to_pure_math()
-    assert res["status"] == "ok"
-    assert res["skip_ai_mode"] is True
-
-    st = bridge.get_setup_status()
-    assert st["onboarding_completed"] is True
-    assert st["skip_ai_mode"] is True
 
 
 # =============================================================================

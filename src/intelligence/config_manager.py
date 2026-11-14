@@ -15,10 +15,13 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("tradebot0.config_manager")
 
+# NOTE: there is deliberately no "gateway_auto_spawn" option. Offline mode
+# was removed, so OmniRoute is required to use the app at all and the
+# gateway always auto-launches. A stored False from an older install is
+# inert: nothing reads it anymore.
 DEFAULT_SYSTEM_CONFIG: Dict[str, Any] = {
     "has_completed_onboarding": False,
     "skip_ai_mode": False,
-    "gateway_auto_spawn": True,
     "gateway_port": 20128,
     "gateway_host": "127.0.0.1",
     "configured_providers": [],

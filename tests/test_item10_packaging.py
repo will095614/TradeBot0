@@ -61,17 +61,20 @@ def test_admin_password_required_before_onboarding(tmp_path):
 
         # No password supplied -> onboarding refused, nothing saved.
         res = bridge.save_and_launch_gateway(
-            {"deepseek": "sk-test-000000000000000000000000"}, auto_spawn=False
+            {"deepseek": "sk-test-000000000000000000000000"}
         )
         assert res["ok"] is False
         assert "password" in res["message"].lower()
         assert bridge.get_setup_status()["onboarding_completed"] is False
 
         # With a password -> onboarding completes and the password is stored.
-        with patch.object(dash.gateway_supervisor, "is_port_open", return_value=False):
+        # Auto-launch is mandatory now, so the save path always tries to
+        # start the gateway: keep the (real) supervisor from spawning one
+        # during the test.
+        with patch.object(dash.gateway_supervisor, "is_port_open", return_value=False), \
+             patch.object(dash.gateway_supervisor, "start_daemon", return_value=(False, "not started in test")):
             res2 = bridge.save_and_launch_gateway(
                 {"deepseek": "sk-test-000000000000000000000000"},
-                auto_spawn=False,
                 admin_password="TestAdmin123",
             )
         assert res2["ok"] is True
