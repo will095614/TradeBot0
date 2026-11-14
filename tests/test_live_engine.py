@@ -1444,20 +1444,23 @@ def test_bootstrap_hydrates_fresh_sqlite_candles(monkeypatch):
     monkeypatch.setattr("src.data.live_engine.CandleBar", _SpyBar)
     monkeypatch.setattr(engine.storage, "load_latest_candles",
                         lambda limit=120: _cache_rows(time.time(), 60, omit_volume_every=10))
-    # The live feed must not be called at all on a fresh cache hit (its
+    # The 1m warmup feed must not be re-fetched on a fresh cache hit (its
     # exception would be swallowed by bootstrap's try/except, so a flag
-    # -- not a raise -- is what proves it stayed untouched).
+    # -- not a raise -- is what proves it stayed untouched). Audit 2.3
+    # adds one legitimate fetch: real 1h history to seed the MTF gate,
+    # which the 1m-only cache cannot supply -- so the only fetch call is
+    # the 1h seed.
     fetch_calls = []
 
     def _no_fetch(*a, **k):
-        fetch_calls.append(1)
+        fetch_calls.append(k.get("interval"))
         return []
 
     monkeypatch.setattr("src.data.live_engine.ETHFeed.fetch_historical_bars",
                         staticmethod(_no_fetch))
     engine.bootstrap_intraday_session()
 
-    assert fetch_calls == []
+    assert fetch_calls == ["1h"]
     assert engine.is_bootstrapped is True
     assert len(engine.candles) == 120
     assert len(seen) == 120

@@ -46,6 +46,11 @@ QUOTE_STALE_SEC = 5.0
 # so it does not apply here. Both bootstrap cache branches share this
 # one threshold (the first branch already used the literal 600.0).
 CANDLE_CACHE_STALE_SEC = 600.0
+# Audit 2.3: a seeded 1h bar is only trusted while recent. The last 1h bar
+# is the current (partial) hour or the last completed hour, so its open
+# timestamp can legitimately be up to ~2 h old; older than 3 h means the
+# feed is stale and the seed must not arm the gate on dead history.
+MTF_SEED_STALE_SEC = 3 * 3600
 
 
 @dataclass
@@ -694,6 +699,12 @@ class LiveArenaEngine:
                         if comp.portfolio.position_qty > Decimal("0"):
                             comp.portfolio.current_market_price = last_price
 
+            # Audit 2.3: seed the 1h MTF buckets from real 1h history so
+            # the 1h regime gate is real instead of permanently NEUTRAL.
+            # Degrades to NEUTRAL (today's behaviour) when the feed is down
+            # or the bars are unusable.
+            self._seed_mtf_1h_history()
+
             if not self.live_orders_enabled:
                 self.live_orders_enabled = False
                 self.live_trading_active = False
@@ -831,6 +842,55 @@ class LiveArenaEngine:
         if self.htf_bias == "BULLISH" and side == OrderSide.SELL:
             return False
         return True
+
+    def _seed_mtf_1h_history(self) -> None:
+        """
+        Seed the 1h MTF buckets from real 1h history (audit 2.3).
+
+        The 1m warmup can only synthesize ~2-4 1h buckets, far below the 50
+        needed for a regime, so without this the 1h bias is NEUTRAL forever
+        and the entry veto is dead code. Fetches 7d of 1h bars through the
+        same ETHFeed path as the 1m warmup.
+
+        Any failure degrades to today's behaviour: the previous buckets are
+        left untouched, the bias stays NEUTRAL, and entries are never
+        blocked. Called only from bootstrap_intraday_session, which runs in
+        _live_loop before the raw-fetch thread, the cadence loop and the
+        digest thread start, so the fetch under the engine lock cannot
+        block any other thread.
+        """
+        try:
+            bars = ETHFeed.fetch_historical_bars(ticker="ETH-USD", period="7d", interval="1h")
+        except Exception as e:
+            logger.debug("MTF 1h history seed skipped (fetch failed): %s", e)
+            return
+        if not bars:
+            logger.debug("MTF 1h history seed skipped (no bars returned).")
+            return
+        buckets = [
+            {
+                "t": float(b.timestamp),
+                "o": float(b.open),
+                "h": float(b.high),
+                "l": float(b.low),
+                "c": float(b.close),
+                "v": float(b.volume),
+            }
+            for b in bars
+        ]
+        buckets.sort(key=lambda b: b["t"])
+        if time.time() - buckets[-1]["t"] > MTF_SEED_STALE_SEC:
+            logger.debug("MTF 1h history seed skipped (last bar too old).")
+            return
+        if len(buckets) < MultiTimeframeEngine.MIN_HTF_BARS:
+            logger.debug("MTF 1h history seed skipped (%d bars < %d).", len(buckets), MultiTimeframeEngine.MIN_HTF_BARS)
+            return
+        bias = self.mtf_engine.seed_1h_buckets(buckets)
+        self.candles_1h = self.mtf_engine.candles_1h
+        self.htf_ema_50 = self.mtf_engine.htf_ema_50
+        self.htf_ema_200 = self.mtf_engine.htf_ema_200
+        self.htf_bias = bias
+        logger.info("MTF 1h history seeded: %d buckets, bias %s.", len(self.candles_1h), bias)
 
     def _live_indicators(self, price: Decimal) -> Dict[str, Any]:
         """Indicator snapshot handed to evaluate_signal for live entries.
