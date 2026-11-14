@@ -727,7 +727,6 @@ class LiveArenaEngine:
             self._seed_mtf_1h_history()
 
             if not self.live_orders_enabled:
-                self.live_orders_enabled = False
                 self.live_trading_active = False
                 self.live_start_ts = None
 
