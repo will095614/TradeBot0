@@ -376,7 +376,7 @@ class GeneticEvolver:
         return logs
 
     @classmethod
-    def save_history(cls, generation: int, records: List[Dict[str, Any]], evolution_seed: Optional[int] = None) -> None:
+    def save_history(cls, generation: int, records: List[Dict[str, Any]], evolution_seed: Optional[int] = None, storage: Optional[Any] = None) -> None:
         if getattr(sys, "frozen", False) and "ARENA_MEMORY_DIR" not in os.environ:
             appdata = os.environ.get("APPDATA")
             mem_dir = os.path.join(appdata, "TradeBot0", "memory") if appdata else os.path.join(os.path.expanduser("~"), ".tradebot0", "memory")
@@ -411,10 +411,16 @@ class GeneticEvolver:
         os.replace(tmp_path, hist_path)
 
         if records:
+            # Audit 3.20: reuse a caller-owned storage when given (the
+            # live engine passes self.storage); otherwise create one and
+            # close it in the finally below -- previously a fresh
+            # ArenaStorage was created per evolution and never closed.
+            owned_storage = storage is None
             try:
-                from src.data.persistence import ArenaStorage
+                if owned_storage:
+                    from src.data.persistence import ArenaStorage
+                    storage = ArenaStorage()
                 champ = records[0]
-                storage = ArenaStorage()
                 storage.save_evolution_generation(
                     generation=generation,
                     champion_id=str(champ.get("portfolio_id", "")),
@@ -427,6 +433,9 @@ class GeneticEvolver:
                 )
             except Exception as e:
                 logger.warning("Failed to persist evolution history to SQLite: %s", e)
+            finally:
+                if owned_storage and storage is not None:
+                    storage.close()
 
     _save_evolution_history = save_history
 

@@ -2016,7 +2016,9 @@ class LiveArenaEngine:
         # Save history outside self.lock to prevent UI jitter
         if records_to_save and records_to_save[0] and records_to_save[1]:
             try:
-                GeneticEvolver.save_history(records_to_save[0], records_to_save[1])
+                # Audit 3.20: reuse the engine's storage instead of
+                # opening (and leaking) a fresh SQLite connection.
+                GeneticEvolver.save_history(records_to_save[0], records_to_save[1], storage=self.storage)
             except Exception as e:
                 logger.warning("Failed to persist evolution history outside lock: %s", e)
 
