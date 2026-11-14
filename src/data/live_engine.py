@@ -169,6 +169,18 @@ class LiveArenaEngine:
         self.auto_evolve_closed_trades: int = 30
         self.auto_evolve_debounce_sec: int = 1800  # 30 minutes
         self.last_evolve_ts: float = time.time()
+        # Audit 3.5: periodic autosave -- every autosave_interval_sec, plus
+        # after every evolution (see _maybe_autosave / evolve_now). The save
+        # is the same save_session_state() the manual save uses, so the
+        # snapshot format and location are unchanged and restore works
+        # as-is. 60 s is the audit's suggested cadence: one small SQLite
+        # WAL write per minute (~ms) cannot disturb the 1 s cadence, and it
+        # bounds the crash-loss window to at most 60 s of trading (plus
+        # never more than the last evolution, which forces an immediate
+        # save).
+        self.autosave_interval_sec: float = 60.0
+        self._last_autosave_ts: float = time.time()
+        self._autosave_pending: bool = False
         self._closed_trades_since_evolve: int = 0
         self.evolution_events: List[Dict[str, Any]] = []
 
@@ -1688,6 +1700,7 @@ class LiveArenaEngine:
             if self.live_orders_enabled and self.live_start_ts is None:
                 self.live_start_ts = time.time()
             self.last_evolve_ts = time.time()
+            self._last_autosave_ts = time.time()
             self.last_cadence_slot = int(time.time() // self.cadence_sec) * int(self.cadence_sec)
 
         # Start hidden raw quote fetcher in background
@@ -1832,6 +1845,13 @@ class LiveArenaEngine:
 
                 except Exception as e:
                     self.log_event("FEED_WARN", f"Retrying live quote stream: {e}", "loss")
+
+            # Audit 3.5: periodic autosave. Runs on this loop thread (no
+            # extra thread to stop; it stops with the loop) and only after
+            # the cadence block above, so it never holds the engine lock
+            # while a cadence tick is in flight -- _maybe_autosave takes
+            # the lock itself for the brief SQLite write.
+            self._maybe_autosave(now)
 
             time.sleep(0.1)  # High-frequency sleep to hit exact 5-second wall clock slot without drift
 
@@ -1997,6 +2017,11 @@ class LiveArenaEngine:
                 GeneticEvolver.save_history(records_to_save[0], records_to_save[1])
             except Exception as e:
                 logger.warning("Failed to persist evolution history outside lock: %s", e)
+
+        # Audit 3.5: an evolution rewrites every genome -- save the new
+        # generation immediately instead of waiting for the next periodic
+        # autosave, so a crash cannot lose it.
+        self._autosave_pending = True
 
         return logs
 
@@ -2342,6 +2367,28 @@ class LiveArenaEngine:
         except Exception as e:
             logger.error("Failed to save arena session state: %s", e)
             return False
+
+    def _maybe_autosave(self, now: Optional[float] = None) -> bool:
+        """
+        Audit 3.5: write a session snapshot when the periodic autosave is
+        due (autosave_interval_sec since the last one) or an evolution has
+        marked one pending. Called from the live loop, not from a separate
+        thread, so there is nothing extra to start or stop: the loop thread
+        itself performs the save, save_session_state() takes the engine
+        lock (RLock, same as the 3.1 snapshot fix), and the SQLite write
+        is a single small INSERT OR REPLACE (~ms). A failed save is logged
+        by save_session_state() and simply retried at the next due time.
+        """
+        if self._stop_event.is_set() or not self._is_current_generation():
+            return False
+        now = time.time() if now is None else now
+        if not self._autosave_pending and (now - self._last_autosave_ts) < self.autosave_interval_sec:
+            return False
+        ok = self.save_session_state()
+        if ok:
+            self._last_autosave_ts = now
+            self._autosave_pending = False
+        return ok
 
     def restore_session_state(self, snapshot: Optional[Dict[str, Any]] = None) -> bool:
         """
