@@ -221,6 +221,18 @@ def test_startup_ev_gate_enforcement():
     from src.data.timemachine import MonteCarloBracketOdds
 
     engine = LiveArenaEngine(initial_cash=Decimal("500000.00"), symbol="ETH/USD")
+    # Audit 3.3: startup entries route through evaluate_signal, so the
+    # EV gate only sees strategies whose own entry condition holds. Seed
+    # a genuine uptrend + ORB range + session mean so all six attempt an
+    # entry and reach the (mocked failing) gate; with default live state
+    # ORB has no range to break out of and never reaches the gate.
+    engine.live_ema_fast = Decimal("3500.00")
+    engine.live_ema_slow = Decimal("3490.00")
+    engine.live_rsi = Decimal("50.00")
+    engine.live_atr = Decimal("20.00")
+    engine.live_orb_high = Decimal("3490.00")
+    engine.live_orb_low = Decimal("3390.00")
+    engine.live_typical_mean = Decimal("3495.00")
     failing_odds = MonteCarloBracketOdds(
         passed=False,
         target_prob=0.10,
@@ -1007,6 +1019,102 @@ def test_restore_applies_genome_leverage_to_portfolio():
     assert agg.portfolio.margin_locked != stale_margin
 
 
+
+def _startup_engine_long():
+    # Shared setup: uptrend, RSI 50, ATR 20, ORB range 3390-3490 with
+    # price above the high, mean 3495 just under the price -- every
+    # strategy's deploy direction is LONG and its evaluate_signal entry
+    # condition is met.
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    price = Decimal("3500")
+    engine.live_ema_fast = Decimal("3500")
+    engine.live_ema_slow = Decimal("3490")
+    engine.live_rsi = Decimal("50")
+    engine.live_atr = Decimal("20")
+    engine.live_orb_high = Decimal("3490")
+    engine.live_orb_low = Decimal("3390")
+    engine.live_typical_mean = Decimal("3495")
+    engine.broker.on_tick(price, high=price + Decimal("0.05"),
+                          low=price - Decimal("0.05"),
+                          timestamp=time.time(), open_price=price)
+    engine._ensure_active_live_positions(price, time.time())
+    return engine
+
+
+def test_startup_brackets_match_genome_brackets_long():
+    # Audit 3.3: the first trade of a session must carry the genome
+    # brackets (via each strategy's own evaluate_signal), not the old
+    # hardcoded startup brackets (cons 0.6%/0.9%, ATR $50/$100 floors,
+    # trail 0.9%, ORB 0.8%, mean 0.7%).
+    engine = _startup_engine_long()
+    stops = engine.broker.active_stops
+    targets = engine.broker.active_targets
+    # Aggressive LONG (uptrend): genome 3.5% SL, uncapped TP.
+    assert stops["comp_agg"].price == Decimal("3377.50")
+    assert "comp_agg" not in targets
+    # Conservative LONG (RSI 50): genome 1.0% SL / 1.8% TP.
+    assert stops["comp_cons"].price == Decimal("3465.00")
+    assert targets["comp_cons"].price == Decimal("3563.00")
+    # ATR LONG: 1.5xATR SL / 2.5xATR TP, no $50/$100 floors.
+    assert stops["comp_atr"].price == Decimal("3470.00")
+    assert targets["comp_atr"].price == Decimal("3550.00")
+    # Trailing LONG: genome 1.5% SL, no TP.
+    assert stops["comp_trail"].price == Decimal("3447.50")
+    assert "comp_trail" not in targets
+    # ORB LONG (price above range high): midpoint SL, 2.0R target.
+    # orb_mid = (3490 + 3390) / 2 = 3440; stop_dist = 60.
+    assert stops["comp_orb"].price == Decimal("3440.00")
+    assert targets["comp_orb"].price == Decimal("3620.00")
+    # Session Mean LONG (price near the mean): mean-anchored SL, 2.2R.
+    assert stops["comp_vwap"].price == Decimal("3485.00")
+    assert targets["comp_vwap"].price == Decimal("3533.00")
+    # All six actually deployed.
+    assert all(c.portfolio.position_qty > Decimal("0")
+               for c in engine.competitors)
+
+
+def test_startup_brackets_match_genome_brackets_short():
+    # Audit 3.3, short side: downtrend, RSI 60, ATR 20, ORB range
+    # 3510-3610 with price below the low, mean 3505 just above the
+    # price -- every strategy's deploy direction is SHORT and its
+    # evaluate_signal entry condition is met.
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    price = Decimal("3500")
+    engine.live_ema_fast = Decimal("3490")
+    engine.live_ema_slow = Decimal("3500")
+    engine.live_rsi = Decimal("60")
+    engine.live_atr = Decimal("20")
+    engine.live_orb_high = Decimal("3610")
+    engine.live_orb_low = Decimal("3510")
+    engine.live_typical_mean = Decimal("3505")
+    engine.broker.on_tick(price, high=price + Decimal("0.05"),
+                          low=price - Decimal("0.05"),
+                          timestamp=time.time(), open_price=price)
+    engine._ensure_active_live_positions(price, time.time())
+    stops = engine.broker.active_stops
+    targets = engine.broker.active_targets
+    # Aggressive SHORT: genome 3.5% SL, uncapped TP.
+    assert stops["comp_agg"].price == Decimal("3622.50")
+    assert "comp_agg" not in targets
+    # Conservative SHORT: genome 1.0% SL / 1.8% TP.
+    assert stops["comp_cons"].price == Decimal("3535.00")
+    assert targets["comp_cons"].price == Decimal("3437.00")
+    # ATR SHORT: 1.5xATR / 2.5xATR, no floors.
+    assert stops["comp_atr"].price == Decimal("3530.00")
+    assert targets["comp_atr"].price == Decimal("3450.00")
+    # Trailing SHORT: genome 1.5% SL, no TP.
+    assert stops["comp_trail"].price == Decimal("3552.50")
+    assert "comp_trail" not in targets
+    # ORB SHORT (price below range low): midpoint SL, 2.0R target.
+    assert stops["comp_orb"].price == Decimal("3560.00")
+    assert targets["comp_orb"].price == Decimal("3380.00")
+    # Session Mean SHORT: mean-anchored SL, 2.2R target.
+    assert stops["comp_vwap"].price == Decimal("3515.00")
+    assert targets["comp_vwap"].price == Decimal("3467.00")
+    assert all(c.portfolio.position_qty > Decimal("0")
+               for c in engine.competitors)
+
+
 def test_binance_quote_success_parses_all_fields():
     import unittest.mock as mock
 
@@ -1173,24 +1281,29 @@ def test_ensure_active_live_positions_short_brackets():
     engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
     engine.broker.on_tick(price=Decimal("3500.00"), timestamp=1700000000.0)
     # Downtrend for Agg/ATR/Trail, RSI > 52 for Cons short, price below
-    # the ORB midpoint (3550) and below the session mean (3600).
+    # the ORB midpoint (3550) and below the session mean (3510).
     engine.live_ema_fast = Decimal("3490.00")
     engine.live_ema_slow = Decimal("3500.00")
     engine.live_rsi = Decimal("60.00")
     engine.live_atr = Decimal("20.00")
     engine.live_orb_high = Decimal("3600.00")
     engine.live_orb_low = Decimal("3500.00")
-    engine.live_typical_mean = Decimal("3600.00")
+    # Audit 3.3: the mean must sit inside Session Mean's pullback zone
+    # (|price-mean| <= 0.85xATR = 17) or it refuses entry; 3510 is 10
+    # away, still above the price, so the SHORT deploys as intended.
+    engine.live_typical_mean = Decimal("3510.00")
     engine.htf_bias = "NEUTRAL"  # MTF must not veto the SELL side here
     price = Decimal("3500.00")
     engine._ensure_active_live_positions(price, 1700000000.0)
 
     # (pid, expected R from the 3500.00 call price, or None if uncapped)
+    # Audit 3.3: startup brackets are the genome brackets now, so the
+    # R multiples are the genome's -- not the old hardcoded caps'.
     expected_r = {
-        "comp_cons": Decimal("1.5"),   # (3500-3468.50)/(3521-3500) = 31.5/21
-        "comp_atr": Decimal("2.0"),    # (3500-3400)/(3550-3500) = 100/50
-        "comp_orb": Decimal("2.0"),    # (3500-3444)/(3528-3500) = 56/28
-        "comp_vwap": Decimal("2.2"),   # (3500-3446.10)/(3524.50-3500) = 53.9/24.5
+        "comp_cons": Decimal("1.8"),   # (3500-3437)/(3535-3500) = 63/35
+        "comp_atr": Decimal("2.5") / Decimal("1.5"),  # (3500-3450)/(3530-3500) = 50/30 = 5/3
+        "comp_orb": Decimal("2.0"),    # (3500-3400)/(3550-3500) = 100/50
+        "comp_vwap": Decimal("2.2"),   # (3500-3456)/(3520-3500) = 44/20
     }
     for c in engine.competitors:
         pid = c.portfolio_id
@@ -1212,7 +1325,7 @@ def test_ensure_active_live_positions_short_brackets():
             assert target is None, pid
             assert stop.price - price == (
                 Decimal("122.50") if pid == "comp_agg"  # 3.5% of 3500
-                else Decimal("31.50")                    # 0.9% of 3500
+                else Decimal("52.50")                    # 1.5% of 3500 (genome)
             ), pid
 
 
@@ -1529,19 +1642,33 @@ def test_live_tick_integration_fixed_price_series():
     Audit 2.1 changed what closes them: the hardcoded +0.15%..+0.35%
     profit caps are gone, so positions close only at their genome
     brackets (via broker.on_tick), at a stop, or on a kept signal
-    reversal -- and a bracket close sets no cooldown in this harness
+    exit -- and a bracket close sets no cooldown in this harness
     (_drive_fixed drives on_tick directly; the real live loop sets
     60s on closing fills), so strategies re-enter when their entry
-    condition holds again. Net over 60 ticks: 22 fills, 9 closes
-    (7x TAKE_PROFIT + 1x TRAILING_STOP + 1x STOP_LOSS). Aggressive
-    (uncapped TP, no reversal in this series) and ATR (bracket
-    SL 3373 / TP 3713 untouched by the 3403..3703 range) ride the
-    whole series; the trailing guard re-enters SHORT on the falling
-    leg; the closed-trade counter matches the closing fills; no
-    evolution fires (9 < 30 trades, far under the 6h cap)."""
+    condition holds again. Audit 3.3 changed what opens them: the
+    startup brackets are the genome brackets now (Cons 3465/3563,
+    ATR 3372.50/3712.50, ORB 3440/3620, Mean 3456.50/3595.70), and
+    ORB needs a real range to enter, so the harness seeds one
+    (3490/3390) -- without it ORB never deploys. Net over 60 ticks:
+    22 fills, 9 closes (6x TAKE_PROFIT + 1x TRAILING_STOP + 2x
+    STOP_LOSS). Cons closes once, via the cadence SCALP_TP at tick 7
+    (gain 0.5xATR reached before the genome TP 3563), which sets the
+    60s cooldown, so it cannot re-enter within the 60-tick series;
+    ORB closes twice (TP at tick 18, then the re-entered long stops
+    out at 3440 on the falling leg). Aggressive (uncapped TP, no
+    reversal in this series) and ATR (bracket SL 3372.50 / TP 3712.50
+    untouched by the 3403..3703 range) ride the whole series; the
+    trailing guard re-enters SHORT on the falling leg; the closed-trade
+    counter matches the closing fills; no evolution fires (9 < 30
+    trades, far under the 6h cap)."""
     from collections import Counter
 
     engine = LiveArenaEngine(initial_cash=Decimal("500000.00"), symbol="ETH/USD")
+    # Audit 3.3: ORB needs a real opening range to enter (startup and
+    # cadence both route through evaluate_signal now); seed one so all
+    # six deploy on tick 1 as this test intends.
+    engine.live_orb_high = Decimal("3490.00")
+    engine.live_orb_low = Decimal("3390.00")
     t0 = 1700000000.0
     prices = [f"{3500 + 7 * i:.2f}" for i in range(30)] + [f"{3703 - 10 * (i + 1):.2f}" for i in range(30)]
     assert len(prices) == 60
@@ -1550,27 +1677,27 @@ def test_live_tick_integration_fixed_price_series():
 
     state = engine.get_ui_state()
     # Entries: 6 forced opens on tick 1 + re-entries after bracket
-    # closes (cons 1, vwap 5, trail 1).
+    # closes (vwap 5, orb 1, trail 1).
     assert len(engine.fill_records) == 22
-    # Closes are bracket TPs / a stop / the trailing stop / one kept
-    # signal reversal (cons, tick 12) -- none via the removed caps.
+    # Closes are bracket TPs / stops / the trailing stop, plus the
+    # cadence SCALP_TP (cons, tick 7) -- none via the removed caps.
     by_pid = Counter(f.portfolio_id for f in engine.fill_records if getattr(f, "is_closing_fill", False))
-    assert by_pid == {"comp_vwap": 5, "comp_cons": 2, "comp_orb": 1, "comp_trail": 1}
+    assert by_pid == {"comp_vwap": 5, "comp_cons": 1, "comp_orb": 2, "comp_trail": 1}
     reasons = Counter(f.reason.value for f in engine.fill_records if getattr(f, "is_closing_fill", False))
-    assert reasons == {"TAKE_PROFIT": 7, "TRAILING_STOP": 1, "STOP_LOSS": 1}
+    assert reasons == {"TAKE_PROFIT": 6, "TRAILING_STOP": 1, "STOP_LOSS": 2}
     expected_closed = {
-        "comp_agg": 0, "comp_cons": 2, "comp_atr": 0,
-        "comp_trail": 1, "comp_orb": 1, "comp_vwap": 5,
+        "comp_agg": 0, "comp_cons": 1, "comp_atr": 0,
+        "comp_trail": 1, "comp_orb": 2, "comp_vwap": 5,
     }
     for s in state["strategies"]:
         assert s["closed_trades"] == expected_closed[s["id"]], s["id"]
     # The closed-trade counter (evolution trigger input) matches the tape.
     assert engine._closed_trades_since_evolve == 9
-    # Cooldown: only the signal-reversal close (cons, tick 12) sets 60s
-    # in this harness; bracket closes set none here (the real live loop
-    # sets 60s on on_tick closing fills), so the trailing guard's
+    # Cooldown: only the cadence SCALP_TP close (cons, tick 7) sets
+    # 60s in this harness; bracket closes set none here (the real live
+    # loop sets 60s on on_tick closing fills), so the trailing guard's
     # bracket close leaves it free to re-enter SHORT on the falling leg.
-    assert engine.strategy_cooldown["comp_cons"] == t0 + 72.0
+    assert engine.strategy_cooldown["comp_cons"] == t0 + 67.0
     assert "comp_trail" not in engine.strategy_cooldown
     trail = next(s for s in state["strategies"] if s["id"] == "comp_trail")
     assert trail["in_position"] is True

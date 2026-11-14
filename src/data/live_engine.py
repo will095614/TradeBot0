@@ -1323,6 +1323,9 @@ class LiveArenaEngine:
         Ensures that on startup in Live Mode, any flat competitor deploys its initial strategy
         bracket at the current live market price with TimeMachine EV Gate and Dynamic R-Multiple sizing.
         Enters Long or Short according to market conditions and trend bias.
+        The bracket (SL / TP / sizing) comes from each strategy's own evaluate_signal via
+        _enter_via_strategy -- the same path the cadence loop uses -- so the first trade of a
+        session carries the genome brackets, not a second hardcoded set (audit 3.3).
         """
         if price <= Decimal("0"):
             return
@@ -1336,73 +1339,46 @@ class LiveArenaEngine:
         # 1. Aggressive
         if self.comp_a.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_agg", 0.0):
             if is_uptrend:
-                sl = (price * (Decimal("1") - self.comp_a.genome.stop_loss_pct)).quantize(Decimal("0.01"))
-                tp = (price * (Decimal("1") + self.comp_a.genome.take_profit_pct)).quantize(Decimal("0.01")) if self.comp_a.genome.take_profit_pct else None
-                self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKOUT_LONG", side=OrderSide.BUY)
+                self._enter_via_strategy(self.comp_a, price, ts, "BREAKOUT_LONG", side=OrderSide.BUY)
             else:
-                sl = (price * (Decimal("1") + self.comp_a.genome.stop_loss_pct)).quantize(Decimal("0.01"))
-                tp = (price * (Decimal("1") - self.comp_a.genome.take_profit_pct)).quantize(Decimal("0.01")) if self.comp_a.genome.take_profit_pct else None
-                self._try_enter_bracket(self.comp_a, price, sl, tp, ts, "BREAKDOWN_SHORT", side=OrderSide.SELL)
+                self._enter_via_strategy(self.comp_a, price, ts, "BREAKDOWN_SHORT", side=OrderSide.SELL)
 
         # 2. Conservative
         if self.comp_b.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_cons", 0.0):
             if self.live_rsi > Decimal("52.0"):
-                sl = (price * Decimal("1.006")).quantize(Decimal("0.01"))
-                tp = (price * Decimal("0.991")).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_b, price, sl, tp, ts, "SCALP_SHORT", side=OrderSide.SELL)
+                self._enter_via_strategy(self.comp_b, price, ts, "SCALP_SHORT", side=OrderSide.SELL)
             else:
-                sl = (price * Decimal("0.994")).quantize(Decimal("0.01"))
-                tp = (price * Decimal("1.009")).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_b, price, sl, tp, ts, "SCALP_LONG", side=OrderSide.BUY)
+                self._enter_via_strategy(self.comp_b, price, ts, "SCALP_LONG", side=OrderSide.BUY)
 
         # 3. ATR Dynamic
         if self.comp_c.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_atr", 0.0):
-            stop_dist = max(Decimal("50.00"), (self.live_atr * self.comp_c.genome.atr_stop_mult).quantize(Decimal("0.01")))
-            target_dist = max(Decimal("100.00"), (self.live_atr * self.comp_c.genome.atr_target_mult).quantize(Decimal("0.01")))
-            risk_budget = self.comp_c.portfolio.total_equity * self.comp_c.genome.atr_risk_pct
             if is_uptrend:
-                sl = (price - stop_dist).quantize(Decimal("0.01"))
-                tp = (price + target_dist).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_c, price, sl, tp, ts, "ATR_ADAPT_LONG", side=OrderSide.BUY, risk_budget=risk_budget)
+                self._enter_via_strategy(self.comp_c, price, ts, "ATR_ADAPT_LONG", side=OrderSide.BUY)
             else:
-                sl = (price + stop_dist).quantize(Decimal("0.01"))
-                tp = (price - target_dist).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_c, price, sl, tp, ts, "ATR_ADAPT_SHORT", side=OrderSide.SELL, risk_budget=risk_budget)
+                self._enter_via_strategy(self.comp_c, price, ts, "ATR_ADAPT_SHORT", side=OrderSide.SELL)
 
         # 4. Trailing Guard
+        # evaluate_signal arms highest/lowest on entry, so no manual
+        # arming here (same as the cadence path).
         if self.comp_d.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_trail", 0.0):
             if is_uptrend:
-                sl = (price * Decimal("0.991")).quantize(Decimal("0.01"))
-                if self._try_enter_bracket(self.comp_d, price, sl, None, ts, "TRAIL_LONG", side=OrderSide.BUY):
-                    self.comp_d.highest_price_since_entry = price
-                    self.comp_d.lowest_price_since_entry = price
+                self._enter_via_strategy(self.comp_d, price, ts, "TRAIL_LONG", side=OrderSide.BUY)
             else:
-                sl = (price * Decimal("1.009")).quantize(Decimal("0.01"))
-                if self._try_enter_bracket(self.comp_d, price, sl, None, ts, "TRAIL_SHORT", side=OrderSide.SELL):
-                    self.comp_d.highest_price_since_entry = price
-                    self.comp_d.lowest_price_since_entry = price
+                self._enter_via_strategy(self.comp_d, price, ts, "TRAIL_SHORT", side=OrderSide.SELL)
 
         # 5. ORB Breakout
         if self.comp_e.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_orb", 0.0):
             if price >= orb_mid:
-                sl = (price * Decimal("0.992")).quantize(Decimal("0.01"))
-                tp = (price + (price - sl) * Decimal("2.0")).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_LONG", side=OrderSide.BUY)
+                self._enter_via_strategy(self.comp_e, price, ts, "ORB_LONG", side=OrderSide.BUY)
             else:
-                sl = (price * Decimal("1.008")).quantize(Decimal("0.01"))
-                tp = (price - (sl - price) * Decimal("2.0")).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_e, price, sl, tp, ts, "ORB_SHORT", side=OrderSide.SELL)
+                self._enter_via_strategy(self.comp_e, price, ts, "ORB_SHORT", side=OrderSide.SELL)
 
         # 6. Session Mean Pullback
         if self.comp_f.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_vwap", 0.0):
             if price >= mean_ref:
-                sl = (price * Decimal("0.993")).quantize(Decimal("0.01"))
-                tp = (price + (price - sl) * Decimal("2.2")).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_f, price, sl, tp, ts, "MEAN_LONG", side=OrderSide.BUY)
+                self._enter_via_strategy(self.comp_f, price, ts, "MEAN_LONG", side=OrderSide.BUY)
             else:
-                sl = (price * Decimal("1.007")).quantize(Decimal("0.01"))
-                tp = (price - (sl - price) * Decimal("2.2")).quantize(Decimal("0.01"))
-                self._try_enter_bracket(self.comp_f, price, sl, tp, ts, "MEAN_SHORT", side=OrderSide.SELL)
+                self._enter_via_strategy(self.comp_f, price, ts, "MEAN_SHORT", side=OrderSide.SELL)
 
         self._update_telemetry_snapshot(price)
 

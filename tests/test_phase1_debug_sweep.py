@@ -90,7 +90,10 @@ def test_ensure_active_live_positions_respects_strategy_cooldown():
     engine.live_atr = Decimal("20.00")
     engine.live_orb_high = Decimal("3600.00")
     engine.live_orb_low = Decimal("3500.00")
-    engine.live_typical_mean = Decimal("3600.00")
+    # Audit 3.3: the mean must sit inside Session Mean's pullback zone
+    # (|price-mean| <= 0.85xATR = 17) or it refuses entry; 3510 is 10
+    # away, still above the price, so the SHORT deploys as intended.
+    engine.live_typical_mean = Decimal("3510.00")
     engine.htf_bias = "NEUTRAL"
     ts = 1700000000.0
     engine.strategy_cooldown["comp_agg"] = ts + 3600.0  # still cooling down
