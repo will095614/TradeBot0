@@ -41,8 +41,8 @@ def _mock_response(payload, status_ok=True):
     ("1.2", "1.2.0", 0),
     ("1.2", "1.2.1", -1),
     ("2.0.0", "1.9.9", 1),
-    ("V2.5.3", "V2.5.4", -1),
-    ("V2.5.3", "V2.5.3", 0),
+    ("V2.6.0", "V2.6.1", -1),
+    ("V2.6.0", "V2.6.0", 0),
 ])
 def test_compare_versions(a, b, expected):
     assert compare_versions(a, b) == expected
@@ -50,7 +50,7 @@ def test_compare_versions(a, b, expected):
 
 def test_version_single_source():
     assert APP_NAME == "TradeBot0"
-    assert APP_VERSION == "V2.5.3"
+    assert APP_VERSION == "V2.6.0"
 
 
 def test_iss_version_matches_version_py():
@@ -111,7 +111,7 @@ def test_up_to_date_same_version():
 
 
 def test_up_to_date_older_manifest():
-    payload = {"version": "V2.5.2"}
+    payload = {"version": "V2.5.3"}
     with patch("src.update_checker.requests.get", return_value=_mock_response(payload)):
         result = check_for_updates(manifest_url="https://example.invalid/manifest.json")
     assert result["status"] == "up_to_date"
