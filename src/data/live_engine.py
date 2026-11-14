@@ -2203,9 +2203,21 @@ class LiveArenaEngine:
         """
         Phase 6: Diff-based IPC state delta publisher with lock-free double buffering.
         Omits unchanged `candles` and `fills` arrays on consecutive polls.
+
+        Audit §5.2: the delta is now computed from the snapshot directly
+        (ViewModelPublisher.compute_delta_from_snapshot) instead of
+        deep-copying the whole snapshot first and dropping the heavy
+        arrays afterwards. The snapshot is immutable once published, so
+        reading it outside the lock is safe (same pattern as
+        get_ui_state); when no snapshot exists yet the fresh build
+        under the lock is used instead.
         """
-        full_state = self.get_ui_state()
-        return self.view_publisher.compute_delta_payload(full_state, force_full=force_full)
+        with self._snapshot_lock:
+            snap = self._ui_state_snapshot
+        if snap is None:
+            with self.lock:
+                snap = self._build_snapshot_locked()
+        return self.view_publisher.compute_delta_from_snapshot(snap, force_full=force_full)
 
     @staticmethod
     def _serialize_ticket(ticket: Any) -> Optional[Dict[str, Any]]:

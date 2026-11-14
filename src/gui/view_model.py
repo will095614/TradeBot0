@@ -4,6 +4,7 @@ Implements Phase 6 (P3): Engine Modularization & State Delta Streaming over IPC.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -91,6 +92,60 @@ class ViewModelPublisher:
         if fills_same:
             delta.pop("fills", None)
 
+        return delta
+
+    def compute_delta_from_snapshot(
+        self, snapshot: Dict[str, Any], force_full: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Audit §5.2: same output as compute_delta_payload, but the heavy
+        arrays are dropped BEFORE the deepcopy instead of after it.
+
+        The old path deepcopied the whole snapshot (150 candles + 60
+        fills + price histories) on every 1 Hz poll and only then popped
+        the unchanged arrays. This method peeks at the candle/fill
+        signatures first: when both are unchanged it deepcopies
+        everything EXCEPT candles/fills, so the copy cost is the small
+        remainder. When either changed (or on the first poll / force
+        full) it deepcopies the whole snapshot, exactly like before.
+        The snapshot itself is never mutated.
+        """
+        candles = snapshot.get("candles") or []
+        fills = snapshot.get("fills") or []
+        candle_sig = self.compute_candle_signature(candles)
+        top_fill_seq = int(fills[0]["seq"]) if fills and "seq" in fills[0] else 0
+
+        if force_full or self.last_candle_sig is None:
+            self.last_candle_sig = candle_sig
+            self.last_fill_seq = top_fill_seq
+            delta = copy.deepcopy(snapshot)
+            delta["is_delta"] = False
+            delta["candles_unchanged"] = False
+            delta["fills_unchanged"] = False
+            return delta
+
+        candles_same = candle_sig == self.last_candle_sig
+        fills_same = top_fill_seq == self.last_fill_seq
+        self.last_candle_sig = candle_sig
+        self.last_fill_seq = top_fill_seq
+
+        if candles_same and fills_same:
+            delta = copy.deepcopy(
+                {k: v for k, v in snapshot.items() if k not in ("candles", "fills")}
+            )
+            delta["is_delta"] = True
+            delta["candles_unchanged"] = True
+            delta["fills_unchanged"] = True
+            return delta
+
+        delta = copy.deepcopy(snapshot)
+        delta["is_delta"] = bool(candles_same or fills_same)
+        delta["candles_unchanged"] = candles_same
+        delta["fills_unchanged"] = fills_same
+        if candles_same:
+            delta.pop("candles", None)
+        if fills_same:
+            delta.pop("fills", None)
         return delta
 
 
