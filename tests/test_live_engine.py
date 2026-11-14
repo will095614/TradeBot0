@@ -468,6 +468,26 @@ def _open_short(engine, pid, qty="0.5", ts=1700001000.0):
     return fill
 
 
+def _open_long(engine, pid, qty="0.5", ts=1700001000.0):
+    """Open a long directly through the broker (fill just above 3500).
+
+    Mirror of _open_short: the entry ticket carries a stop below /
+    target above entry, so broker.active_stops/targets are armed like a
+    real live entry.
+    """
+    from src.arena.order import OrderSide, OrderType, OrderTicket
+
+    engine.broker.current_price = Decimal("3500.00")
+    ticket = OrderTicket(
+        pid, "ETH/USD", OrderSide.BUY, OrderType.MARKET, qty=Decimal(qty),
+        stop_loss=Decimal("3447.50"), take_profit=Decimal("3570.00"),
+        timestamp=ts,
+    )
+    fill = engine.broker.submit_order(ticket)
+    assert fill is not None
+    return fill
+
+
 def _kraken_payload():
     return {"result": {"ETHUSD": {
         "c": ["3500.55", "0.1"],
@@ -497,7 +517,21 @@ def _mock_resp(status=200, payload=None):
     return resp
 
 
-def test_evaluate_live_strategies_short_take_profits():
+def test_evaluate_live_strategies_short_exits_are_signal_only():
+    """Audit 2.1: the hardcoded +0.25%/+0.15%/+0.35%/+0.30% profit caps
+    (and ATR's max($8, 1.4xATR) cap) are gone -- a favourable move no
+    longer closes a position by itself. Only a genuine signal reversal
+    closes (Conservative: price back to EMA-fast; Session Mean: price
+    past mean - 1.5xATR), and the Trailing Guard still ratchets.
+
+    Same setup as the old short-take-profits test (2.5% favourable
+    move, all six short): Aggressive / ATR / ORB stay SHORT with their
+    brackets intact -- the 2.5% move is far past every removed cap, yet
+    nothing closes them. The bracket TP (3430.00) is already passed by
+    the 3412 price, so in the real cadence broker.on_tick would have
+    filled it before _evaluate_live_strategies runs; this test drives
+    _evaluate_live_strategies directly, so it stays armed here.
+    """
     from src.arena.order import ExecutionReason, OrderSide, PositionSide
 
     engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
@@ -512,24 +546,30 @@ def test_evaluate_live_strategies_short_take_profits():
     engine.live_rsi = Decimal("50.00")
     engine.live_ema_fast = Decimal("3500.00")
     engine.live_ema_slow = Decimal("3490.00")
-    # 2.5% favourable move clears every short TP threshold at once:
-    # agg 0.25%, cons 0.15%, atr max($8, 1.4*ATR)=$28 (~0.8%),
-    # orb 0.35%, vwap 0.30% -- and the trailing trigger (2.0%).
     entry = entries["comp_agg"]
     price = (entry * Decimal("0.975")).quantize(Decimal("0.01"))
     engine.broker.current_price = price
     engine._evaluate_live_strategies(price, entry, ts)
 
-    tp_pids = ["comp_agg", "comp_cons", "comp_atr", "comp_orb", "comp_vwap"]
-    for pid in tp_pids:
+    # No profit cap: Aggressive / ATR / ORB stay short, brackets intact.
+    for pid in ("comp_agg", "comp_atr", "comp_orb"):
         comp = next(c for c in engine.competitors if c.portfolio_id == pid)
-        assert comp.portfolio.position_qty == Decimal("0")
-        assert comp.portfolio.position_side == PositionSide.FLAT
-        assert engine.strategy_cooldown[pid] == ts + 60.0
-        assert pid not in engine.broker.active_stops
-        assert pid not in engine.broker.active_targets
+        assert comp.portfolio.position_qty == Decimal("0.5"), pid
+        assert comp.portfolio.position_side == PositionSide.SHORT, pid
+        assert pid not in engine.strategy_cooldown, pid
+        assert pid in engine.broker.active_targets, pid  # bracket still armed
+
+    # Signal reversals still close: Conservative (price back under
+    # EMA-fast) and Session Mean (price past mean - 1.5xATR).
+    for pid in ("comp_cons", "comp_vwap"):
+        comp = next(c for c in engine.competitors if c.portfolio_id == pid)
+        assert comp.portfolio.position_qty == Decimal("0"), pid
+        assert comp.portfolio.position_side == PositionSide.FLAT, pid
+        assert engine.strategy_cooldown[pid] == ts + 60.0, pid
+        assert pid not in engine.broker.active_stops, pid
+        assert pid not in engine.broker.active_targets, pid
     tp_fills = [f for f in engine.broker.execution_audit if f.reason == ExecutionReason.TAKE_PROFIT]
-    assert {f.portfolio_id for f in tp_fills} == set(tp_pids)
+    assert {f.portfolio_id for f in tp_fills} == {"comp_cons", "comp_vwap"}
     for f in tp_fills:
         assert f.side == OrderSide.BUY  # covering a short
         assert f.qty == Decimal("0.5")
@@ -547,6 +587,116 @@ def test_evaluate_live_strategies_short_take_profits():
     assert new_stop.price == (price * (Decimal("1") + trail.genome.trailing_distance_pct)).quantize(Decimal("0.01"))
     assert new_stop.price < Decimal("3552.50")
     assert "comp_trail" not in engine.strategy_cooldown
+
+
+def test_evaluate_live_strategies_small_gain_does_not_close_longs():
+    """Audit 2.1 (longs): a +1.00% gain -- past every removed profit cap
+    (agg 0.25%, cons 0.15%, atr max($8, 1.4xATR)=$28, orb 0.35%, vwap
+    0.30%) -- must NOT close any long. Indicators are set so no signal
+    reversal fires either (EMA-fast above price, ORB mid below price,
+    mean + 1.5xATR above price), so the only exit left is the genome
+    bracket, which sits at 3570.00, above the test price."""
+    from src.arena.order import ExecutionReason, PositionSide
+
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    ts = 1700001000.0
+    opened = ("comp_agg", "comp_cons", "comp_atr", "comp_orb", "comp_vwap")
+    for pid in opened:
+        _open_long(engine, pid, ts=ts)
+    entries = {
+        pid: next(c for c in engine.competitors if c.portfolio_id == pid).portfolio.avg_entry_price
+        for pid in opened
+    }
+    for entry in entries.values():
+        assert Decimal("3400.00") < entry < Decimal("3600.00")
+
+    engine.live_atr = Decimal("20.00")
+    engine.live_rsi = Decimal("50.00")
+    engine.live_ema_fast = Decimal("3540.00")
+    engine.live_ema_slow = Decimal("3530.00")
+    engine.live_orb_high = Decimal("3535.00")
+    engine.live_orb_low = Decimal("3515.00")
+    engine.live_typical_mean = Decimal("3520.00")
+    entry = entries["comp_agg"]
+    price = (entry * Decimal("1.01")).quantize(Decimal("0.01"))
+    engine.broker.current_price = price
+    engine._evaluate_live_strategies(price, entry, ts)
+
+    for pid in ("comp_agg", "comp_cons", "comp_atr", "comp_orb", "comp_vwap"):
+        comp = next(c for c in engine.competitors if c.portfolio_id == pid)
+        assert comp.portfolio.position_qty == Decimal("0.5"), pid
+        assert comp.portfolio.position_side == PositionSide.LONG, pid
+        assert pid not in engine.strategy_cooldown, pid
+        assert pid in engine.broker.active_targets, pid  # bracket intact
+    assert not [f for f in engine.broker.execution_audit
+                if f.reason == ExecutionReason.TAKE_PROFIT]
+
+
+def test_evaluate_live_strategies_small_gain_does_not_close_shorts():
+    """Audit 2.1 (shorts): a -1.00% favourable move -- past every removed
+    profit cap -- must NOT close any short. Indicators are set so no
+    signal reversal fires either (EMA-fast below price, ORB mid above
+    price, mean - 1.5xATR below price). The Trailing Guard stays open
+    too: its 2.0% trigger is not reached at a 1.0% gain."""
+    from src.arena.order import ExecutionReason, PositionSide
+
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    ts = 1700001000.0
+    for pid in ("comp_agg", "comp_cons", "comp_atr", "comp_trail", "comp_orb", "comp_vwap"):
+        _open_short(engine, pid, ts=ts)
+    entries = {c.portfolio_id: c.portfolio.avg_entry_price for c in engine.competitors}
+    for entry in entries.values():
+        assert Decimal("3400.00") < entry < Decimal("3600.00")
+
+    engine.live_atr = Decimal("20.00")
+    engine.live_rsi = Decimal("50.00")
+    engine.live_ema_fast = Decimal("3460.00")
+    engine.live_ema_slow = Decimal("3470.00")
+    engine.live_orb_high = Decimal("3490.00")
+    engine.live_orb_low = Decimal("3470.00")
+    engine.live_typical_mean = Decimal("3480.00")
+    entry = entries["comp_agg"]
+    price = (entry * Decimal("0.99")).quantize(Decimal("0.01"))
+    engine.broker.current_price = price
+    engine._evaluate_live_strategies(price, entry, ts)
+
+    for pid in ("comp_agg", "comp_cons", "comp_atr", "comp_trail", "comp_orb", "comp_vwap"):
+        comp = next(c for c in engine.competitors if c.portfolio_id == pid)
+        assert comp.portfolio.position_qty == Decimal("0.5"), pid
+        assert comp.portfolio.position_side == PositionSide.SHORT, pid
+        assert pid not in engine.strategy_cooldown, pid
+        assert pid in engine.broker.active_targets, pid  # bracket intact
+    assert not [f for f in engine.broker.execution_audit
+                if f.reason == ExecutionReason.TAKE_PROFIT]
+
+
+def test_bracket_take_profit_closes_via_on_tick():
+    """Audit 2.1: with the hardcoded profit caps gone, the genome
+    bracket is what closes a position at its target. A long whose
+    bracket TP sits at 3570.00 closes when broker.on_tick sees the
+    high touch 3570.00 -- with a TAKE_PROFIT fill, the position flat,
+    and the bracket cleared."""
+    from src.arena.order import ExecutionReason, OrderSide, PositionSide
+
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    ts = 1700001000.0
+    _open_long(engine, "comp_agg", ts=ts)
+    comp = engine.comp_a
+    assert comp.portfolio.position_side == PositionSide.LONG
+    assert engine.broker.active_targets["comp_agg"].price == Decimal("3570.00")
+
+    fills = engine.broker.on_tick(
+        price=Decimal("3570.00"), high=Decimal("3570.00"),
+        low=Decimal("3570.00"), timestamp=ts, open_price=Decimal("3570.00"),
+    )
+    assert len(fills) == 1
+    assert fills[0].reason == ExecutionReason.TAKE_PROFIT
+    assert fills[0].side == OrderSide.SELL
+    assert fills[0].qty == Decimal("0.5")
+    assert comp.portfolio.position_qty == Decimal("0")
+    assert comp.portfolio.position_side == PositionSide.FLAT
+    assert "comp_agg" not in engine.broker.active_targets
+    assert "comp_agg" not in engine.broker.active_stops
 
 
 def test_evaluate_live_strategies_short_entries():
@@ -1293,12 +1443,21 @@ def test_toggle_auto_evolve_reenable_compensates_disabled_time(monkeypatch):
 def test_live_tick_integration_fixed_price_series():
     """P2 §2.10: 60 fixed-price ticks (no real time) replace the old
     'run the loop 1s and hope' coverage: rise 3500 -> 3703 (+7/tick),
-    then fall -> 3403 (-10/tick). Every strategy enters on tick 1 and
-    closes exactly once (5x TAKE_PROFIT + 1x TRAILING_STOP); the
-    trailing guard re-enters SHORT on the falling leg while the other
-    five sit out their 60s post-close cooldown; the closed-trade
-    counter matches the closing fills; no evolution fires (6 < 30
-    trades, far under the 6h cap)."""
+    then fall -> 3403 (-10/tick). Every strategy enters on tick 1.
+
+    Audit 2.1 changed what closes them: the hardcoded +0.15%..+0.35%
+    profit caps are gone, so positions close only at their genome
+    brackets (via broker.on_tick), at a stop, or on a kept signal
+    reversal -- and a bracket close sets no cooldown in this harness
+    (_drive_fixed drives on_tick directly; the real live loop sets
+    60s on closing fills), so strategies re-enter when their entry
+    condition holds again. Net over 60 ticks: 22 fills, 9 closes
+    (7x TAKE_PROFIT + 1x TRAILING_STOP + 1x STOP_LOSS). Aggressive
+    (uncapped TP, no reversal in this series) and ATR (bracket
+    SL 3373 / TP 3713 untouched by the 3403..3703 range) ride the
+    whole series; the trailing guard re-enters SHORT on the falling
+    leg; the closed-trade counter matches the closing fills; no
+    evolution fires (9 < 30 trades, far under the 6h cap)."""
     from collections import Counter
 
     engine = LiveArenaEngine(initial_cash=Decimal("500000.00"), symbol="ETH/USD")
@@ -1309,36 +1468,48 @@ def test_live_tick_integration_fixed_price_series():
     assert engine.tick_count == 60
 
     state = engine.get_ui_state()
-    # Entries: 6 forced opens on tick 1 + trailing re-entry SHORT.
-    assert len(engine.fill_records) == 13
-    # Each strategy closed exactly once; 5 TP + 1 trailing stop.
+    # Entries: 6 forced opens on tick 1 + re-entries after bracket
+    # closes (cons 1, vwap 5, trail 1).
+    assert len(engine.fill_records) == 22
+    # Closes are bracket TPs / a stop / the trailing stop / one kept
+    # signal reversal (cons, tick 12) -- none via the removed caps.
     by_pid = Counter(f.portfolio_id for f in engine.fill_records if getattr(f, "is_closing_fill", False))
-    assert by_pid == {pid: 1 for pid in
-                      ("comp_agg", "comp_cons", "comp_atr", "comp_trail", "comp_orb", "comp_vwap")}
+    assert by_pid == {"comp_vwap": 5, "comp_cons": 2, "comp_orb": 1, "comp_trail": 1}
     reasons = Counter(f.reason.value for f in engine.fill_records if getattr(f, "is_closing_fill", False))
-    assert reasons == {"TAKE_PROFIT": 5, "TRAILING_STOP": 1}
+    assert reasons == {"TAKE_PROFIT": 7, "TRAILING_STOP": 1, "STOP_LOSS": 1}
+    expected_closed = {
+        "comp_agg": 0, "comp_cons": 2, "comp_atr": 0,
+        "comp_trail": 1, "comp_orb": 1, "comp_vwap": 5,
+    }
     for s in state["strategies"]:
-        assert s["closed_trades"] == 1, s["id"]
+        assert s["closed_trades"] == expected_closed[s["id"]], s["id"]
     # The closed-trade counter (evolution trigger input) matches the tape.
-    assert engine._closed_trades_since_evolve == 6
-    # Cooldown: the 5 TP-closed strategies sit out 60s; the trailing
-    # guard closed via a broker trailing stop (no cooldown set) and
-    # re-entered SHORT on the falling leg.
-    for pid in ("comp_agg", "comp_cons", "comp_atr", "comp_orb", "comp_vwap"):
-        assert pid in engine.strategy_cooldown, pid
-        assert engine.strategy_cooldown[pid] > t0 + 59.0, pid
+    assert engine._closed_trades_since_evolve == 9
+    # Cooldown: only the signal-reversal close (cons, tick 12) sets 60s
+    # in this harness; bracket closes set none here (the real live loop
+    # sets 60s on on_tick closing fills), so the trailing guard's
+    # bracket close leaves it free to re-enter SHORT on the falling leg.
+    assert engine.strategy_cooldown["comp_cons"] == t0 + 72.0
     assert "comp_trail" not in engine.strategy_cooldown
     trail = next(s for s in state["strategies"] if s["id"] == "comp_trail")
     assert trail["in_position"] is True
     assert trail["position_side"] == "SHORT"
+    # Aggressive (uncapped) and ATR (bracket untouched) ride the series;
+    # Session Mean rides its last short; Conservative and ORB end flat.
     for s in state["strategies"]:
-        if s["id"] != "comp_trail":
+        if s["id"] in ("comp_agg", "comp_atr"):
+            assert s["in_position"] is True, s["id"]
+            assert s["position_side"] == "LONG", s["id"]
+        elif s["id"] in ("comp_vwap", "comp_trail"):
+            assert s["in_position"] is True, s["id"]
+            assert s["position_side"] == "SHORT", s["id"]
+        else:
             assert s["in_position"] is False, s["id"]
-    # No evolution: 6 < 30 closed trades and minutes under the 6h cap.
+    # No evolution: 9 < 30 closed trades and minutes under the 6h cap.
     assert state["generation"] == 1
     assert engine.evolution_events == []
     assert engine._auto_evolve_due(now=t0 + 60.0) is False
-    # The honest countdown already reflects the 6 closed trades.
+    # The honest countdown already reflects the 9 closed trades.
     assert 0 < state["next_evolve_sec"] < state["next_evolve_sec_latest"]
-    assert state["closed_trades_since_evolve"] == 6
-    assert state["closed_trades_to_next_evolve"] == 24
+    assert state["closed_trades_since_evolve"] == 9
+    assert state["closed_trades_to_next_evolve"] == 21

@@ -1032,6 +1032,13 @@ class LiveArenaEngine:
         Executes differentiated real-time decision logic for each of the 6 strategies on every live tick/bar.
         Incorporates bidirectional Long & Short setups, anti-churn cooldowns, channel stagnation exits,
         and dynamic volatility adaptation.
+
+        Exits: profit-taking is owned by the genome brackets
+        (BrokerSim.active_targets, evaluated by on_tick every cadence);
+        the per-strategy blocks below close only on signal reversals.
+        (Audit 2.1: the hardcoded +0.25%/+0.15%/+0.35%/+0.30% and ATR
+        max($8, 1.4xATR) profit caps were removed -- they fired long
+        before the genome TP and made evolution tune a TP that never ran.)
         """
         vel = price - prev_price
         is_uptrend = self.live_ema_fast >= self.live_ema_slow
@@ -1073,8 +1080,7 @@ class LiveArenaEngine:
             if entry_p > Decimal("0"):
                 if p_agg.position_side == PositionSide.SHORT:
                     gain_usd = entry_p - price
-                    gain_pct = (gain_usd / entry_p) * Decimal("100")
-                    if gain_pct >= Decimal("0.25") or (self.live_ema_fast > self.live_ema_slow and self.live_rsi > Decimal("52") and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                    if self.live_ema_fast > self.live_ema_slow and self.live_rsi > Decimal("52") and gain_usd >= (self.live_atr * Decimal("0.5")):
                         fill = self.broker.submit_order(OrderTicket(
                             portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.BUY,
                             order_type=OrderType.MARKET, qty=p_agg.position_qty,
@@ -1095,8 +1101,7 @@ class LiveArenaEngine:
                             self.log_event("MOMENTUM_EXIT", f"Aggressive covered short {fill.qty} ETH @ ${fill.price:,.2f} (PnL ${fill.realized_pnl:+.2f})", "profit" if fill.realized_pnl >= 0 else "loss")
                 else:
                     gain_usd = price - entry_p
-                    gain_pct = (gain_usd / entry_p) * Decimal("100")
-                    if gain_pct >= Decimal("0.25") or (self.live_ema_fast < self.live_ema_slow and self.live_rsi < Decimal("48") and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                    if self.live_ema_fast < self.live_ema_slow and self.live_rsi < Decimal("48") and gain_usd >= (self.live_atr * Decimal("0.5")):
                         fill = self.broker.submit_order(OrderTicket(
                             portfolio_id="comp_agg", symbol=self.symbol, side=OrderSide.SELL,
                             order_type=OrderType.MARKET, qty=p_agg.position_qty,
@@ -1132,8 +1137,7 @@ class LiveArenaEngine:
             if entry_p > Decimal("0"):
                 if p_cons.position_side == PositionSide.SHORT:
                     gain_usd = entry_p - price
-                    gain_pct = (gain_usd / entry_p) * Decimal("100")
-                    if gain_pct >= Decimal("0.15") or (price <= self.live_ema_fast and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                    if price <= self.live_ema_fast and gain_usd >= (self.live_atr * Decimal("0.5")):
                         fill = self.broker.submit_order(OrderTicket(
                             portfolio_id="comp_cons", symbol=self.symbol, side=OrderSide.BUY,
                             order_type=OrderType.MARKET, qty=p_cons.position_qty,
@@ -1145,8 +1149,7 @@ class LiveArenaEngine:
                             self.log_event("SCALP_TP", f"Conservative locked short profit {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
                 else:
                     gain_usd = price - entry_p
-                    gain_pct = (gain_usd / entry_p) * Decimal("100")
-                    if gain_pct >= Decimal("0.15") or (price >= self.live_ema_fast and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                    if price >= self.live_ema_fast and gain_usd >= (self.live_atr * Decimal("0.5")):
                         fill = self.broker.submit_order(OrderTicket(
                             portfolio_id="comp_cons", symbol=self.symbol, side=OrderSide.SELL,
                             order_type=OrderType.MARKET, qty=p_cons.position_qty,
@@ -1167,34 +1170,11 @@ class LiveArenaEngine:
                 self._enter_via_strategy(self.comp_c, price, ts, "ATR_ADAPT_LONG", side=OrderSide.BUY)
             elif (price <= self.live_ema_fast and vel < Decimal("0")) or self.live_rsi > Decimal("58"):
                 self._enter_via_strategy(self.comp_c, price, ts, "ATR_ADAPT_SHORT", side=OrderSide.SELL)
-        else:
-            entry_p = p_atr.avg_entry_price
-            if entry_p > Decimal("0"):
-                target_threshold = max(Decimal("8.00"), self.live_atr * Decimal("1.4"))
-                if p_atr.position_side == PositionSide.SHORT:
-                    gain_usd = entry_p - price
-                    if gain_usd >= target_threshold:
-                        fill = self.broker.submit_order(OrderTicket(
-                            portfolio_id="comp_atr", symbol=self.symbol, side=OrderSide.BUY,
-                            order_type=OrderType.MARKET, qty=p_atr.position_qty,
-                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
-                        ))
-                        if fill:
-                            self.strategy_cooldown["comp_atr"] = ts + 60.0
-                            self.position_entry_ts.pop("comp_atr", None)
-                            self.log_event("ATR_TP", f"ATR Dynamic locked short target {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
-                else:
-                    gain_usd = price - entry_p
-                    if gain_usd >= target_threshold:
-                        fill = self.broker.submit_order(OrderTicket(
-                            portfolio_id="comp_atr", symbol=self.symbol, side=OrderSide.SELL,
-                            order_type=OrderType.MARKET, qty=p_atr.position_qty,
-                            reason=ExecutionReason.TAKE_PROFIT, timestamp=ts
-                        ))
-                        if fill:
-                            self.strategy_cooldown["comp_atr"] = ts + 60.0
-                            self.position_entry_ts.pop("comp_atr", None)
-                            self.log_event("ATR_TP", f"ATR Dynamic locked long target {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
+        # No per-tick exit block (audit 2.1): ATR exits via its genome
+        # bracket (SL 1.5xATR / TP 2.5xATR) through broker.on_tick. The old
+        # max($8, 1.4xATR) cap fired before the genome TP (1.4xATR <
+        # 2.5xATR) and was a duplicate exit path with no signal content,
+        # so it is deleted rather than kept.
 
         # --- 4. Trailing Profit Ratchet Guard (comp_trail) ---
         p_trail = self.comp_d.portfolio
@@ -1265,8 +1245,7 @@ class LiveArenaEngine:
             if entry_p > Decimal("0"):
                 if p_orb.position_side == PositionSide.SHORT:
                     gain_usd = entry_p - price
-                    gain_pct = (gain_usd / entry_p) * Decimal("100")
-                    if gain_pct >= Decimal("0.35") or (price > orb_mid and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                    if price > orb_mid and gain_usd >= (self.live_atr * Decimal("0.5")):
                         fill = self.broker.submit_order(OrderTicket(
                             portfolio_id="comp_orb", symbol=self.symbol, side=OrderSide.BUY,
                             order_type=OrderType.MARKET, qty=p_orb.position_qty,
@@ -1278,8 +1257,7 @@ class LiveArenaEngine:
                             self.log_event("ORB_TP", f"ORB locked short target {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
                 else:
                     gain_usd = price - entry_p
-                    gain_pct = (gain_usd / entry_p) * Decimal("100")
-                    if gain_pct >= Decimal("0.35") or (price < orb_mid and gain_usd >= (self.live_atr * Decimal("0.5"))):
+                    if price < orb_mid and gain_usd >= (self.live_atr * Decimal("0.5")):
                         fill = self.broker.submit_order(OrderTicket(
                             portfolio_id="comp_orb", symbol=self.symbol, side=OrderSide.SELL,
                             order_type=OrderType.MARKET, qty=p_orb.position_qty,
@@ -1315,8 +1293,7 @@ class LiveArenaEngine:
             if entry_p > Decimal("0"):
                 if p_vwap.position_side == PositionSide.SHORT:
                     gain_usd = entry_p - price
-                    gain_pct = (gain_usd / entry_p) * Decimal("100")
-                    if gain_pct >= Decimal("0.30") or (price <= (mean_ref - self.live_atr * Decimal("1.5")) and gain_usd >= (self.live_atr * Decimal("0.6"))):
+                    if price <= (mean_ref - self.live_atr * Decimal("1.5")) and gain_usd >= (self.live_atr * Decimal("0.6")):
                         fill = self.broker.submit_order(OrderTicket(
                             portfolio_id="comp_vwap", symbol=self.symbol, side=OrderSide.BUY,
                             order_type=OrderType.MARKET, qty=p_vwap.position_qty,
@@ -1328,8 +1305,7 @@ class LiveArenaEngine:
                             self.log_event("MEAN_TP", f"VWAP locked short profit {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
                 else:
                     gain_usd = price - entry_p
-                    gain_pct = (gain_usd / entry_p) * Decimal("100")
-                    if gain_pct >= Decimal("0.30") or (price >= (mean_ref + self.live_atr * Decimal("1.5")) and gain_usd >= (self.live_atr * Decimal("0.6"))):
+                    if price >= (mean_ref + self.live_atr * Decimal("1.5")) and gain_usd >= (self.live_atr * Decimal("0.6")):
                         fill = self.broker.submit_order(OrderTicket(
                             portfolio_id="comp_vwap", symbol=self.symbol, side=OrderSide.SELL,
                             order_type=OrderType.MARKET, qty=p_vwap.position_qty,
