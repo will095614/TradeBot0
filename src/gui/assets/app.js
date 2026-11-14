@@ -3448,12 +3448,30 @@ function updateUiClockDisplay() {
       if (currentMainView !== 'intel' && listContainer.children.length > 0) {
         // Hub panel is hidden; preserve existing DOM nodes to save rendering cycles
       } else if (events.length === 0) {
-        const emptyHtml = '<div style="color:var(--ss-text-faint);font-size:12px;padding:24px;text-align:center;">Synchronizing multi-domain live intelligence stream...</div>';
-        if (listContainer._lastHtml !== emptyHtml) {
-          listContainer.innerHTML = emptyHtml;
-          listContainer._lastHtml = emptyHtml;
+        // Intel Hub layout (workstream 3): the empty stream is a
+        // loading block centered in the stream section (label +
+        // meter + percent), not a line pinned to the top of a void.
+        // The percent is the backend pipeline milestone, capped at
+        // 90 until the first events actually render -- it never
+        // claims 100 while the stream is still loading.
+        listContainer.classList.add('is-loading');
+        const sync = intel.sync || {};
+        const stage = typeof sync.stage === 'string' ? sync.stage : 'idle';
+        const rawPct = Number(sync.percent);
+        const pct = Math.min(Number.isFinite(rawPct) ? rawPct : 0, 90);
+        let loadLabel = (typeof sync.detail === 'string' && sync.detail) ? sync.detail : 'Starting sync…';
+        if (stage === 'failed') loadLabel += ' — press Refresh News Analysis to retry';
+        const loadHtml = '<div class="intel-stream-loading">'
+          + '<div class="intel-stream-loading-label">' + escapeHtml(loadLabel) + '</div>'
+          + '<div class="ss-meter intel-stream-progress-track"><div class="ss-meter__fill intel-stream-progress-fill" style="width:' + pct + '%"></div></div>'
+          + '<div class="intel-stream-progress-pct num">' + pct + '%</div>'
+          + '</div>';
+        if (listContainer._lastHtml !== loadHtml) {
+          listContainer.innerHTML = loadHtml;
+          listContainer._lastHtml = loadHtml;
         }
       } else {
+        listContainer.classList.remove('is-loading');
         const nextEventsHtml = events.map(evt => {
           const sent = Number(evt.sentiment || 0);
           let sentCls = 'neutral', sentTxt = `${sent >= 0 ? '+' : ''}${sent.toFixed(2)} Neutral`;

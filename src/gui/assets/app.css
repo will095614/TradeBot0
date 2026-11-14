@@ -3255,12 +3255,32 @@ tbody td {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1;
 }
 
 .intel-metrics-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
+}
+
+/* Intel Hub layout (workstream 3): the Market Direction card used to
+   end in a dead void -- its four metric cells were short while the
+   AI Services card set the row height. The row now takes the free
+   height (and its single grid row stretches to fill it), the cell
+   content centers vertically, and the Refresh row pins to the bottom
+   of the AI Services card, so both top cards read as intentionally
+   filled instead of half-empty. The Advanced reserved slot is
+   untouched, so expanding/collapsing it still moves nothing. */
+.intel-top-deck .intel-panel:last-child .intel-metrics-row {
+  flex: 1;
+  align-content: stretch;
+}
+.intel-top-deck .intel-panel:last-child .intel-metric {
+  justify-content: center;
+}
+.intel-top-deck .intel-panel:first-child .intel-meta-subrow {
+  margin-top: auto;
 }
 
 .intel-metric {
@@ -3659,6 +3679,43 @@ tbody td {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
   gap: 12px;
+}
+
+/* Intel Hub stream loading (workstream 3): while the first curated
+   events are still missing, the list switches from grid to a
+   centering flex, so the loading block (label + meter + percent)
+   sits in the middle of the stream section instead of a line pinned
+   to the top of a void. When the first events render, the class is
+   removed and the cards lay out as a grid from the top. */
+.intel-events-list.is-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+}
+.intel-stream-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: min(460px, 72%);
+  padding: 24px 0;
+  text-align: center;
+}
+.intel-stream-loading-label {
+  font-size: 12px;
+  color: var(--ss-text-muted);
+}
+.intel-stream-progress-track {
+  width: 100%;
+}
+.intel-stream-progress-fill {
+  min-width: 4px;
+}
+.intel-stream-progress-pct {
+  font-size: 11px;
+  font-weight: 700;
+  color: #67E8F9;
 }
 
 .intel-event-card {

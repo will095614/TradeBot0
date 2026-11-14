@@ -25,6 +25,23 @@ WEIGHTED_WINDOW_MIN = 60.0
 WEIGHTED_MAX_EVENTS = 30
 WEIGHTED_HALF_LIFE_MIN = 60.0
 
+# First-sync progress (workstream 3): milestone percent for each real
+# pipeline stage of refresh_digest_async. The percent is the stage
+# milestone, never measured time: 100 is reported only when the run
+# actually produced events; a run that ends with an empty stream stays
+# at or below 90, so the loading bar never claims completion while the
+# stream is still loading.
+SYNC_STAGE_PERCENT = {
+    "idle": 0,
+    "checking": 10,
+    "fetching": 30,
+    "processing": 55,
+    "forum": 70,
+    "synthesizing": 85,
+    "waiting": 85,
+    "done": 100,
+}
+
 
 def _event_age_min(timestamp: str, now: float) -> float:
     """Minutes between an event's ISO8601 timestamp and `now`.
@@ -121,6 +138,14 @@ class MacroCommander:
         self.last_synthesis_time: float = 0.0
         self.curated_events: List[Dict[str, Any]] = []
         self._seed_default_events()
+        # First-sync progress (workstream 3): the current pipeline
+        # stage + milestone percent, read by get_intel_hub_telemetry.
+        self.sync_status: Dict[str, Any] = {
+            "stage": "idle",
+            "percent": 0,
+            "detail": "",
+            "updated_at": 0.0,
+        }
 
     def _seed_default_events(self) -> None:
         # No fabricated news: the intel timeline starts empty and is filled
@@ -197,38 +222,78 @@ class MacroCommander:
             acts.pop()
         self.current_state.latest_event = active_evt
 
+    def _set_sync_stage(self, stage: str, detail: str = "", percent: Optional[int] = None) -> None:
+        """Records the current sync stage (atomic dict replacement, so
+        the telemetry reader never sees a half-written status)."""
+        if percent is None:
+            percent = SYNC_STAGE_PERCENT.get(stage, 0)
+        if stage == "failed":
+            # A failed run keeps the last milestone reached -- the bar
+            # never advances on a failure, and never claims 100.
+            percent = self.sync_status.get("percent", 0)
+        self.sync_status = {
+            "stage": stage,
+            "percent": percent,
+            "detail": detail,
+            "updated_at": time.time(),
+        }
+
     async def refresh_digest_async(self) -> MacroRegimeState:
         """
         Triggers an AI-driven refresh of macro intelligence, fetching genuine live RSS feeds
         over HTTP and synthesizing through OmniRoute or local deterministic NLP.
+        Records the real pipeline stage in self.sync_status so the Intel
+        Hub stream loading bar can show honest milestone progress.
         """
+        fetch_error: Optional[str] = None
         try:
-            await self.client.check_health()
+            self._set_sync_stage("checking", "Checking AI gateway")
             try:
+                await self.client.check_health()
+            except Exception as ex:
+                self._set_sync_stage("failed", f"Gateway unreachable: {str(ex)[:60]}")
+                raise
+            try:
+                self._set_sync_stage("fetching", "Fetching live news feeds")
                 raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 3.5)
                 structured_all: List[StructuredEvent] = []
                 if raw_events:
+                    self._set_sync_stage("processing", f"Reading {len(raw_events)} new stories")
                     structured_all.extend(await self.harvester.process_batch(raw_events))
                 # Forum batch (item 12B): StockTwits streams are collected on
                 # their own cadence and scored in a separate batch, so forum
                 # chatter never crowds breaking news out of the 6-event cap.
                 try:
+                    self._set_sync_stage("forum", "Collecting community signals")
                     forum_events = await self.forum_collector.collect_async()
                     if forum_events:
                         structured_all.extend(await self.harvester.process_batch(forum_events))
                 except Exception as ex:
                     logger.warning("Forum collection failed, continuing with news only: %s", ex)
                 if structured_all:
-                    return await self.synthesize_regime(structured_all)
+                    self._set_sync_stage("synthesizing", "Synthesizing market direction")
+                    state = await self.synthesize_regime(structured_all)
+                    self._set_sync_stage("done", "Stream live" if self.curated_events else "No new events yet",
+                                         percent=100 if self.curated_events else 90)
+                    return state
             except Exception as ex:
                 if "cannot schedule new futures after shutdown" in str(ex):
                     logger.debug("Live feed harvest skipped during shutdown: %s", ex)
                 else:
                     logger.warning("Error harvesting live feeds in refresh_digest_async: %s", ex)
+                fetch_error = str(ex)[:80] or ex.__class__.__name__
 
             recent = self.harvester.get_latest_events(10)
             if recent:
-                return await self.synthesize_regime(recent)
+                self._set_sync_stage("synthesizing", "Synthesizing market direction")
+                state = await self.synthesize_regime(recent)
+                self._set_sync_stage("done", "Stream live" if self.curated_events else "No new events yet",
+                                     percent=100 if self.curated_events else 90)
+                return state
+            if fetch_error:
+                self._set_sync_stage("failed", f"Sync failed: {fetch_error}")
+            else:
+                self._set_sync_stage("waiting", "No new events yet")
             return self.current_state
         finally:
             if getattr(self.client, "_owns_session", False):
@@ -289,6 +354,10 @@ class MacroCommander:
             },
             "macro_state": self.current_state.to_dict(),
             "events": self.curated_events[:25],
+            # First-sync progress (workstream 3): the current pipeline
+            # stage + milestone percent. A copy, so a reader can never
+            # rewrite the live status dict.
+            "sync": dict(self.sync_status),
         }
 
     def check_trade_veto(self, side: OrderSide, competitor_name: str, is_close: bool = False) -> Tuple[bool, str]:
