@@ -43,11 +43,14 @@ UNCAPPED_RUNNER_R_MULTIPLE = 1.8
 #   trend month (2,958 bars, -26%): mean ROI +0.86% -> +2.83%,
 #     mean fitness -5.96 -> +7.75 (improved, not hurt)
 # ADX(14) < 20 was also tried and REJECTED (trend month -1.34%).
-# SCOPE: validated on 15m bars (20 bars = 5h window). The live engine
-# replays 1m candles with a 150-bar buffer, so the same 5h statistic
-# cannot run there as-is -- the live port is deferred to the full
-# debug & optimize pass (needs 1m-timescale calibration). Live entries
-# stay ungated until then.
+# SCOPE: validated on 15m bars (20 bars = 5h window). The live port
+# landed in the debug & optimize pass (live_engine._chop_gate_blocks):
+# the live engine's MTF engine already aggregates the same 15m closes
+# from the 1m feed, so the live gate reuses this exact statistic,
+# window and threshold (21 closes = 20 intervals) on closed 15m bars.
+# A 1m-close ER variant was measured and NOT used: ER(60/120/150) on
+# 1m closes does not separate the flat and trend months at all (both
+# ~0.075 mean at ER(150)) -- 1m noise dominates the statistic.
 CHOP_GATE_WINDOW_BARS = 20
 CHOP_GATE_ER_THRESHOLD = 0.25
 

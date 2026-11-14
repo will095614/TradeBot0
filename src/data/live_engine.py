@@ -25,7 +25,12 @@ from src.data.eth_feed import ETHFeed, CandleBar
 from src.data.mtf_engine import MultiTimeframeEngine
 from src.data.persistence import ArenaStorage
 from src.data.quote_manager import QuoteManager
-from src.data.timemachine import MonteCarloOddsEvaluator
+from src.data.timemachine import (
+    CHOP_GATE_ER_THRESHOLD,
+    CHOP_GATE_WINDOW_BARS,
+    MonteCarloOddsEvaluator,
+    efficiency_ratio,
+)
 from src.data.ws_feed import StreamingCryptoFeed
 from src.gui.view_model import ViewModelPublisher, build_engine_view_model
 from src.intelligence.omniroute_client import OmniRouteClient
@@ -192,6 +197,7 @@ class LiveArenaEngine:
         self._last_autosave_ts: float = time.time()
         self._autosave_pending: bool = False
         self._closed_trades_since_evolve: int = 0
+        self.live_chop_gate_blocked: int = 0
         self.evolution_events: List[Dict[str, Any]] = []
 
         # TradingView Paper Trading Auto-Pilot Dispatcher
@@ -873,6 +879,25 @@ class LiveArenaEngine:
             return False
         return True
 
+    def _chop_gate_blocks(self) -> bool:
+        """Live chop gate (debug pass, Part C): True while the market is
+        chopping at the 15m scale. Same statistic, window and threshold
+        as the backtest gate (timemachine.CHOP_GATE_WINDOW_BARS /
+        CHOP_GATE_ER_THRESHOLD, commit b66f7f0): Kaufman efficiency
+        ratio over the last 21 CLOSED 15m closes (20 intervals) below
+        0.25. The 15m closes are the MTF engine's live aggregation of
+        the 1m feed -- no new state. The forming 15m bucket is excluded
+        (closed bars only, like the backtest). Returns False (open)
+        while fewer than 21 closed bars exist -- about the first 5h
+        after a cold start, while the buckets accumulate. Entry-only:
+        consulted solely in _try_enter_bracket after the SIGNAL_EXIT
+        fast path, so closes and exits can never be blocked by it."""
+        closed = self.candles_15m[:-1]
+        if len(closed) <= CHOP_GATE_WINDOW_BARS:
+            return False
+        closes = [float(b["c"]) for b in closed[-CHOP_GATE_WINDOW_BARS - 1:]]
+        return efficiency_ratio(closes) < CHOP_GATE_ER_THRESHOLD
+
     def _seed_mtf_1h_history(self) -> None:
         """
         Seed the 1h MTF buckets from real 1h history (audit 2.3).
@@ -1031,6 +1056,17 @@ class LiveArenaEngine:
                 self.position_entry_ts.pop(pid, None)
                 self.log_event(event_label, f"{competitor.base_name.split(' ')[0]} closed {fill.qty} ETH @ ${fill.price:,.2f} (PnL ${fill.realized_pnl:+.2f})", "profit" if fill.realized_pnl >= 0 else "loss")
                 return True
+            return False
+
+        # Debug pass Part C (live chop gate): block new entries while the
+        # 15m regime is chopping. Entry-only: close tickets took the
+        # fast path above, so they never reach this gate. Same 20 s
+        # breather as the other entry vetoes.
+        if self._chop_gate_blocks():
+            self.live_chop_gate_blocked += 1
+            self.strategy_cooldown[pid] = ts + 20.0
+            self.strategy_telemetry[pid]["intent"] = "Chop Gate: 15m ER < 0.25"
+            self.log_event("VETO_CHOP", f"{competitor.base_name.split(' ')[0]} {side.value} blocked by chop gate (15m ER < 0.25)", "info")
             return False
 
         # Phase 4: Multi-Timeframe (1h) Trend Confluence Gatekeeper
