@@ -22,6 +22,11 @@ from src.arena.risk_guard import RiskGuard, MAX_DRAWDOWN_LIMIT_PCT
 # the value itself is unchanged (decision: P2-A).
 DEFAULT_POOL_DEPTH = Decimal("200.0")
 
+# Maintenance margin level for liquidation (audit 2.4): a position is
+# liquidated once its position equity falls to 10% of its locked margin,
+# i.e. once it has lost 90% of its margin.
+LIQUIDATION_MAINTENANCE_RATIO = Decimal("0.10")
+
 
 class BrokerSim:
     """
@@ -373,9 +378,16 @@ class BrokerSim:
         # 2. Update end-of-bar valuation & check 15% drawdown circuit breaker
         for p_id, p in self.portfolios.items():
             p.update_market_price(price, ts, low_price=low_price, high_price=high_price)
-            # Leverage maintenance margin liquidation (protects against negative balance)
+            # Leverage maintenance margin liquidation (protects against negative balance).
+            # Audit 2.4: compare POSITION equity against POSITION margin, not
+            # total equity. total_equity includes all idle cash, so the old
+            # comparison needed a ~139% adverse move on a 3x/70% long and
+            # could never fire. Position equity is margin_locked +
+            # unrealized_pnl; liquidation fires once the position has lost
+            # 90% of its margin (maintenance level 10%).
             if p.leverage_enabled and p.position_qty > Decimal("0") and p.margin_locked > Decimal("0"):
-                if p.total_equity <= (p.margin_locked * Decimal("0.10")):
+                position_equity = p.margin_locked + p.unrealized_pnl
+                if position_equity <= (p.margin_locked * LIQUIDATION_MAINTENANCE_RATIO):
                     p.is_circuit_breaker_tripped = True
                     liq_exit_side = OrderSide.BUY if p.position_side == PositionSide.SHORT else OrderSide.SELL
                     liq_fill = self._execute_fill(OrderTicket(

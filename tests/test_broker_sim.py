@@ -502,3 +502,53 @@ def test_depth_impact_pool_depth_is_disclosed():
     mod_src = inspect.getsource(bs_mod)
     assert "MODEL PARAMETER" in mod_src or "model parameter" in mod_src
     assert "not measured" in mod_src
+
+
+def test_broker_sim_leverage_liquidation_long_crash():
+    """Audit 2.4: a leveraged LONG must be liquidated by a crash that wipes
+    out its position margin. Under the old total-equity comparison this
+    branch was unreachable on the long side (it needed a ~139% adverse
+    move); the position-equity comparison fires once the position has
+    lost 90% of its margin (maintenance level 10%).
+
+    Setup mirrors the audit's arithmetic: $100k, 3x leverage, 70% cap.
+    Long 20 ETH @ $3,500 (notional $70,000, margin locked $23,333.33).
+    """
+    broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
+    p = Portfolio(
+        "p_lev_long",
+        "LeveragedLong",
+        initial_cash=Decimal("100000.00"),
+        leverage=Decimal("3.0"),
+        leverage_enabled=True,
+    )
+    broker.register_portfolio(p, max_position_ratio=Decimal("0.70"))
+
+    broker.on_tick(price=Decimal("3500.00"), timestamp=100.0)
+    ticket = OrderTicket("p_lev_long", "ETH/USD", OrderSide.BUY, OrderType.MARKET,
+                         qty=Decimal("20"), timestamp=100.0)
+    fill = broker.submit_order(ticket)
+    assert fill is not None
+    assert p.position_qty == Decimal("20.0000")
+    assert p.position_side == PositionSide.LONG
+    assert p.margin_locked == Decimal("23333.33")
+
+    # -20% dip: position equity $9,333.33 is still far above the $2,333.33
+    # maintenance level, and total drawdown (14.04%) is below the 15%
+    # breaker, so nothing fires and the position survives.
+    fills = broker.on_tick(price=Decimal("2800.00"), timestamp=101.0)
+    assert fills == []
+    assert p.position_qty == Decimal("20.0000")
+    # The old comparison could not fire here either: total equity (~$86k)
+    # is far above 10% of locked margin (~$2.3k).
+    assert p.total_equity > p.margin_locked * Decimal("0.10")
+
+    # -31.4% crash: unrealized loss $22,000 leaves position equity
+    # $1,333.33 <= $2,333.33, so the liquidation branch fires. The old
+    # comparison still could not fire (total equity ~$78k), so a
+    # LIQUIDATION reason here proves the new comparison ran.
+    fills = broker.on_tick(price=Decimal("2400.00"), timestamp=102.0)
+    assert len(fills) == 1
+    assert fills[0].reason == ExecutionReason.LIQUIDATION
+    assert p.position_qty == Decimal("0.0000")
+    assert p.is_circuit_breaker_tripped is True
