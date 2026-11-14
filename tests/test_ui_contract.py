@@ -472,11 +472,6 @@ DOCUMENTED_DECORATIVE_IDS = {
     # SVG gradient referenced by fill="url(#splashZapGrad)" in the
     # splash lightning polygon.
     "splashZapGrad": "SVG gradient referenced by fill=url(#splashZapGrad)",
-    # SVG filter defs in the <defs> block. No url(#...) consumer exists
-    # anywhere (checked in app.css / index.html / app.js), so they are
-    # inert placeholders kept with the defs, not live styling.
-    "uvq11-goo": "SVG filter def with no url(#...) consumer; inert",
-    "lg-caustic-filter": "SVG filter def with no url(#...) consumer; inert",
     # Static display text, never updated by JS: the concurrency cell
     # always reads "25 Semaphores" (fixed gateway config).
     "omniConcurrencyVal": "static text '25 Semaphores'; never updated by JS",
