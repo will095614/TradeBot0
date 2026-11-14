@@ -47,6 +47,74 @@ def test_timemachine_simulation_with_synthetic_bars():
     assert os.path.exists(os.path.join(mem_dir, "arena_report.md"))
 
 
+def test_backtest_opens_shorts_on_downtrend():
+    """Audit 2.2: a SELL signal while flat must open a short.
+
+    Before the fix run_simulation never passed side=SELL, so side
+    defaulted to BUY and a SELL could only ever close -- the backtest
+    (and therefore evolution) was long-only. The bar series below is
+    built so the signals land exactly: bar 1-2 BUY (longs open),
+    bar 3 SELL (longs close), bar 5 SELL while flat (shorts open),
+    bar 9 SELL (shorts close). Aggressive's short branch is
+    unconditional, so comp_agg must open a short; the close path is
+    checked both ways and Aggressive ends flat.
+    """
+    from src.arena.order import ExecutionReason, OrderSide
+
+    arena = TimeMachineArena(symbol="ETH/USD", initial_cash=Decimal("500000.00"))
+    # (close, ema_fast, ema_slow, rsi) per bar; high/low = close +/- 5.
+    spec = [
+        (Decimal("2800.00"), Decimal("2805.00"), Decimal("2790.00"), Decimal("55.00")),  # 0 HOLD
+        (Decimal("2820.00"), Decimal("2815.00"), Decimal("2800.00"), Decimal("55.00")),  # 1 BUY
+        (Decimal("2840.00"), Decimal("2835.00"), Decimal("2820.00"), Decimal("55.00")),  # 2 BUY
+        (Decimal("2820.00"), Decimal("2810.00"), Decimal("2830.00"), Decimal("55.00")),  # 3 SELL
+        (Decimal("2810.00"), Decimal("2815.00"), Decimal("2800.00"), Decimal("75.00")),  # 4 HOLD
+        (Decimal("2790.00"), Decimal("2780.00"), Decimal("2800.00"), Decimal("55.00")),  # 5 SELL
+        (Decimal("2770.00"), Decimal("2760.00"), Decimal("2780.00"), Decimal("55.00")),  # 6 HOLD
+        (Decimal("2750.00"), Decimal("2740.00"), Decimal("2760.00"), Decimal("55.00")),  # 7 HOLD
+        (Decimal("2745.00"), Decimal("2750.00"), Decimal("2735.00"), Decimal("75.00")),  # 8 HOLD
+        (Decimal("2730.00"), Decimal("2720.00"), Decimal("2740.00"), Decimal("55.00")),  # 9 SELL
+    ]
+    bars = [
+        CandleBar(
+            timestamp=1000.0 + (i * 900),
+            open_=price - Decimal("2.00"),
+            high=price + Decimal("5.00"),
+            low=price - Decimal("5.00"),
+            close=price,
+            volume=Decimal("100.0"),
+            ema_fast=ema_fast,
+            ema_slow=ema_slow,
+            rsi=rsi,
+            atr=Decimal("40.00"),
+        )
+        for i, (price, ema_fast, ema_slow, rsi) in enumerate(spec)
+    ]
+    rankings = arena.run_simulation(bars)
+    assert len(rankings) == 6
+
+    audit = arena.broker.execution_audit
+    # At least one short fill on the synthetic downtrend (audit §7).
+    short_entries = [
+        f for f in audit
+        if f.side == OrderSide.SELL and f.reason == ExecutionReason.SIGNAL_ENTRY
+    ]
+    assert short_entries, "no short opened on the downtrend"
+    # Aggressive's short branch is unconditional: it must have opened.
+    assert any(f.portfolio_id == "comp_agg" for f in short_entries)
+    # The close path is intact both ways: bar 3 SELL closes the long,
+    # bar 9 SELL closes the short (a BUY cover, not a second short).
+    assert any(
+        f.portfolio_id == "comp_agg" and f.side == OrderSide.SELL
+        and f.reason == ExecutionReason.SIGNAL_EXIT for f in audit
+    )
+    assert any(
+        f.portfolio_id == "comp_agg" and f.side == OrderSide.BUY
+        and f.reason == ExecutionReason.SIGNAL_EXIT for f in audit
+    )
+    assert arena.comp_a.portfolio.position_qty == Decimal("0")
+
+
 def test_timemachine_evolution_preserves_portfolio():
     arena = TimeMachineArena(symbol="ETH/USD", initial_cash=Decimal("500000.00"))
     

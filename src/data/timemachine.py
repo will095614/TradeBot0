@@ -13,6 +13,7 @@ except ImportError:
 
 from src.arena.broker_sim import BrokerSim
 from src.arena.leaderboard import Leaderboard, CompetitorStats
+from src.arena.order import OrderSide
 from src.arena.evolution import GeneticEvolver
 from src.competitors.aggressive import AggressiveCompetitor
 from src.competitors.conservative import ConservativeCompetitor
@@ -132,15 +133,32 @@ class TimeMachineArena:
                 "orb_mid": orb_mid,
             }
 
-            # 3. Synchronously evaluate all competitors against the exact same bar
+            # 3. Synchronously evaluate all competitors against the exact same bar.
+            # Audit 2.2: drive the entry direction from the signal. A
+            # "BUY" opens a long; a "SELL" closes an open position, or
+            # opens a short when flat (the old call passed no side, so
+            # side defaulted to BUY and a SELL could only ever close --
+            # the backtest was long-only). No flip in one bar: a SELL
+            # closes a long here; the short opens on the next SELL bar
+            # once flat.
             for c in self.competitors:
-                ticket = c.evaluate_signal(
-                    signal=signal,
-                    market_price=bar.close,
-                    indicators=indicators,
-                    broker=self.broker,
-                    timestamp=bar.timestamp
-                )
+                if signal == "SELL" and c.portfolio.position_qty == Decimal("0"):
+                    ticket = c.evaluate_signal(
+                        signal="BUY",
+                        side=OrderSide.SELL,
+                        market_price=bar.close,
+                        indicators=indicators,
+                        broker=self.broker,
+                        timestamp=bar.timestamp
+                    )
+                else:
+                    ticket = c.evaluate_signal(
+                        signal=signal,
+                        market_price=bar.close,
+                        indicators=indicators,
+                        broker=self.broker,
+                        timestamp=bar.timestamp
+                    )
                 if ticket:
                     self.broker.submit_order(ticket)
 
