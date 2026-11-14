@@ -11,7 +11,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("tradebot0.config_manager")
 
@@ -63,6 +63,12 @@ class ConfigManager:
         else:
             home = Path.home()
             self.omni_env_file = home / ".omniroute" / ".env"
+
+        # Audit §5.4: cache of the parsed omni env file, keyed by
+        # (mtime_ns, size). The per-second gateway-diagnosis poll must
+        # not re-open and re-parse this file 86,400 times a day.
+        self._omni_env_cache_key: Optional[Tuple[int, int]] = None
+        self._omni_env_cache: Dict[str, str] = {}
 
     @staticmethod
     def sanitize_key(raw_key: Any) -> str:
@@ -126,9 +132,23 @@ class ConfigManager:
         return configured
 
     def read_omniroute_env(self) -> Dict[str, str]:
-        """Safely parses ~/.omniroute/.env file into key-value pairs."""
-        if not self.omni_env_file.is_file():
+        """Safely parses ~/.omniroute/.env file into key-value pairs.
+
+        Audit §5.4: the parsed file is cached by (mtime_ns, size), so
+        the per-second gateway-diagnosis poll does not re-open and
+        re-parse it 86,400 times a day. A copy is returned, so mutating
+        the result cannot poison the cache. The cache is dropped on any
+        mtime/size change and after our own writes (_write_omni_env_vars).
+        """
+        try:
+            st = self.omni_env_file.stat()
+            key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            self._omni_env_cache_key = None
+            self._omni_env_cache = {}
             return {}
+        if key == self._omni_env_cache_key:
+            return dict(self._omni_env_cache)
         result: Dict[str, str] = {}
         try:
             lines = self.omni_env_file.read_text(encoding="utf-8").splitlines()
@@ -141,7 +161,10 @@ class ConfigManager:
                     result[k.strip()] = v.strip().strip("'\"")
         except Exception as e:
             logger.warning("Could not read omniroute env file: %s", e)
-        return result
+            return {}
+        self._omni_env_cache_key = key
+        self._omni_env_cache = result
+        return dict(result)
 
     def _write_omni_env_vars(self, updates: Dict[str, str]) -> Dict[str, Any]:
         """
@@ -184,6 +207,12 @@ class ConfigManager:
             tmp_file = self.omni_env_file.with_suffix(".tmp")
             tmp_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
             tmp_file.replace(self.omni_env_file)
+
+            # Audit §5.4: our own write changes the file; drop the cache
+            # so the next read sees the new content even if the mtime
+            # granularity ever collides.
+            self._omni_env_cache_key = None
+            self._omni_env_cache = {}
 
             # Synchronize into current process environment
             for env_name, env_val in updates.items():
