@@ -43,6 +43,14 @@ RUNTIME_NODE_ZIP_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.z
 RUNTIME_INSTALL_LOG_FILENAME = "omniroute_install.log"
 
 
+class _InstallCancelledError(Exception):
+    """Raised inside the runtime-install worker when the user cancels.
+
+    Caught by _run_runtime_install, which cleans up partial artifacts and
+    reports the install as cancelled instead of failed.
+    """
+
+
 def _default_daemon_log_path() -> Path:
     """Default daemon log path, mirroring ConfigManager's data-dir layout:
     frozen exe -> %APPDATA%/TradeBot0/logs, source run -> <project root>/logs."""
@@ -104,6 +112,13 @@ class GatewaySupervisor:
         # because the worker thread and the bridge read it concurrently.
         self._install_lock = threading.Lock()
         self._install_thread: Optional[threading.Thread] = None
+        # Cancel support + progress (wizard progress bar / close warning):
+        # the worker polls this event; the cancel path may also hold the
+        # running npm child so it can be killed from another thread.
+        self._install_cancel_event = threading.Event()
+        self._install_proc: Optional[subprocess.Popen] = None
+        self._install_progress: Optional[int] = None  # 0-100 when real, else None
+        self._install_phase: str = ""
         # Double-spawn guard for start_daemon (F5): two concurrent callers
         # (wizard save + runtime-install finish) used to both pass the
         # port check and spawn two daemons; the second overwrote
@@ -111,7 +126,7 @@ class GatewaySupervisor:
         self._daemon_lock = threading.Lock()
         self._daemon_starting: bool = False
         self._daemon_starting_thread: Optional[int] = None
-        self.install_status: str = "idle"  # idle | downloading-node | installing-omniroute | done | failed
+        self.install_status: str = "idle"  # idle | downloading-node | installing-omniroute | done | failed | cancelled
         self.install_message: str = ""
 
         # Exit hook: a single class-level handler shuts down whatever
@@ -249,14 +264,31 @@ class GatewaySupervisor:
         return None
 
     def install_runtime_status(self) -> Dict[str, Any]:
-        """Current one-click install state for the wizard poll loop."""
-        with self._install_lock:
-            return {"status": self.install_status, "message": self.install_message}
+        """Current one-click install state for the wizard poll loop.
 
-    def _set_install_status(self, status: str, message: str) -> None:
+        progress is a real 0-100 percent only while the Node.js zip is
+        downloading (Content-Length bytes received / total); it is None in
+        every other phase because npm reports no trustworthy percent, so
+        the frontend shows an indeterminate bar there instead of a
+        fabricated number.
+        """
+        with self._install_lock:
+            return {
+                "status": self.install_status,
+                "message": self.install_message,
+                "progress": self._install_progress,
+                "phase": self._install_phase,
+            }
+
+    def _set_install_status(
+        self, status: str, message: str,
+        progress: Optional[int] = None, phase: str = "",
+    ) -> None:
         with self._install_lock:
             self.install_status = status
             self.install_message = message
+            self._install_progress = progress
+            self._install_phase = phase
         logger.info("Runtime install status: %s - %s", status, message)
         try:
             self.install_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,6 +296,12 @@ class GatewaySupervisor:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {status}: {message}\n")
         except Exception as e:
             logger.debug("Failed to write install log: %s", e)
+
+    def _set_install_progress(self, progress: Optional[int]) -> None:
+        """Updates only the download percent (no log spam: the Node.js zip
+        reports once per MB read)."""
+        with self._install_lock:
+            self._install_progress = progress
 
     def start_runtime_install(self) -> Dict[str, Any]:
         """Starts the one-click Node.js + OmniRoute install in a background
@@ -276,13 +314,75 @@ class GatewaySupervisor:
             if self.node_available() and self.omniroute_installed():
                 self.install_status = "done"
                 self.install_message = "OmniRoute is already installed."
+                self._install_progress = 100
+                self._install_phase = "Installed"
                 return {"ok": True, "message": self.install_message}
+            self._install_cancel_event.clear()
             self.install_status = "downloading-node" if not self.node_available() else "installing-omniroute"
             self.install_message = "Starting installation in the background..."
+            self._install_progress = None
+            self._install_phase = (
+                "Downloading Node.js" if self.install_status == "downloading-node"
+                else "Installing OmniRoute"
+            )
             t = threading.Thread(target=self._run_runtime_install, name="omniroute-runtime-install", daemon=True)
             self._install_thread = t
             t.start()
             return {"ok": True, "message": "Installation started in the background."}
+
+    def cancel_runtime_install(self) -> Dict[str, Any]:
+        """Cancels a running one-click install (wizard close warning).
+
+        Sets the cancel event and kills the running npm child (whole
+        process tree on Windows, where npm runs under cmd.exe); the
+        worker thread notices, cleans up partial artifacts, and reports
+        status "cancelled". Safe to call when nothing is running.
+        """
+        with self._install_lock:
+            if self.install_status not in ("downloading-node", "installing-omniroute"):
+                return {"ok": False, "message": "No installation is running."}
+            self._install_cancel_event.set()
+            proc = self._install_proc
+        if proc is not None and proc.poll() is None:
+            self._terminate_install_proc(proc)
+        return {"ok": True, "message": "Cancelling installation..."}
+
+    @staticmethod
+    def _terminate_install_proc(proc: subprocess.Popen) -> None:
+        """Kills an npm child and, on Windows, its whole tree: npm.cmd
+        runs under cmd.exe, so killing cmd.exe alone would orphan the
+        node.exe actually doing the install."""
+        try:
+            proc.kill()
+        except Exception as e:
+            logger.debug("Failed to kill install process: %s", e)
+        if sys.platform == "win32":
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=15, creationflags=0x08000000,
+                )
+            except Exception as e:
+                logger.debug("taskkill for install process failed: %s", e)
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            pass
+
+    def _cleanup_cancelled_install(self, base: Path) -> None:
+        """Removes partial install artifacts after a cancel so a later
+        attempt starts clean and omniroute_installed() never misreports
+        a half-installed package as good. A fully extracted Node.js is
+        kept: it is valid, and the retry then skips the download."""
+        for target in (base / "node.zip", base / "_node_tmp", base / "omniroute"):
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                elif target.exists():
+                    target.unlink()
+            except Exception as e:
+                logger.debug("Cancel cleanup failed for %s: %s", target, e)
 
     def _run_runtime_install(self) -> None:
         """Background worker: Node.js zip (if needed) + npm install omniroute
@@ -290,42 +390,75 @@ class GatewaySupervisor:
         try:
             base = self._runtime_base()
             base.mkdir(parents=True, exist_ok=True)
+            if self._install_cancel_event.is_set():
+                raise _InstallCancelledError("Installation cancelled.")
             node_bin = self._resolve_node_bin()
             if node_bin is None:
-                self._set_install_status("downloading-node", "Downloading Node.js (about 37 MB)...")
+                self._set_install_status("downloading-node", "Downloading Node.js (about 37 MB)...", phase="Downloading Node.js")
                 node_bin = self._download_node(base)
             npm_bin = self._resolve_npm_bin(node_bin)
             if npm_bin is None:
                 raise RuntimeError("npm was not found next to Node.js.")
-            self._set_install_status("installing-omniroute", "Installing OmniRoute (about 3-5 min, ~2.6 GB)...")
+            self._set_install_status("installing-omniroute", "Installing OmniRoute (about 3-5 min, ~2.6 GB)...", phase="Installing OmniRoute")
             self._npm_install_omniroute(npm_bin, base)
+            if self._install_cancel_event.is_set():
+                raise _InstallCancelledError("Installation cancelled.")
             if not self.omniroute_installed():
                 raise RuntimeError("OmniRoute install finished but the package was not found.")
-            self._set_install_status("done", "OmniRoute installed. Starting the gateway...")
+            self._set_install_status("done", "OmniRoute installed. Starting the gateway...", progress=100, phase="Installed")
             ok, msg = self.start_daemon(max_wait_sec=30.0)
             if ok:
-                self._set_install_status("done", "OmniRoute installed and the gateway is online.")
+                self._set_install_status("done", "OmniRoute installed and the gateway is online.", progress=100, phase="Installed")
             else:
-                self._set_install_status("done", f"OmniRoute installed, but the gateway did not start: {msg}")
+                self._set_install_status("done", f"OmniRoute installed, but the gateway did not start: {msg}", progress=100, phase="Installed")
+        except _InstallCancelledError:
+            logger.info("OmniRoute runtime install cancelled by user.")
+            self._cleanup_cancelled_install(self._runtime_base())
+            self._set_install_status("cancelled", "Installation cancelled.", phase="Cancelled")
         except Exception as e:
             logger.error("OmniRoute runtime install failed: %s", e)
-            self._set_install_status("failed", f"Installation failed: {e}")
+            self._set_install_status("failed", f"Installation failed: {e}", phase="Failed")
 
     def _download_node(self, base: Path) -> str:
         """Downloads the official Node.js zip and extracts it to
-        <runtime>/node. Returns the node.exe path."""
+        <runtime>/node. Returns the node.exe path.
+
+        Reads in 1 MB chunks so the wizard can show a real percent
+        (bytes received / Content-Length) and so a cancel is noticed
+        promptly instead of only after the whole 37 MB arrives. When
+        the server sends no Content-Length, progress stays None and
+        the frontend shows an indeterminate bar.
+        """
         node_dir = base / "node"
         zip_path = base / "node.zip"
         req = urllib.request.Request(
             RUNTIME_NODE_ZIP_URL, headers={"User-Agent": "TradeBot0-Installer/1.0"}
         )
         with urllib.request.urlopen(req, timeout=600) as resp, open(zip_path, "wb") as f:
-            shutil.copyfileobj(resp, f)
+            total = None
+            try:
+                raw_total = resp.headers.get("Content-Length")
+                total = int(raw_total) if raw_total else None
+            except Exception:
+                total = None
+            downloaded = 0
+            while True:
+                if self._install_cancel_event.is_set():
+                    raise _InstallCancelledError("Installation cancelled.")
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total:
+                    self._set_install_progress(min(100, int(downloaded * 100 / total)))
         tmp_dir = base / "_node_tmp"
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir)
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(tmp_dir)
+        if self._install_cancel_event.is_set():
+            raise _InstallCancelledError("Installation cancelled.")
         entries = [p for p in tmp_dir.iterdir()]
         src_dir = entries[0] if len(entries) == 1 and entries[0].is_dir() else tmp_dir
         if node_dir.exists():
@@ -339,6 +472,7 @@ class GatewaySupervisor:
         node_exe = node_dir / "node.exe"
         if not node_exe.is_file():
             raise RuntimeError("Downloaded Node.js package has no node.exe.")
+        self._set_install_progress(100)
         return str(node_exe)
 
     def _npm_install_omniroute(self, npm_bin: str, base: Path) -> None:
@@ -362,17 +496,39 @@ class GatewaySupervisor:
             for i, cmd in enumerate(attempts):
                 log_file.write(f"--- attempt {i + 1}: {' '.join(cmd)} ---\n")
                 log_file.flush()
+                # Popen (not run) so a cancel can kill the child: the
+                # poll loop checks the cancel event every 0.25 s and the
+                # 30-minute deadline, mirroring the old run(timeout=1800).
                 try:
                     child_env = os.environ.copy()
                     for key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME"):
                         child_env.pop(key, None)
                     creation_flags = 0x08000000 if sys.platform == "win32" else 0
-                    proc = subprocess.run(
+                    proc = subprocess.Popen(
                         cmd, stdout=log_file, stderr=subprocess.STDOUT,
-                        env=child_env, creationflags=creation_flags, timeout=1800,
+                        env=child_env, creationflags=creation_flags,
                     )
-                except subprocess.TimeoutExpired:
-                    raise RuntimeError("npm install timed out after 30 minutes.")
+                    with self._install_lock:
+                        self._install_proc = proc
+                    try:
+                        deadline = time.monotonic() + 1800
+                        while True:
+                            if self._install_cancel_event.is_set():
+                                self._terminate_install_proc(proc)
+                                raise _InstallCancelledError("Installation cancelled.")
+                            rc = proc.poll()
+                            if rc is not None:
+                                break
+                            if time.monotonic() > deadline:
+                                self._terminate_install_proc(proc)
+                                raise RuntimeError("npm install timed out after 30 minutes.")
+                            time.sleep(0.25)
+                    finally:
+                        with self._install_lock:
+                            if self._install_proc is proc:
+                                self._install_proc = None
+                except _InstallCancelledError:
+                    raise
                 if proc.returncode == 0:
                     return
                 last_error = f"npm install exited with code {proc.returncode} (attempt {i + 1})"

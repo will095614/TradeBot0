@@ -3725,9 +3725,81 @@ function updateUiClockDisplay() {
     if (e && e.target && e.target.id === 'setupWizardModal') {
       const closeBtn = document.getElementById('btnWizardClose');
       if (closeBtn && closeBtn.style.display !== 'none') {
-        closeSetupWizardModal();
+        requestCloseSetupWizardModal();
       }
     }
+  }
+
+  // Wizard dismiss paths (X button / overlay click / Escape) must warn
+  // first while an install is running: closing would interrupt the
+  // download and cancel the installation. Save & Skip close the wizard
+  // directly and never warn -- the install keeps running behind them.
+  function requestCloseSetupWizardModal() {
+    const closeBtn = document.getElementById('btnWizardClose');
+    if (closeBtn && closeBtn.style.display === 'none') return;
+    const decide = (st) => {
+      if (st === 'downloading-node' || st === 'installing-omniroute') {
+        openInstallCancelConfirm();
+      } else {
+        closeSetupWizardModal();
+      }
+    };
+    const cached = window.__runtimeInstallStatus;
+    if (cached && (cached.status === 'downloading-node' || cached.status === 'installing-omniroute')) {
+      decide(cached.status);
+      return;
+    }
+    // Fresh check: the poll runs every 5 s, so the cache can lag a close
+    // attempted right after Install was pressed.
+    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
+      window.pywebview.api.get_setup_status().then((res) => {
+        const s = (res && res.runtime_install_status) ? res.runtime_install_status.status : null;
+        decide(s);
+      }).catch(() => decide(cached ? cached.status : null));
+    } else {
+      decide(cached ? cached.status : null);
+    }
+  }
+
+  function openInstallCancelConfirm() {
+    const modal = document.getElementById('installCancelConfirmModal');
+    if (modal) {
+      modal.style.display = 'flex';
+      modal.classList.remove('modal-closing');
+      void modal.offsetWidth;
+      modal.classList.add('modal-visible');
+    }
+  }
+
+  function closeInstallCancelConfirm() {
+    const modal = document.getElementById('installCancelConfirmModal');
+    if (modal) {
+      modal.classList.remove('modal-visible');
+      modal.classList.add('modal-closing');
+      setTimeout(() => {
+        modal.style.display = 'none';
+        modal.classList.remove('modal-closing');
+      }, 1250);
+    }
+  }
+
+  function handleInstallCancelOverlayClick(e) {
+    if (e && e.target && e.target.id === 'installCancelConfirmModal') {
+      closeInstallCancelConfirm();
+    }
+  }
+
+  async function confirmCancelInstallAndClose() {
+    try {
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.cancel_gateway_runtime_install === 'function') {
+        await window.pywebview.api.cancel_gateway_runtime_install();
+      }
+    } catch (err) {
+      console.debug('cancel install err:', err);
+    }
+    if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+    closeInstallCancelConfirm();
+    closeSetupWizardModal();
   }
 
   function setWizardBanner(message, type = 'info') {
@@ -3772,6 +3844,29 @@ function updateUiClockDisplay() {
     if (!statusObj) return;
     const st = statusObj.status || 'idle';
     const msg = statusObj.message || '';
+    const pct = (typeof statusObj.progress === 'number') ? statusObj.progress : null;
+    // Latest install state, so the close warning can decide without
+    // waiting for the next poll (the poll runs every 5 s).
+    window.__runtimeInstallStatus = { status: st, message: msg, progress: pct, phase: statusObj.phase || '' };
+    const prog = document.getElementById('setupInstallProgress');
+    const fill = document.getElementById('setupInstallProgressFill');
+    const showBar = (st === 'downloading-node' || st === 'installing-omniroute');
+    if (prog) {
+      prog.style.display = showBar ? 'block' : 'none';
+      if (showBar && fill) {
+        if (pct !== null) {
+          fill.classList.remove('indeterminate');
+          fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+          prog.setAttribute('aria-valuenow', String(pct));
+        } else {
+          // npm reports no trustworthy percent: an honest indeterminate
+          // bar, never a fabricated number.
+          fill.classList.add('indeterminate');
+          fill.style.width = '40%';
+          prog.removeAttribute('aria-valuenow');
+        }
+      }
+    }
     if (st === 'idle') return;
     if (st === 'done') {
       setWizardBanner(msg || 'OmniRoute installed.', 'success');
@@ -3782,8 +3877,16 @@ function updateUiClockDisplay() {
       if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
       const btn = document.getElementById('btnInstallGatewayRuntime');
       if (btn) btn.disabled = false;
+    } else if (st === 'cancelled') {
+      setWizardBanner(msg || 'Installation cancelled.', 'info');
+      if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+      const btn = document.getElementById('btnInstallGatewayRuntime');
+      if (btn) btn.disabled = false;
+      refreshGatewayAvailability();
     } else {
-      setWizardBanner(msg || 'Installing...', 'info');
+      // In progress: append the real percent when the backend has one
+      // (Node.js download); otherwise show the phase message as-is.
+      setWizardBanner(pct !== null ? (msg + ' ' + pct + '%') : (msg || 'Installing...'), 'info');
     }
   }
 
@@ -3983,11 +4086,18 @@ function updateUiClockDisplay() {
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      // A confirm dialog open on top swallows Escape: dismiss the dialog
+      // and stay on the wizard instead of closing the wizard behind it.
+      const cancelModal = document.getElementById('installCancelConfirmModal');
+      if (cancelModal && cancelModal.style.display !== 'none') {
+        closeInstallCancelConfirm();
+        return;
+      }
       closeShutdownModal();
       closeResetModal();
       const closeBtn = document.getElementById('btnWizardClose');
       if (closeBtn && closeBtn.style.display !== 'none') {
-        closeSetupWizardModal();
+        requestCloseSetupWizardModal();
       }
     }
   });

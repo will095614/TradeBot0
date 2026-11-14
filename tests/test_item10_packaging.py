@@ -272,7 +272,7 @@ def test_runtime_install_status_defaults_idle(tmp_path):
         daemon_log_path=tmp_path / "daemon.log",
         install_log_path=tmp_path / "install.log",
     )
-    assert sup.install_runtime_status() == {"status": "idle", "message": ""}
+    assert sup.install_runtime_status() == {"status": "idle", "message": "", "progress": None, "phase": ""}
 
 
 def test_start_runtime_install_does_not_start_twice(monkeypatch, tmp_path):
@@ -310,7 +310,7 @@ def test_setup_status_reports_gateway_availability(monkeypatch, tmp_path):
         assert st["omniroute_installed"] is False
         assert isinstance(st["gateway_unavailable_reason"], str)
         assert "Node.js" in st["gateway_unavailable_reason"]
-        assert st["runtime_install_status"] == {"status": "idle", "message": ""}
+        assert st["runtime_install_status"] == {"status": "idle", "message": "", "progress": None, "phase": ""}
     finally:
         dash.engine.stop()
 
@@ -392,15 +392,39 @@ def test_download_node_corrupt_zip_raises_without_installing(tmp_path):
     assert not (base / "node" / "node.exe").exists()
 
 
+class _FakeNpmProc:
+    """Fake subprocess.Popen for _npm_install_omniroute: poll() returns the
+    preset returncode at once (no real process is spawned)."""
+
+    RETURNCODE = 0
+
+    def __init__(self, *args, **kwargs):
+        self.returncode = self.RETURNCODE
+        self.pid = 999
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+class _FakeNpmProcFail(_FakeNpmProc):
+    RETURNCODE = 1
+
+
 def test_npm_install_omniroute_runs_expected_command(tmp_path):
     """Mock subprocess.run：npm 指令含 --prefix <runtime>/omniroute 與 --allow-scripts 清單。"""
     base = tmp_path / "runtime"
     sup = _node_supervisor(tmp_path)
     npm_bin = str(base / "node" / "npm.cmd")
-    with patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run:
+    with patch("subprocess.Popen", return_value=_FakeNpmProc()) as mock_popen:
         sup._npm_install_omniroute(npm_bin, base)
-    assert mock_run.call_count == 1
-    cmd = mock_run.call_args[0][0]
+    assert mock_popen.call_count == 1
+    cmd = mock_popen.call_args[0][0]
     assert cmd[0] == npm_bin
     assert cmd[1] == "install"
     assert cmd[2] == "--prefix"
@@ -411,7 +435,9 @@ def test_npm_install_omniroute_runs_expected_command(tmp_path):
                 "@parcel/watcher", "@swc/core", "protobufjs", "koffi"):
         assert pkg in cmd[4], f"{pkg} missing from --allow-scripts"
     assert cmd[5] == "omniroute"
-    assert mock_run.call_args[1]["timeout"] == 1800
+    # The 30-minute deadline is enforced by the Popen poll loop, not a
+    # subprocess timeout kwarg: Popen must be called without one.
+    assert "timeout" not in mock_popen.call_args[1]
     log_text = (tmp_path / "install.log").read_text(encoding="utf-8")
     assert "npm install omniroute --prefix" in log_text
     assert str(base / "omniroute") in log_text
@@ -422,12 +448,12 @@ def test_npm_install_omniroute_failure_reports_status(tmp_path):
     base = tmp_path / "runtime"
     sup = _node_supervisor(tmp_path)
     npm_bin = str(base / "node" / "npm.cmd")
-    with patch("subprocess.run", return_value=MagicMock(returncode=1)) as mock_run:
+    with patch("subprocess.Popen", return_value=_FakeNpmProcFail()) as mock_popen:
         with pytest.raises(RuntimeError, match="npm install exited with code 1"):
             sup._npm_install_omniroute(npm_bin, base)
-    assert mock_run.call_count == 2
-    first_cmd = mock_run.call_args_list[0][0][0]
-    second_cmd = mock_run.call_args_list[1][0][0]
+    assert mock_popen.call_count == 2
+    first_cmd = mock_popen.call_args_list[0][0][0]
+    second_cmd = mock_popen.call_args_list[1][0][0]
     assert any(a.startswith("--allow-scripts=") for a in first_cmd)
     assert not any(a.startswith("--allow-scripts") for a in second_cmd)
     assert second_cmd[1:4] == ["install", "--prefix", str(base / "omniroute")]

@@ -466,6 +466,7 @@ DOCUMENTED_DECORATIVE_IDS = {
     # carry aria-labelledby="<id>").
     "networkOfflineTitle": "aria-labelledby target of #networkOfflineOverlay",
     "resetModalTitle": "aria-labelledby target of #resetConfirmModal",
+    "installCancelModalTitle": "aria-labelledby target of #installCancelConfirmModal",
     "setupWizardTitle": "aria-labelledby target of #setupWizardModal",
     "shutdownModalTitle": "aria-labelledby target of #shutdownModal",
     # SVG gradient referenced by fill="url(#splashZapGrad)" in the

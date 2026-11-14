@@ -697,7 +697,7 @@
   <!-- API Credentials & OmniRoute Gateway Setup Wizard Modal -->
   <div class="ss-modal-overlay setup-wizard-overlay" id="setupWizardModal" style="display:none;" onclick="handleWizardOverlayClick(event)">
     <div class="ss-modal setup-wizard-modal lg-glass lg-spot-card" role="dialog" aria-modal="true" aria-labelledby="setupWizardTitle">
-      <button class="ss-modal-close" onclick="closeSetupWizardModal()" id="btnWizardClose" title="Close &amp; Return to Arena" aria-label="Close">
+      <button class="ss-modal-close" onclick="requestCloseSetupWizardModal()" id="btnWizardClose" title="Close &amp; Return to Arena" aria-label="Close">
         <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <path d="M3 3l10 10M13 3L3 13"></path>
         </svg>
@@ -840,6 +840,11 @@
 
         <!-- Status Notification Banner -->
         <div id="setupWizardStatusBanner" class="setup-wizard-banner" style="display:none;"></div>
+
+        <!-- One-click install progress (shown while downloading / installing) -->
+        <div id="setupInstallProgress" class="setup-install-progress" style="display:none;" role="progressbar" aria-label="Installation progress">
+          <div class="setup-install-progress-track"><div class="setup-install-progress-fill" id="setupInstallProgressFill"></div></div>
+        </div>
       </div>
 
       <div class="setup-wizard-actions">
@@ -944,6 +949,49 @@
         </button>
         <button class="modal-act-btn modal-act-ghost" onclick="closeResetModal()">
           <span>Cancel &amp; Return</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cancel Install Confirmation (wizard close during a running install) -->
+  <div class="ss-modal-overlay install-cancel-confirm-overlay" id="installCancelConfirmModal" style="display:none;" onclick="handleInstallCancelOverlayClick(event)">
+    <div class="ss-modal lg-glass lg-spot-card" role="dialog" aria-modal="true" aria-labelledby="installCancelModalTitle">
+      <button class="ss-modal-close" onclick="closeInstallCancelConfirm()" title="Keep Installing" aria-label="Close">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M3 3l10 10M13 3L3 13"></path>
+        </svg>
+      </button>
+
+      <div class="ss-modal-ambient-glow ss-modal-glow--amber" aria-hidden="true"></div>
+
+      <div class="ss-modal-hero">
+        <div class="ss-modal-icon-orb ss-orb--amber">
+          <div class="orb-ring" aria-hidden="true"></div>
+          <svg class="ss-svg-icon modal-reset-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+            <path d="M3 3v5h5"></path>
+          </svg>
+        </div>
+        <h2 class="ss-modal-title" id="installCancelModalTitle">Cancel installation?</h2>
+        <p class="ss-modal-desc">
+          Closing the setup wizard will interrupt the download and cancel the installation. Are you sure you want to close?
+        </p>
+      </div>
+
+      <div class="ss-modal-callout ss-callout--amber">
+        <svg class="ss-svg-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 3v5M8 11.5v1M15 8A7 7 0 1 1 1 8a7 7 0 1 1 14 0z"></path>
+        </svg>
+        <span>You can restart the installation later from the setup wizard.</span>
+      </div>
+
+      <div class="ss-modal-actions">
+        <button class="modal-act-btn modal-act-danger" onclick="confirmCancelInstallAndClose()">
+          <span>Close &amp; Cancel Install</span>
+        </button>
+        <button class="modal-act-btn modal-act-ghost" onclick="closeInstallCancelConfirm()">
+          <span>Keep Installing</span>
         </button>
       </div>
     </div>

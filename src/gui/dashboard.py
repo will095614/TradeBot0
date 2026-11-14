@@ -354,7 +354,7 @@ class _ArenaBridgeApi:
                 "node_available": False,
                 "omniroute_installed": False,
                 "gateway_unavailable_reason": None,
-                "runtime_install_status": {"status": "idle", "message": ""},
+                "runtime_install_status": {"status": "idle", "message": "", "progress": None, "phase": ""},
             }
 
     def test_api_key(self, provider: str, key: str) -> Dict[str, Any]:
@@ -452,6 +452,18 @@ class _ArenaBridgeApi:
             return self._dashboard.gateway_supervisor.start_runtime_install()
         except Exception as e:
             logger.error("Error starting gateway runtime install: %s", e)
+            return {"ok": False, "message": str(e)}
+
+    def cancel_gateway_runtime_install(self) -> Dict[str, Any]:
+        """
+        Cancels a running one-click Node.js + OmniRoute install (wizard
+        close warning). The supervisor stops the background worker and
+        removes partial artifacts; a later install attempt starts clean.
+        """
+        try:
+            return self._dashboard.gateway_supervisor.cancel_runtime_install()
+        except Exception as e:
+            logger.error("Error cancelling gateway runtime install: %s", e)
             return {"ok": False, "message": str(e)}
 
     def skip_to_pure_math(self) -> Dict[str, Any]:
