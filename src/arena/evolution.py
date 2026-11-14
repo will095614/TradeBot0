@@ -46,8 +46,8 @@ class GeneticEvolver:
                   - 2.0*(MaxDD/15)^2 - 1.5*churn - 50 if circuit-tripped.
         The old evolution-only formula (normalized ROI/Sharpe, no Sortino,
         no trip penalty) is retired: it let a tripped competitor record a
-        good composite fitness. Parent selection is unchanged: it ranks by
-        total equity, not by fitness.
+        good composite fitness. Audit 3.9: parent selection now ranks by
+        this fitness (see parent_order), not by total equity.
         """
         score = Leaderboard.calculate_fitness(
             float(ranking.roi_pct),
@@ -217,6 +217,30 @@ class GeneticEvolver:
         return new_g, tuned
 
     @classmethod
+    def parent_order(cls, rankings: List[CompetitorStats]) -> List[CompetitorStats]:
+        """Parent-selection order for evolution (audit 3.9, fitness-first).
+
+        Returns a NEW list sorted by composite fitness (descending), ties
+        broken by total equity, then ROI, then smallest drawdown. Fitness
+        already rewards ROI/Sharpe/Sortino and penalises drawdown (linear
+        + quadratic) and circuit trips (-50), so a high-equity strategy
+        that earned its lead with a huge drawdown or a tripped breaker no
+        longer breeds as champion. The leaderboard display order is
+        unchanged (still equity-first, as the user specified); this
+        ordering is used ONLY to pick evolution parents.
+        """
+        return sorted(
+            rankings,
+            key=lambda r: (
+                r.fitness_score,
+                r.equity,
+                float(r.roi_pct),
+                -float(r.max_drawdown_pct),
+            ),
+            reverse=True,
+        )
+
+    @classmethod
     def evolve_generation(
         cls,
         competitors: List[BaseCompetitor],
@@ -226,14 +250,20 @@ class GeneticEvolver:
     ) -> List[str]:
         """
         Evolves the competitor pool in-place for the next generation based on Arena rankings.
+        Parents (champion + runner-up) are picked by composite fitness via
+        parent_order; the incoming rankings keep their display (equity) order.
         Returns human-readable evolution log entries.
         """
         comp_map: Dict[str, BaseCompetitor] = {c.portfolio_id: c for c in competitors}
         if len(rankings) < 2:
             return []
 
-        champion_stats = rankings[0]
-        runner_up_stats = rankings[1]
+        # Audit 3.9: parents are picked by fitness, not by the equity
+        # order of the display rankings. parent_order returns a new list;
+        # the caller's rankings (and the leaderboard display) are untouched.
+        parent_order = cls.parent_order(rankings)
+        champion_stats = parent_order[0]
+        runner_up_stats = parent_order[1]
         champ_comp = comp_map[champion_stats.portfolio_id]
         runner_comp = comp_map[runner_up_stats.portfolio_id]
 
@@ -244,7 +274,7 @@ class GeneticEvolver:
         logs: List[str] = []
         evolution_records: List[Dict[str, Any]] = []
 
-        for idx, r in enumerate(rankings):
+        for idx, r in enumerate(parent_order):
             comp = comp_map[r.portfolio_id]
             old_g = comp.genome
             tuned_genes: List[str] = []

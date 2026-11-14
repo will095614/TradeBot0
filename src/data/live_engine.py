@@ -1864,8 +1864,13 @@ class LiveArenaEngine:
             rankings = Leaderboard.get_rankings(self.broker.portfolios)
             prev_gen = max(c.genome.generation for c in self.competitors)
             short = self.STRATEGY_SHORT
-            kept = [short.get(r.portfolio_id, r.portfolio_id) for r in rankings[:2]]
-            rebuilt = [short.get(r.portfolio_id, r.portfolio_id) for r in rankings[2:]]
+            # Audit 3.9: the evolution log names the actual parents, which
+            # are picked by fitness (parent_order), not the equity-ordered
+            # display ranks. leader_roi / tv_champion below stay
+            # equity-based: they describe the display champion, not the parents.
+            parent_order = GeneticEvolver.parent_order(rankings)
+            kept = [short.get(r.portfolio_id, r.portfolio_id) for r in parent_order[:2]]
+            rebuilt = [short.get(r.portfolio_id, r.portfolio_id) for r in parent_order[2:]]
             leader_roi = float(rankings[0].roi_pct) if rankings else 0.0
 
             logs = GeneticEvolver.evolve_generation(self.competitors, rankings, preserve_portfolio=True, save_history=False)

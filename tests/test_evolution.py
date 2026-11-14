@@ -120,8 +120,10 @@ def test_evolution_save_history_decoupled_from_lock():
 
 
 def test_tripped_champion_revives_next_generation():
-    """Dead champion (item 4): a tripped #1 by equity must trade again after
-    evolution instead of staying dead forever as ELITE."""
+    """Dead champion (item 4) + audit 3.9: a tripped #1 by equity must trade
+    again after evolution instead of staying dead forever. It is no longer
+    ELITE-preserved (fitness-first parents demote it to crossover), but the
+    breaker/drawdown reset still runs for every competitor, so it revives."""
     from src.arena.risk_guard import RiskGuard
 
     comp_a = AggressiveCompetitor()
@@ -166,14 +168,18 @@ def test_tripped_champion_revives_next_generation():
     )
     assert ok is False
 
-    old_trail_sl = comp_d.genome.stop_loss_pct
+    old_cons_sl = comp_b.genome.stop_loss_pct
     logs = GeneticEvolver.evolve_generation(
         competitors, rankings, preserve_portfolio=True, save_history=False
     )
     assert len(logs) == 4
-    # Revived as ELITE (genome kept), breaker cleared, drawdown clock reset,
-    # equity untouched.
-    assert comp_d.genome.stop_loss_pct == old_trail_sl
+    # Audit 3.9: the tripped equity leader is no longer the fitness
+    # champion, so it is crossed over (not ELITE-preserved) -- but the
+    # breaker/drawdown reset still runs for every competitor, so it
+    # revives and can trade again next generation. The fitness champion
+    # (cons) is the one preserved as ELITE #1.
+    assert "ELITE #1" in logs[0] and "comp_cons" in logs[0]
+    assert comp_b.genome.stop_loss_pct == old_cons_sl
     assert comp_d.genome.generation == 2
     assert comp_d.portfolio.is_circuit_breaker_tripped is False
     assert comp_d.portfolio.max_drawdown_pct == Decimal("0.00")
@@ -388,3 +394,68 @@ def test_evolved_genomes_all_valid():
     runner_up = next(c for c in competitors if c.portfolio_id == "comp_cons")
     assert runner_up.genome.take_profit_pct is not None
     assert runner_up.genome.take_profit_pct >= runner_up.genome.stop_loss_pct * Decimal("1.8")
+
+
+def test_evolution_parents_are_fitness_first_not_equity_first():
+    """Audit 3.9: evolution parents are picked by composite fitness, not by
+    total equity. The highest-equity strategy has a 30% drawdown and a
+    tripped breaker, so its fitness is far below a lower-equity, low-DD
+    strategy -- the low-DD one must be ELITE #1 and the equity leader must
+    be crossed over. The leaderboard display order itself stays
+    equity-first (user-specified)."""
+    comp_a = AggressiveCompetitor()
+    comp_b = ConservativeCompetitor()
+    comp_c = ATRDynamicCompetitor()
+    comp_d = TrailingGuardCompetitor()
+    competitors = [comp_a, comp_b, comp_c, comp_d]
+
+    broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
+    for c in competitors:
+        broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
+
+    # comp_trail: highest equity (518k, ROI 418%) but 30% DD + tripped
+    # breaker -> fitness 836 - 37.5 - 8 - 50 = 740.50.
+    comp_d.portfolio.cash = Decimal("518000.00")
+    comp_d.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
+    comp_d.portfolio.max_drawdown_pct = Decimal("30.00")
+    comp_d.portfolio.is_circuit_breaker_tripped = True
+    # comp_cons: lower equity (505k, ROI 405%), 2% DD, active
+    # -> fitness 810 - 2.5 - 0.04 = 807.46.
+    comp_b.portfolio.cash = Decimal("505000.00")
+    comp_b.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
+    comp_b.portfolio.max_drawdown_pct = Decimal("2.00")
+    # comp_atr: 496k, ROI 396%, 2% DD -> fitness 789.46.
+    comp_c.portfolio.cash = Decimal("496000.00")
+    comp_c.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
+    comp_c.portfolio.max_drawdown_pct = Decimal("2.00")
+    # comp_agg: 479k, ROI 379%, 2% DD -> fitness 755.46.
+    comp_a.portfolio.cash = Decimal("479000.00")
+    comp_a.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
+    comp_a.portfolio.max_drawdown_pct = Decimal("2.00")
+
+    rankings = Leaderboard.get_rankings(broker.portfolios)
+    # Display order is still equity-first (user-specified, untouched).
+    assert [r.portfolio_id for r in rankings] == [
+        "comp_trail", "comp_cons", "comp_atr", "comp_agg",
+    ]
+    # ... but the equity leader's fitness is the worst of the four.
+    assert rankings[0].fitness_score == pytest.approx(740.50)
+    assert rankings[1].fitness_score == pytest.approx(807.46)
+
+    old_cons_sl = comp_b.genome.stop_loss_pct
+    logs = GeneticEvolver.evolve_generation(
+        competitors, rankings, preserve_portfolio=True, save_history=False
+    )
+    assert len(logs) == 4
+    # Fitness-first parents: cons is ELITE #1, atr is ELITE #2; the
+    # high-equity, tripped trail is crossed over (MUTATED, last).
+    assert "ELITE #1" in logs[0] and "comp_cons" in logs[0]
+    assert "ELITE #2" in logs[1] and "comp_atr" in logs[1]
+    assert "MUTATED" in logs[3] and "comp_trail" in logs[3]
+    # Champion genome preserved; equity untouched.
+    assert comp_b.genome.stop_loss_pct == old_cons_sl
+    assert comp_b.genome.generation == 2
+    assert comp_d.portfolio.total_equity == Decimal("518000.00")
+    # The tripped strategy still revives (reset runs for every competitor).
+    assert comp_d.portfolio.is_circuit_breaker_tripped is False
+    assert comp_d.portfolio.max_drawdown_pct == Decimal("0.00")
