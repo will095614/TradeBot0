@@ -32,6 +32,34 @@ from src.data.eth_feed import ETHFeed, CandleBar
 # The number itself is unchanged (decision: P2-A).
 UNCAPPED_RUNNER_R_MULTIPLE = 1.8
 
+# Chop gate (Phase 8): Kaufman efficiency ratio over the last 20 bars.
+# ER = |close_N - close_0| / sum(|Δclose|). A trending tape scores near
+# 1.0; a sideways tape scores near 0. Below the threshold the market is
+# chop and NEW ENTRIES are blocked; closes/exits always run (a position
+# must always be exitable). Measured on real 15m tapes, one pass from
+# gen-1 defaults (experiment chop_gate_exp.py):
+#   flat month (2,573 bars, +2.28%): mean ROI -5.52% -> -3.44%
+#     (2.08pp / 38% of the loss recovered), mean fitness -49.76 -> -19.05
+#   trend month (2,958 bars, -26%): mean ROI +0.86% -> +2.83%,
+#     mean fitness -5.96 -> +7.75 (improved, not hurt)
+# ADX(14) < 20 was also tried and REJECTED (trend month -1.34%).
+# SCOPE: validated on 15m bars (20 bars = 5h window). The live engine
+# replays 1m candles with a 150-bar buffer, so the same 5h statistic
+# cannot run there as-is -- the live port is deferred to the full
+# debug & optimize pass (needs 1m-timescale calibration). Live entries
+# stay ungated until then.
+CHOP_GATE_WINDOW_BARS = 20
+CHOP_GATE_ER_THRESHOLD = 0.25
+
+
+def efficiency_ratio(closes: List[float]) -> float:
+    """Kaufman efficiency ratio over the given closes (oldest first)."""
+    if len(closes) < 2:
+        return 1.0
+    net = abs(closes[-1] - closes[0])
+    path = sum(abs(closes[i] - closes[i - 1]) for i in range(1, len(closes)))
+    return (net / path) if path > 0 else 1.0
+
 
 class TimeMachineArena:
     """
@@ -57,13 +85,23 @@ class TimeMachineArena:
             self.comp_d, self.comp_e, self.comp_f
         ]
         self._rebuild_broker()
+        self.chop_gate_blocked = 0
 
     def _rebuild_broker(self) -> None:
         self.broker = BrokerSim(symbol=self.symbol, slippage_pct=Decimal("0.0002"))
         for c in self.competitors:
             self.broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
 
-    def run_simulation(self, bars: List[CandleBar]) -> List[CompetitorStats]:
+    def run_simulation(
+        self, bars: List[CandleBar], chop_gate: bool = True
+    ) -> List[CompetitorStats]:
+        """Replay bars across all competitors.
+
+        chop_gate (default True): when the Kaufman efficiency ratio
+        over the last 20 closes drops below 0.25 the tape is chop and
+        new entries are blocked; closes/exits are never blocked.
+        """
+        self.chop_gate_blocked = 0
         gen = max(c.genome.generation for c in self.competitors)
         print(f"[*] Starting Time Machine Arena [Generation {gen}] on {len(bars)} {self.symbol} candle bars...")
         prev_bar: Optional[CandleBar] = None
@@ -74,6 +112,7 @@ class TimeMachineArena:
         # rolling 14-bar window made backtest ORB a rolling-channel
         # breakout, a different strategy from live ORB.
         orb_anchor = bars[:15]
+        closes: List[float] = []
         # Rolling true ranges for the measured backtest ATR (F3).
         true_ranges: List[Decimal] = []
 
@@ -131,6 +170,15 @@ class TimeMachineArena:
 
             # 2. Derive strategy signal
             signal = ETHFeed.generate_signal(bar, prev_bar)
+
+            # Chop gate: efficiency ratio over the last 20 closes.
+            closes.append(float(bar.close))
+            chop = (
+                chop_gate
+                and len(closes) > CHOP_GATE_WINDOW_BARS
+                and efficiency_ratio(closes[-CHOP_GATE_WINDOW_BARS - 1:])
+                < CHOP_GATE_ER_THRESHOLD
+            )
             indicators = {
                 "atr": bar.atr,
                 "high": bar.high,
@@ -168,6 +216,12 @@ class TimeMachineArena:
                         timestamp=bar.timestamp
                     )
                 if ticket:
+                    if chop and c.portfolio.position_qty == Decimal("0"):
+                        # Chop: block the NEW ENTRY. The portfolio is
+                        # flat, so this ticket can only open a position;
+                        # closes (non-flat portfolios) never reach here.
+                        self.chop_gate_blocked += 1
+                        continue
                     self.broker.submit_order(ticket)
 
             prev_bar = bar
@@ -198,13 +252,15 @@ class TimeMachineArena:
                 self.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
         return logs
 
-    def run_evolution_tournament(self, bars: List[CandleBar], generations: int = 3) -> List[CompetitorStats]:
+    def run_evolution_tournament(
+        self, bars: List[CandleBar], generations: int = 3, chop_gate: bool = True
+    ) -> List[CompetitorStats]:
         """
         Runs multiple seasons back-to-back, evolving competitor risk parameters between each generation.
         """
         rankings: List[CompetitorStats] = []
         for g in range(1, generations + 1):
-            rankings = self.run_simulation(bars)
+            rankings = self.run_simulation(bars, chop_gate=chop_gate)
             if g < generations:
                 evo_logs = self.evolve_next_generation(rankings)
                 for log_line in evo_logs:
