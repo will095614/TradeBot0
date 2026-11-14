@@ -82,7 +82,7 @@ class LiveArenaEngine:
     # SQLite or publish state anymore.
     _active_epoch: float = 0.0
 
-    def __init__(self, initial_cash: Decimal = Decimal("100000.00"), symbol: str = "ETH/USD", storage: Optional[ArenaStorage] = None):
+    def __init__(self, initial_cash: Decimal = Decimal("100000.00"), symbol: str = "ETH/USD", storage: Optional[ArenaStorage] = None, auto_redeploy_when_flat: bool = True):
         self.symbol = symbol
         self.initial_cash = initial_cash
         self.lock = threading.RLock()
@@ -165,6 +165,11 @@ class LiveArenaEngine:
         # Automatic evolution: every 6 hours, or every 30 closed trades,
         # whichever comes first, with a 30-minute debounce between runs.
         self.auto_evolve_enabled: bool = True
+        # Audit 3.21: auto-redeploy when all six are flat is behind an
+        # explicit switch (config key auto_redeploy_when_flat, default
+        # ON to preserve current behaviour).
+        self.auto_redeploy_when_flat: bool = auto_redeploy_when_flat
+        self._auto_redeploy_logged: bool = False
         self.auto_evolve_interval_sec: int = 21600  # Default 6 hours (21600s)
         self.auto_evolve_closed_trades: int = 30
         self.auto_evolve_debounce_sec: int = 1800  # 30 minutes
@@ -1398,6 +1403,32 @@ class LiveArenaEngine:
 
         self._update_telemetry_snapshot(price)
 
+    def _maybe_auto_redeploy(self, price: Decimal, ts: float) -> bool:
+        """Redeploy when all six strategies are flat (audit 3.21).
+
+        Behind the explicit auto_redeploy_when_flat switch (default ON).
+        Returns True only when a redeploy actually ran. One INFO line is
+        logged per all-flat episode: the flag resets as soon as any
+        position opens, so a flat stretch that cannot deploy (ORB/Mean
+        legitimately refusing entry) does not spam the log every 5s.
+        """
+        if not self.auto_redeploy_when_flat:
+            self._auto_redeploy_logged = False
+            return False
+        if self.position_entry_ts or not all(
+            c.portfolio.position_qty == Decimal("0") for c in self.competitors
+        ):
+            self._auto_redeploy_logged = False
+            return False
+        if not self._auto_redeploy_logged:
+            logger.info(
+                "Auto-redeploy: all six strategies flat -- re-entering via "
+                "_ensure_active_live_positions (auto_redeploy_when_flat=True)"
+            )
+            self._auto_redeploy_logged = True
+        self._ensure_active_live_positions(price, ts)
+        return True
+
     def _ensure_active_live_positions(self, price: Decimal, ts: float) -> None:
         """
         Ensures that on startup in Live Mode, any flat competitor deploys its initial strategy
@@ -1817,8 +1848,7 @@ class LiveArenaEngine:
                                             "profit" if f.realized_pnl >= Decimal("0") else "loss"
                                         )
 
-                                if not self.position_entry_ts and all(c.portfolio.position_qty == Decimal("0") for c in self.competitors):
-                                    self._ensure_active_live_positions(cadenced_quote.price, float(current_slot))
+                                self._maybe_auto_redeploy(cadenced_quote.price, float(current_slot))
 
                                 # All 6 strategies evaluated strictly on the 5-second interval
                                 self._evaluate_live_strategies(cadenced_quote.price, prev_p, float(current_slot))

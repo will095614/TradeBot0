@@ -600,7 +600,6 @@ class ArenaDashboard:
 
     def __init__(self, initial_cash: Decimal = Decimal("100000.00")) -> None:
         self.initial_cash = initial_cash
-        self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=initial_cash)
         self.config_manager = ConfigManager()
         # Gateway host/port come from the user's own config (item 10 A2):
         # the console button and the supervisor must follow gateway_port
@@ -609,8 +608,13 @@ class ArenaDashboard:
             _gw_cfg = self.config_manager.load_config()
             _gw_port = int(_gw_cfg.get("gateway_port", 20128) or 20128)
             _gw_host = str(_gw_cfg.get("gateway_host", "127.0.0.1") or "127.0.0.1")
+            # Audit 3.21: auto-redeploy when all six are flat is an
+            # explicit switch (default ON); load_config merges the
+            # default for installs whose config predates the key.
+            _auto_redeploy = bool(_gw_cfg.get("auto_redeploy_when_flat", True))
         except Exception:
-            _gw_host, _gw_port = "127.0.0.1", 20128
+            _gw_host, _gw_port, _auto_redeploy = "127.0.0.1", 20128, True
+        self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=initial_cash, auto_redeploy_when_flat=_auto_redeploy)
         self.gateway_supervisor = GatewaySupervisor(host=_gw_host, port=_gw_port)
         self.window = None
         self.allow_exit = False
@@ -674,6 +678,7 @@ class ArenaDashboard:
         old_interval = self.engine.auto_evolve_interval_sec
         old_enabled = self.engine.auto_evolve_enabled
         old_cadence = self.engine.cadence_sec
+        old_auto_redeploy = self.engine.auto_redeploy_when_flat
         old_paused = self.engine.paused
         old_gen = {c.portfolio_id: c.genome.generation for c in self.engine.competitors}
         old_fills = list(self.engine.fill_records)
@@ -694,6 +699,7 @@ class ArenaDashboard:
         self.engine.auto_evolve_interval_sec = old_interval
         self.engine.auto_evolve_enabled = old_enabled
         self.engine.cadence_sec = old_cadence
+        self.engine.auto_redeploy_when_flat = old_auto_redeploy
         for c in self.engine.competitors:
             gen = old_gen.get(c.portfolio_id)
             if gen is not None and gen != c.genome.generation:

@@ -26,6 +26,9 @@ DEFAULT_SYSTEM_CONFIG: Dict[str, Any] = {
     "gateway_host": "127.0.0.1",
     "configured_providers": [],
     "last_setup_ts": 0.0,
+    # Audit 3.21: redeploy when all six strategies are flat. Default ON
+    # preserves current behaviour; OFF leaves a flat arena flat.
+    "auto_redeploy_when_flat": True,
 }
 
 PROVIDER_ENV_MAP: Dict[str, str] = {
