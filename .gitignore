@@ -38,3 +38,6 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+
+# TradeBot0 runtime logs (audit 3.10)
+data/logs/

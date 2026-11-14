@@ -5,11 +5,13 @@ from src.gui.dashboard import ArenaDashboard
 from src.data.timemachine import TimeMachineArena
 from src.data.eth_feed import ETHFeed
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+from src.logging_setup import configure_logging
+
+# Audit 3.10: the release build is windowed (PyInstaller console=False), so
+# sys.stdout is None and a bare StreamHandler discards every log record.
+# configure_logging always writes a rotating file log and keeps the console
+# stream only when a real stdout exists.
+configure_logging()
 logger = logging.getLogger("TradeBot0")
 
 
