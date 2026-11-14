@@ -194,8 +194,8 @@ def test_frontend_wizard_has_admin_password_fields():
     for s in (
         "Admin password must be at least 8 characters.",
         "Admin password and confirmation do not match.",
-        "Gateway Admin Password",
-        "Protects the local OmniRoute console (min 8 characters)",
+        '<span class="setup-provider-name">Password</span>',
+        "Password for signing in to the OmniRoute dashboard (min 8 characters)",
         "Not Set - Required",
     ):
         assert s.isascii()

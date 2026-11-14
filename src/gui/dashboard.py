@@ -263,6 +263,31 @@ class _ArenaBridgeApi:
             logger.error("Failed to open OmniRoute console: %s", e)
             return {"status": "error", "message": str(e)}
 
+    def open_external_url(self, url: str) -> Dict[str, Any]:
+        """Opens an approved provider key page in the system browser.
+
+        AI panels (W2): the setup wizard's "Get a key" links. Only the
+        four provider key pages are allowed; anything else is refused
+        and never opened. Never raises.
+        """
+        import webbrowser
+
+        allowed = {
+            "https://openrouter.ai/settings/keys",
+            "https://console.groq.com/keys",
+            "https://platform.deepseek.com/api_keys",
+            "https://aistudio.google.com/apikey",
+        }
+        if url not in allowed:
+            return {"status": "error", "message": "URL not allowed"}
+        try:
+            webbrowser.open(url)
+            logger.info("Opened provider key page in system browser: %s", url)
+            return {"status": "ok", "url": url}
+        except Exception as e:
+            logger.error("Failed to open provider key page: %s", e)
+            return {"status": "error", "message": str(e)}
+
     def copy_omniroute_password(self) -> Dict[str, Any]:
         """Copies the OmniRoute admin password to the OS clipboard.
 
@@ -435,7 +460,7 @@ class _ArenaBridgeApi:
             # onboarding can complete (pure-math mode is the password-free path).
             _cm = self._dashboard.config_manager
             if admin_password is not None:
-                self._set_save_launch_stage("saving-password", "Saving admin password...", 10, "password")
+                self._set_save_launch_stage("saving-password", "Saving password...", 10, "password")
                 _pw_res = _cm.set_admin_password(admin_password)
                 if not _pw_res.get("ok"):
                     self._set_save_launch_stage("failed", _pw_res.get("error", "Invalid admin password."), 10, "password")
@@ -445,7 +470,7 @@ class _ArenaBridgeApi:
                 return {"status": "error", "ok": False, "message": "Please set an admin password for the local gateway console before launching the arena.", "gateway_online": False}
 
             # 1. Sync keys into ~/.omniroute/.env
-            self._set_save_launch_stage("syncing-keys", "Synchronizing API keys with local gateway...", 25, "keys")
+            self._set_save_launch_stage("syncing-keys", "Connecting AI services...", 25, "keys")
             sync_res = self._dashboard.config_manager.sync_omniroute_keys(keys or {})
 
             # 2. Update system config
@@ -465,7 +490,7 @@ class _ArenaBridgeApi:
             if admin_password is not None:
                 _sup = self._dashboard.gateway_supervisor
                 if _sup.is_self_spawned and _sup.child_process is not None:
-                    self._set_save_launch_stage("restarting-gateway", "Restarting gateway with new password...", 55, "gateway")
+                    self._set_save_launch_stage("restarting-gateway", "Restarting AI services...", 55, "gateway")
                     try:
                         _sup.shutdown()
                     except Exception as e:
@@ -477,17 +502,21 @@ class _ArenaBridgeApi:
             msg = "Credentials saved successfully."
 
             if is_open:
-                self._set_save_launch_stage("connecting-gateway", "Connecting to active OmniRoute gateway...", 70, "gateway")
+                self._set_save_launch_stage("connecting-gateway", "Connecting to AI services...", 70, "gateway")
                 healthy, _ = self._dashboard.gateway_supervisor.probe_health(timeout=0.6)
                 if healthy:
-                    msg = "Connected to active OmniRoute gateway."
+                    msg = "AI services connected."
             else:
                 # Auto-launch is mandatory (offline mode removed): the gateway
                 # is always started when the port is not already open.
-                self._set_save_launch_stage("starting-gateway", "Starting OmniRoute gateway...", 70, "gateway")
+                self._set_save_launch_stage("starting-gateway", "Starting AI services...", 70, "gateway")
                 spawn_ok, spawn_msg = self._dashboard.gateway_supervisor.start_daemon(max_wait_sec=30.0)
                 healthy = spawn_ok
-                msg = spawn_msg
+                # AI panels (W5): the success message is the plain
+                # "AI services connected."; the detailed spawn message
+                # is kept only for the failure path, where it explains
+                # what went wrong.
+                msg = "AI services connected." if spawn_ok else spawn_msg
 
             # 4. Start engine live loop if held in onboarding standby
             self._set_save_launch_stage("starting-engine", "Starting live engine...", 85, "engine")

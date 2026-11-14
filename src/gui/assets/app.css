@@ -3505,6 +3505,123 @@ tbody td {
   border-color: rgba(16, 245, 160, 0.42);
 }
 
+/* AI panels (I1): status lines under the pill -- a fixed two-line
+   slot, always reserved (visibility + opacity, never display: none),
+   so showing a line never moves anything. */
+.intel-status-lines {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.intel-status-line {
+  width: 100%;
+  min-height: 15px;
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: right;
+  color: var(--ss-text-muted);
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+}
+.intel-status-line.visible {
+  visibility: visible;
+  opacity: 1;
+}
+/* Reserved for the gateway-diagnosis workstream: it fills this line
+   ('quota exhausted' / 'connection problem') and styles it. */
+.intel-diagnosis-line {
+  color: var(--ss-text-muted);
+}
+
+/* AI panels (I2/I3/I4): one shared Advanced section holding the
+   three engineering cards, collapsed by default. The body is
+   toggled with visibility + opacity only -- it always occupies its
+   space, so opening or closing it never shifts the layout. */
+.intel-advanced-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.intel-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ss-text-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.22s ease, color 0.22s ease;
+}
+.intel-advanced-toggle:hover {
+  border-color: rgba(0, 242, 254, 0.42);
+  color: #67E8F9;
+}
+.intel-advanced-chevron {
+  transition: transform 0.25s var(--lg-spring);
+}
+.intel-advanced-toggle[aria-expanded="true"] .intel-advanced-chevron {
+  transform: rotate(180deg);
+}
+.intel-advanced-body {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+}
+.intel-advanced-body.expanded {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* AI panels (I3): plain throttle line under the Market Direction
+   card -- a fixed one-line slot, always reserved. */
+.intel-throttle-line {
+  min-height: 15px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ss-text-muted);
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+}
+.intel-throttle-line.visible {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* AI panels (I6): refresh progress -- the same fixed 8px slot as the
+   install/save progress bars (visibility + opacity, never
+   display: none). The fill is always indeterminate (sliding): a
+   digest refresh has no trustworthy percent, so none is fabricated. */
+.digest-refresh-progress {
+  min-height: 8px;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+}
+.digest-refresh-progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.digest-refresh-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #00F2FE 0%, #10F5A0 100%);
+}
+.digest-refresh-progress-fill.indeterminate {
+  width: 40%;
+  animation: setup-install-progress-slide 1.6s ease-in-out infinite;
+}
+
 .intel-events-section {
   min-height: 0;
   display: flex;
@@ -4931,6 +5048,79 @@ body:not(.arena-ready) .lg-glass {
   border: 1px solid rgba(255, 51, 75, 0.32);
 }
 
+/* AI panels (W2): one-line intro above the key cards. */
+.setup-keys-intro {
+  font-size: 11px;
+  color: var(--ss-text-muted);
+  line-height: 1.45;
+  margin-bottom: 0;
+}
+
+/* AI panels (W2): 'Get a key' link inside the provider hint. */
+.setup-key-link {
+  color: var(--ss-accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.setup-key-link:hover {
+  text-decoration: underline;
+}
+
+/* AI panels (W2): small '?' button on each key card; hover (or
+   keyboard focus) shows a popup explaining what the API key is
+   for. The popup is visibility + opacity only, so it never moves
+   anything. */
+.setup-key-help {
+  position: relative;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ss-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  cursor: help;
+}
+.setup-key-help:hover,
+.setup-key-help:focus-visible {
+  border-color: rgba(0, 242, 254, 0.6);
+  color: #67E8F9;
+}
+.setup-key-help-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+  width: 230px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(14, 18, 26, 0.96);
+  border: 1px solid rgba(0, 242, 254, 0.28);
+  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.55);
+  color: #E2E8F0;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+  pointer-events: none;
+}
+.setup-key-help:hover .setup-key-help-popup,
+.setup-key-help:focus-visible .setup-key-help-popup,
+.setup-key-help:focus-within .setup-key-help-popup {
+  visibility: visible;
+  opacity: 1;
+}
+
 .setup-gateway-options {
   padding: 10px 12px;
   border-radius: 10px;
@@ -5092,13 +5282,14 @@ body:not(.arena-ready) .lg-glass {
    instead of jumping. */
 @media (max-height: 720px) {
   .setup-wizard-modal { padding: 12px 20px 10px; }
-  .setup-wizard-header { margin-bottom: 8px; }
-  .setup-wizard-body { gap: 12px; margin-bottom: 8px; }
+  .setup-wizard-header { margin-bottom: 6px; }
+  .setup-wizard-body { gap: 12px; margin-bottom: 4px; }
   .setup-wizard-column { gap: 6px; }
-  .setup-provider-card { padding: 6px 10px; }
+  .setup-provider-card { padding: 5px 10px; }
   .setup-key-input, .setup-eye-btn, .setup-test-btn { height: 30px; }
   .setup-gateway-options { padding: 8px 10px; }
   .setup-wizard-banner { min-height: 44px; padding: 6px 10px; }
+  .setup-keys-intro { line-height: 1.3; }
 }
 
 .pwd-badge {

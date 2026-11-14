@@ -493,6 +493,10 @@ DOCUMENTED_DECORATIVE_IDS = {
     "macroDot": "static dot (styled by .ss-badge__dot); never updated by id",
     "modularSlotPanel": "'Modular Extension Bay' placeholder panel (reserved)",
     "omniConsoleSubtext": "label wrapper; the #omniConsolePwd child has the onclick",
+    # Reserved slot for the gateway-diagnosis workstream (AI panels,
+    # NEW item): the diagnosis line under the Intel Hub pill. It is
+    # filled by that workstream; until then it stays empty and hidden.
+    "intelDiagnosisLine": "reserved diagnosis line; filled by the gateway-diagnosis workstream",
     "orderflowPanel": "panel shell; JS fills #fillsBody inside it",
 }
 

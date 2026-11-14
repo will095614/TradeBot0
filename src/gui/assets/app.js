@@ -3211,6 +3211,18 @@ function updateUiClockDisplay() {
     }
   }
 
+  // AI panels (W2): 'Get a key' links open the provider's key page
+  // in the system browser via the bridge (allowlisted there); the
+  // window.open fallback covers the no-bridge preview.
+  function openProviderKeyPage(url) {
+    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.open_external_url === 'function') {
+      window.pywebview.api.open_external_url(url).catch((e) => console.debug('open key page err:', e));
+    } else {
+      window.open(url, '_blank');
+    }
+  }
+  window.openProviderKeyPage = openProviderKeyPage;
+
   let currentMainView = 'arena';
   function switchMainView(viewName) {
     if (currentMainView === viewName) return;
@@ -3253,9 +3265,19 @@ function updateUiClockDisplay() {
     `;
     }
 
+    // AI panels (I6): an indeterminate progress bar runs while the
+    // refresh is in flight. A digest refresh has no trustworthy
+    // percent, so none is fabricated; the bar hides again when the
+    // button settles below.
+    const digestProg = document.getElementById('digestRefreshProgress');
+    if (digestProg) {
+      digestProg.style.visibility = 'visible';
+      digestProg.style.opacity = '1';
+    }
+
     if (typeof showChartToast === 'function') {
       showChartToast({
-        triggerReason: 'Refreshing Macro AI Digest & News Intelligence...',
+        triggerReason: 'Refreshing news analysis...',
         action: 'INTEL'
       });
     }
@@ -3279,8 +3301,12 @@ function updateUiClockDisplay() {
           <svg class="ss-svg-icon btn-spin-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9L14 6.5M14 2.5v4h-4"></path>
           </svg>
-          <span>Refresh AI Digest</span>
+          <span>Refresh News Analysis</span>
         `;
+        }
+        if (digestProg) {
+          digestProg.style.visibility = 'hidden';
+          digestProg.style.opacity = '0';
         }
       }, 1000);
     }
@@ -3302,14 +3328,17 @@ function updateUiClockDisplay() {
       if (statusPill.className !== nextPillCls) {
         statusPill.className = nextPillCls;
       }
-      // Item 12 / A3 option 2: when the current regime came from the local
-      // keyword fallback, say so on the pill instead of generic STANDBY.
+      // AI panels (I1): the pill says only Online / Standby. When
+      // the current regime came from the local keyword fallback,
+      // say so on the reserved line under the pill instead.
       const isFallback = macro.fallback === true;
-      const nextPillHtml = `<span class="ss-badge__dot"></span><span class="ss-badge__label">${isOnline ? 'ONLINE (24/7)' : (isFallback ? 'STANDBY / KEYWORD FALLBACK' : 'STANDBY / LOCAL NLP')}</span>`;
+      const nextPillHtml = `<span class="ss-badge__dot"></span><span class="ss-badge__label">${isOnline ? 'Online' : 'Standby'}</span>`;
       if (statusPill._lastHtml !== nextPillHtml) {
         statusPill.innerHTML = nextPillHtml;
         statusPill._lastHtml = nextPillHtml;
       }
+      const fbLine = document.getElementById('intelFallbackLine');
+      if (fbLine) fbLine.classList.toggle('visible', isFallback);
     }
 
     const epEl = document.getElementById('omniEndpointVal');
@@ -3339,13 +3368,14 @@ function updateUiClockDisplay() {
       if (omni.quota_throttled === true) {
         tokensSub.textContent += ' — Digest throttled';
       }
+      // AI panels (I3): the user-facing throttle signal is a plain
+      // line under the Market Direction card, shown only while throttled.
+      const throttleLine = document.getElementById('macroThrottleLine');
+      if (throttleLine) throttleLine.classList.toggle('visible', omni.quota_throttled === true);
     }
 
-    const ingEl = document.getElementById('omniIngestModel');
-    if (ingEl) ingEl.textContent = omni.model_ingest || 'auto';
-
-    const cmdEl = document.getElementById('omniCommanderModel');
-    if (cmdEl) cmdEl.textContent = omni.model_commander || 'auto';
+    // AI panels (I5): the Stage-1 / Stage-2 model tags were removed;
+    // the ingest/commander model names are no longer displayed.
 
     const reqEl = document.getElementById('omniReqCounters');
     if (reqEl) {
@@ -3456,6 +3486,20 @@ function updateUiClockDisplay() {
       }
     }
   }
+
+  // AI panels (I2/I3/I4): the Advanced section hides the three
+  // engineering cards (Controller / Token Utilization / Async
+  // Concurrency) behind one toggle, collapsed by default. The body
+  // is toggled with visibility + opacity only -- it always occupies
+  // its space, so opening or closing it never shifts the layout.
+  function toggleIntelAdvanced() {
+    const body = document.getElementById('intelAdvancedBody');
+    const btn = document.getElementById('btnIntelAdvanced');
+    const expanded = body ? !body.classList.contains('expanded') : false;
+    if (body) body.classList.toggle('expanded', expanded);
+    if (btn) btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  }
+  window.toggleIntelAdvanced = toggleIntelAdvanced;
 
   window.addEventListener('DOMContentLoaded', () => {
     startUiClock();
@@ -3618,9 +3662,9 @@ function updateUiClockDisplay() {
             const stEl = document.getElementById(`status${domId}`);
             if (stEl) {
               if (configured.includes(pKey)) {
-                stEl.innerHTML = '<span class="setup-status-pill valid">Configured in .env</span>';
+                stEl.innerHTML = '<span class="setup-status-pill valid">Connected</span>';
               } else {
-                stEl.innerHTML = '<span class="setup-status-pill neutral">Not Configured</span>';
+                stEl.innerHTML = '<span class="setup-status-pill neutral">Not added</span>';
               }
             }
           });
@@ -3648,7 +3692,7 @@ function updateUiClockDisplay() {
           const adminStatus = document.getElementById('statusAdminPassword');
           if (adminStatus) {
             adminStatus.innerHTML = res.omniroute_password_configured
-              ? '<span class="setup-status-pill valid">Configured in .env</span>'
+              ? '<span class="setup-status-pill valid">Set</span>'
               : '<span class="setup-status-pill neutral">Not Set - Required</span>';
           }
 
@@ -3723,7 +3767,7 @@ function updateUiClockDisplay() {
     };
     const showEnvHint = () => {
       if (typeof showChartToast === 'function') {
-        showChartToast({ triggerReason: 'Admin password is stored in ~/.omniroute/.env', action: 'INFO' });
+        showChartToast({ triggerReason: 'Console password saved', action: 'INFO' });
       }
     };
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.copy_omniroute_password === 'function') {
@@ -4023,10 +4067,11 @@ function updateUiClockDisplay() {
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.test_api_key === 'function') {
         const res = await window.pywebview.api.test_api_key(provider, rawKey);
         if (res && res.ok) {
-          if (stEl) stEl.innerHTML = `<span class="setup-status-pill valid">&#x2713; ${res.message || 'Verified'}</span>`;
+          if (stEl) stEl.innerHTML = '<span class="setup-status-pill valid">Connected</span>';
         } else {
           const msg = (res && res.message) ? res.message : 'Verification failed';
-          if (stEl) stEl.innerHTML = `<span class="setup-status-pill error">&#x2717; ${msg}</span>`;
+          if (stEl) stEl.innerHTML = '<span class="setup-status-pill error">Check failed</span>';
+          setWizardBanner(msg, 'error');
         }
       } else {
         setTimeout(() => {
@@ -4034,7 +4079,8 @@ function updateUiClockDisplay() {
         }, 400);
       }
     } catch (err) {
-      if (stEl) stEl.innerHTML = '<span class="setup-status-pill error">&#x2717; Network error</span>';
+      if (stEl) stEl.innerHTML = '<span class="setup-status-pill error">Check failed</span>';
+      setWizardBanner('Network error', 'error');
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -4070,13 +4116,13 @@ function updateUiClockDisplay() {
       saveBtn.disabled = true;
       saveBtn.innerHTML = '<span>Saving &amp; Launching...</span>';
     }
-    setWizardBanner('Synchronizing credentials with local gateway...', 'info');
+    setWizardBanner('Connecting AI services...', 'info');
 
     // Save progress: show the bar immediately, then poll the backend
     // stage (~500 ms) while the synchronous bridge call runs, so the
     // user sees which step is running. The bar only reaches 100% when
     // the call actually returns ok.
-    updateSaveLaunchProgress({ status: 'saving-password', message: 'Saving admin password...', progress: 0, phase: 'password' });
+    updateSaveLaunchProgress({ status: 'saving-password', message: 'Saving password...', progress: 0, phase: 'password' });
     if (saveLaunchPollTimer) clearInterval(saveLaunchPollTimer);
     saveLaunchPollTimer = setInterval(() => {
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_save_launch_status === 'function') {
@@ -4108,7 +4154,7 @@ function updateUiClockDisplay() {
                   symbol: 'ETH/USD',
                   price: (latestState && latestState.quote && latestState.quote.price) || (latestState && latestState.candles && latestState.candles.length > 0 ? latestState.candles[latestState.candles.length - 1].c : 2650.0),
                   qty: 0,
-                  triggerReason: 'API Credentials & Gateway Synchronized',
+                  triggerReason: 'AI services connected',
                   timestamp: Date.now()
                 });
               }

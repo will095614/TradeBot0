@@ -217,7 +217,7 @@
             </svg>
             <span>Arena</span>
           </button>
-          <button class="view-btn ss-seg__option" id="btnViewIntel" onclick="switchMainView('intel')" title="Macro Intelligence Hub &amp; OmniRoute Monitor (Press 2)">
+          <button class="view-btn ss-seg__option" id="btnViewIntel" onclick="switchMainView('intel')" title="Market Intelligence (Press 2)">
             <svg class="ss-svg-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="8" cy="8" r="6"></circle>
               <path d="M2 8h12"></path>
@@ -247,7 +247,7 @@
             <path d="M6 13.5H2.5V10"></path>
           </svg>
         </button>
-        <button class="btn btn-icon-only lg-btn" id="btnOpenSettings" onclick="openSetupWizardModal()" title="API Credentials &amp; Gateway Settings">
+        <button class="btn btn-icon-only lg-btn" id="btnOpenSettings" onclick="openSetupWizardModal()" title="AI Services">
           <svg class="ss-svg-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
@@ -271,7 +271,7 @@
       <!-- 3-ZONE TRADING STAGE (LEFT TELEMETRY | CENTER CHART | RIGHT ORDERFLOW) -->
       <div class="spatial-upper-stage">
 
-        <!-- ZONE A (Left Flank): Telemetry Tubes & Macro AI Core -->
+        <!-- ZONE A (Left Flank): Telemetry Tubes & Market Intelligence -->
         <aside class="spatial-flank-left">
 
           <!-- 4 Telemetry Tubes (.lg-vessel-grid) -->
@@ -342,7 +342,7 @@
           </div>
 
           <!-- AIMRAN uvq11-lens + uvq11-lava Macro Commander Optical Core Card -->
-          <div class="lg-glass lg-spot-card lg-macro-core-card" id="macroRibbon" onclick="switchMainView('intel')" title="Click to open Macro Intelligence Hub &amp; OmniRoute telemetry">
+          <div class="lg-glass lg-spot-card lg-macro-core-card" id="macroRibbon" onclick="switchMainView('intel')" title="Click to open Market Intelligence">
             <div class="lg-macro-core-top">
               <!-- AIMRAN Optical Multi-Coating Lens + Lava Core -->
               <div class="lg-optical-iris" aria-hidden="true">
@@ -351,7 +351,7 @@
                 <span class="lg-iris-specular"></span>
               </div>
               <div class="lg-macro-core-titles">
-                <div class="macro-core-sub-title">Macro Commander</div>
+                <div class="macro-core-sub-title">Market Intelligence</div>
                 <div class="macro-badge-row">
                   <div class="macro-badge ss-badge lg-island-pill" id="macroRegimeBadge" data-lead>
                     <span class="ss-badge__dot" id="macroDot"></span>
@@ -402,7 +402,7 @@
             </div>
 
             <div class="macro-ribbon-cta">
-              <span>Inspect AI Cognitive Stream &amp; News</span>
+              <span>See news &amp; market analysis</span>
               <svg class="ss-svg-icon cta-arrow" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M6 3.5L10.5 8 6 12.5"></path>
               </svg>
@@ -586,47 +586,76 @@
           <div class="panel-header lg-slab-header">
             <div class="panel-title">
               <span class="console-sigil num">&gt;_</span>
-              <span>OmniRoute AI Gateway &amp; Quota Telemetry</span>
+              <span>AI Services</span>
             </div>
             <div class="panel-tools">
-              <span id="omniGatewayStatusPill" class="intel-status-pill ss-badge online">ONLINE</span>
+              <span id="omniGatewayStatusPill" class="intel-status-pill ss-badge online">Online</span>
             </div>
           </div>
           <div class="intel-panel-body">
-            <div class="intel-metrics-row">
-              <div class="intel-metric lg-glass lg-spot-card omni-console-card">
-                <span class="intel-metric-lbl">OmniRoute Controller</span>
-                <span id="omniEndpointVal" style="display:none;" aria-hidden="true">http://localhost:20128/v1</span>
-                <button class="btn lg-btn lg-btn--console" onclick="openOmniRouteConsole()" id="btnOpenOmniConsole" title="Launch OmniRoute AI Gateway Web Console in browser (Port 20128)">
-                  <svg class="ss-svg-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M12 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h4"></path>
-                    <path d="M10 2h4v4"></path>
-                    <path d="M14 2L7.5 8.5"></path>
-                  </svg>
-                  <span>Launch Console</span>
-                </button>
-                <span class="intel-metric-sub" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" onclick="copyOmniPassword()" title="Admin password is stored in ~/.omniroute/.env"><span>********</span><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code></span>
-              </div>
-              <div class="intel-metric lg-glass lg-spot-card intel-metric--wide">
-                <span class="intel-metric-lbl">Token Utilization</span>
-                <span class="intel-metric-val num intel-metric-val--wrap" id="omniTokensVal">0 / 0</span>
-                <span class="intel-metric-sub num" id="omniTokensSub">0.0% SHA-256 Dedup Saved</span>
-              </div>
-              <div class="intel-metric lg-glass lg-spot-card">
-                <span class="intel-metric-lbl">Async Concurrency</span>
-                <span class="intel-metric-val num" id="omniConcurrencyVal">25 Semaphores</span>
-                <span class="intel-metric-sub num" id="omniReqCounters">Reqs: 0 | OK: 0 | Fail: 0</span>
+            <!-- Status lines: a fixed two-line slot, always reserved
+                 (visibility + opacity, never display: none). The
+                 fallback line appears when the local backup analysis
+                 is active; the diagnosis line is filled by the
+                 gateway-diagnosis workstream. -->
+            <div class="intel-status-lines">
+              <div class="intel-status-line" id="intelFallbackLine">Using local backup analysis</div>
+              <div class="intel-status-line intel-diagnosis-line" id="intelDiagnosisLine"></div>
+            </div>
+            <!-- Advanced: the three engineering cards (Controller,
+                 Token Utilization, Async Concurrency) live here,
+                 collapsed by default. The body stays in the layout
+                 (visibility + opacity only) so toggling never shifts
+                 anything around it. -->
+            <div class="intel-advanced-section">
+              <button type="button" class="intel-advanced-toggle" id="btnIntelAdvanced" onclick="toggleIntelAdvanced()" aria-expanded="false" aria-controls="intelAdvancedBody">
+                <span>Advanced</span>
+                <svg class="ss-svg-icon intel-advanced-chevron" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3.5 6L8 10.5 12.5 6"></path>
+                </svg>
+              </button>
+              <div class="intel-advanced-body" id="intelAdvancedBody">
+                <div class="intel-metrics-row">
+                  <div class="intel-metric lg-glass lg-spot-card omni-console-card">
+                    <span class="intel-metric-lbl">OmniRoute Controller</span>
+                    <span id="omniEndpointVal" style="display:none;" aria-hidden="true">http://localhost:20128/v1</span>
+                    <button class="btn lg-btn lg-btn--console" onclick="openOmniRouteConsole()" id="btnOpenOmniConsole" title="Launch OmniRoute AI Gateway Web Console in browser (Port 20128)">
+                      <svg class="ss-svg-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h4"></path>
+                        <path d="M10 2h4v4"></path>
+                        <path d="M14 2L7.5 8.5"></path>
+                      </svg>
+                      <span>Launch Console</span>
+                    </button>
+                    <span class="intel-metric-sub" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" onclick="copyOmniPassword()" title="Admin password is stored in ~/.omniroute/.env"><span>********</span><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code></span>
+                  </div>
+                  <div class="intel-metric lg-glass lg-spot-card intel-metric--wide">
+                    <span class="intel-metric-lbl">Token Utilization</span>
+                    <span class="intel-metric-val num intel-metric-val--wrap" id="omniTokensVal">0 / 0</span>
+                    <span class="intel-metric-sub num" id="omniTokensSub">0.0% SHA-256 Dedup Saved</span>
+                  </div>
+                  <div class="intel-metric lg-glass lg-spot-card">
+                    <span class="intel-metric-lbl">Async Concurrency</span>
+                    <span class="intel-metric-val num" id="omniConcurrencyVal">25 Semaphores</span>
+                    <span class="intel-metric-sub num" id="omniReqCounters">Reqs: 0 | OK: 0 | Fail: 0</span>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="intel-meta-subrow">
-              <span class="intel-tag lg-pill num">Stage-1 Ingest: <strong id="omniIngestModel">auto</strong></span>
-              <span class="intel-tag lg-pill num">Stage-2 Commander: <strong id="omniCommanderModel">auto</strong></span>
               <button class="btn btn-primary lg-btn lg-btn--primary" onclick="requestAiIntelDigest()" id="btnRefreshDigest" style="margin-left:auto;">
                 <svg class="ss-svg-icon btn-spin-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9L14 6.5M14 2.5v4h-4"></path>
                 </svg>
-                <span>Refresh AI Digest</span>
+                <span>Refresh News Analysis</span>
               </button>
+            </div>
+            <!-- Refresh progress: fixed 8px slot, always reserved
+                 (visibility + opacity, never display: none). The fill
+                 is indeterminate (sliding) -- a digest refresh has no
+                 trustworthy percent, so none is fabricated. -->
+            <div id="digestRefreshProgress" class="digest-refresh-progress" role="progressbar" aria-label="Refreshing news analysis">
+              <div class="digest-refresh-progress-track"><div class="digest-refresh-progress-fill indeterminate"></div></div>
             </div>
           </div>
         </div>
@@ -636,7 +665,7 @@
           <div class="panel-header lg-slab-header">
             <div class="panel-title">
               <span class="lg-crystal-orb" aria-hidden="true"></span>
-              <span>Macro Regime Commander Directive (Strict Veto)</span>
+              <span>Market Direction</span>
             </div>
             <div class="panel-tools">
               <span id="macroRegimeHubBadge" class="intel-status-pill ss-badge neutral">NORMAL</span>
@@ -669,16 +698,17 @@
               <span class="intel-headline-lbl">Active Directive</span>
               <span class="intel-headline-text" id="macroHubHeadline">Macro regime balanced. Multi-domain feeds synchronized.</span>
             </div>
+            <div class="intel-throttle-line" id="macroThrottleLine">News updates slowed for now</div>
           </div>
         </div>
       </section>
 
-      <!-- Bottom Section: Curated Real-World Intelligence Stream & Competitor Action Matrix -->
+      <!-- Bottom Section: Market Intelligence Stream & Competitor Action Matrix -->
       <section class="intel-events-section panel ss-window-panel lg-glass">
         <div class="panel-header lg-slab-header">
           <div class="panel-title">
             <span class="lg-crystal-orb lg-crystal-orb--emerald" aria-hidden="true"></span>
-            <span>Curated Real-World Intelligence Stream &amp; Strategy Impact Matrix</span>
+            <span>Market Intelligence Stream</span>
           </div>
           <div class="panel-tools">
             <span class="intel-feed-desc">Multi-Domain: US Macro, Fed, Crypto ETFs, AI Semis, Geopolitics</span>
@@ -718,11 +748,12 @@
 
       <div class="setup-wizard-body">
         <div class="setup-wizard-column">
+        <div class="setup-keys-intro">Start with one key if you like — you can add the others later.</div>
         <!-- DeepSeek -->
         <div class="setup-provider-card">
           <div class="setup-provider-meta">
-            <span class="setup-provider-name">DeepSeek API Key</span>
-            <span class="setup-provider-hint">DeepSeek-V3 &amp; R1 Reasoning Models</span>
+            <span class="setup-provider-name">DeepSeek API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask DeepSeek to read the news and judge the market.</span></button></span>
+            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://platform.deepseek.com/api_keys'); return false;">Get a key</a></span>
           </div>
           <div class="setup-input-group">
             <input type="password" id="keyDeepSeek" class="setup-key-input num" placeholder="sk-..." autocomplete="off" spellcheck="false" />
@@ -734,15 +765,15 @@
             </button>
           </div>
           <div class="setup-provider-status" id="statusDeepSeek">
-            <span class="setup-status-pill neutral">Not Configured</span>
+            <span class="setup-status-pill neutral">Not added</span>
           </div>
         </div>
 
         <!-- Google Gemini -->
         <div class="setup-provider-card">
           <div class="setup-provider-meta">
-            <span class="setup-provider-name">Google Gemini API Key</span>
-            <span class="setup-provider-hint">Gemini 2.0 Flash &amp; Pro Multimodal</span>
+            <span class="setup-provider-name">Google Gemini API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask Gemini to read the news and judge the market.</span></button></span>
+            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://aistudio.google.com/apikey'); return false;">Get a key</a></span>
           </div>
           <div class="setup-input-group">
             <input type="password" id="keyGemini" class="setup-key-input num" placeholder="AIzaSy..." autocomplete="off" spellcheck="false" />
@@ -754,15 +785,15 @@
             </button>
           </div>
           <div class="setup-provider-status" id="statusGemini">
-            <span class="setup-status-pill neutral">Not Configured</span>
+            <span class="setup-status-pill neutral">Not added</span>
           </div>
         </div>
 
         <!-- Groq -->
         <div class="setup-provider-card">
           <div class="setup-provider-meta">
-            <span class="setup-provider-name">Groq API Key</span>
-            <span class="setup-provider-hint">LPU Ultra-Low Latency Inference</span>
+            <span class="setup-provider-name">Groq API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask Groq to read the news and judge the market.</span></button></span>
+            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://console.groq.com/keys'); return false;">Get a key</a></span>
           </div>
           <div class="setup-input-group">
             <input type="password" id="keyGroq" class="setup-key-input num" placeholder="gsk_..." autocomplete="off" spellcheck="false" />
@@ -774,15 +805,15 @@
             </button>
           </div>
           <div class="setup-provider-status" id="statusGroq">
-            <span class="setup-status-pill neutral">Not Configured</span>
+            <span class="setup-status-pill neutral">Not added</span>
           </div>
         </div>
 
         <!-- OpenRouter -->
         <div class="setup-provider-card">
           <div class="setup-provider-meta">
-            <span class="setup-provider-name">OpenRouter API Key</span>
-            <span class="setup-provider-hint">Global Multi-Model Unified Router</span>
+            <span class="setup-provider-name">OpenRouter API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask OpenRouter to read the news and judge the market.</span></button></span>
+            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://openrouter.ai/settings/keys'); return false;">Get a key</a></span>
           </div>
           <div class="setup-input-group">
             <input type="password" id="keyOpenRouter" class="setup-key-input num" placeholder="sk-or-v1-..." autocomplete="off" spellcheck="false" />
@@ -794,7 +825,7 @@
             </button>
           </div>
           <div class="setup-provider-status" id="statusOpenRouter">
-            <span class="setup-status-pill neutral">Not Configured</span>
+            <span class="setup-status-pill neutral">Not added</span>
           </div>
         </div>
         </div>
@@ -803,8 +834,8 @@
         <!-- Admin Password -->
         <div class="setup-provider-card">
           <div class="setup-provider-meta">
-            <span class="setup-provider-name">Gateway Admin Password</span>
-            <span class="setup-provider-hint">Protects the local OmniRoute console (min 8 characters)</span>
+            <span class="setup-provider-name">Password</span>
+            <span class="setup-provider-hint">Password for signing in to the OmniRoute dashboard (min 8 characters)</span>
           </div>
           <div class="setup-input-group">
             <input type="password" id="keyAdminPassword" class="setup-key-input num" placeholder="New admin password" autocomplete="new-password" spellcheck="false" />
