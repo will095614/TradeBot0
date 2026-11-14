@@ -17,7 +17,7 @@ from src.version import APP_VERSION
 
 logger = logging.getLogger(__name__)
 
-WINDOW_TITLE = f"TradeBot0 {APP_VERSION} — ETH/USD Multi-Strategy Quant Arena"
+WINDOW_TITLE = f"TradeBot0 {APP_VERSION}"
 
 
 def _get_native_hwnd(window: Any) -> Optional[int]:
