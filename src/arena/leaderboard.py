@@ -64,7 +64,23 @@ class Leaderboard:
         if len(history) < 3:
             return 0.0, 0.0
 
-        cache_key = (len(history), history[-1][0], history[-1][1], risk_free_rate)
+        # Audit §5.5: the old key included the latest equity value, which
+        # moves on every tick, so the cache never hit and 6 x up-to-2000
+        # point loops ran every second. The key is now fill-driven: only
+        # a fill (entry or close) changes the return series in a way the
+        # leaderboard must reflect immediately; ticks between fills only
+        # append mark-to-market points. The trade-off is deliberate:
+        # between fills the served metrics are the as-of-last-fill values
+        # (they can lag a fast-moving short history; over a long history
+        # one tick among up to 2000 points moves the 2dp-rounded values
+        # negligibly). The history version covers reset/restore, which
+        # reuse the same counters for a different history.
+        cache_key = (
+            portfolio.total_fills,
+            portfolio.closed_trades_count,
+            getattr(portfolio, "_equity_history_version", 0),
+            risk_free_rate,
+        )
         cached = getattr(portfolio, "_metrics_cache", None)
         if cached is not None and cached[0] == cache_key:
             return cached[1]

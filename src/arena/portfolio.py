@@ -55,6 +55,11 @@ class Portfolio:
 
         self.trade_history: List[FillEvent] = []
         self.equity_history: List[Tuple[float, Decimal]] = []
+        # Audit §5.5: version of the equity history, bumped whenever the
+        # history is wholesale replaced (reset/restore). The leaderboard
+        # Sharpe/Sortino cache keys on it, so a stale cache can never
+        # survive a reset or a restore that reuses the same fill counts.
+        self._equity_history_version: int = 0
         self.is_circuit_breaker_tripped: bool = False
 
     @property
@@ -134,7 +139,21 @@ class Portfolio:
 
         self.trade_history.clear()
         self.equity_history.clear()
+        # Audit §5.5: the counters are zeroed too, so without a version
+        # bump the leaderboard cache key would collide with the
+        # pre-reset one and serve stale metrics for the new history.
+        self._equity_history_version += 1
         self.is_circuit_breaker_tripped = False
+
+    def replace_equity_history(self, points: List[Tuple[float, Decimal]]) -> None:
+        """Wholesale-replace the equity history (snapshot restore path).
+
+        Audit §5.5: bumps the history version so the leaderboard
+        Sharpe/Sortino cache invalidates even though no fill happened
+        and the fill counters are unchanged.
+        """
+        self.equity_history = list(points)
+        self._equity_history_version += 1
 
     def update_market_price(
         self,

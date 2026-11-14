@@ -2574,11 +2574,15 @@ class LiveArenaEngine:
                             # total (never less than the fills restored).
                             p.total_fills = len(p.trade_history)
                         if "equity_history" in cd and isinstance(cd["equity_history"], list):
-                            p.equity_history = [
+                            # Audit §5.5: replace through the method so the
+                            # leaderboard cache version bumps (a direct
+                            # assignment would leave stale Sharpe/Sortino
+                            # cached under the old key).
+                            p.replace_equity_history([
                                 (float(pt[0]), Decimal(str(pt[1])))
                                 for pt in cd["equity_history"]
                                 if isinstance(pt, (list, tuple)) and len(pt) >= 2
-                            ]
+                            ])
 
                         self.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
 
