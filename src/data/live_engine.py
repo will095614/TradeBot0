@@ -148,6 +148,11 @@ class LiveArenaEngine:
         # 1-minute OHLC candles (bootstrap bars + live ticks aggregated) for charting & live RSI/ATR
         self.candles: List[Dict[str, float]] = []
         self.max_candles: int = 200
+        # Audit §5.7: timestamp of the last 1m bar _update_candle
+        # persisted to SQLite. Only closed bars are written (see
+        # _update_candle); the guard keeps a closed bar from being
+        # re-saved on later ticks.
+        self._last_saved_candle_t: Optional[float] = None
         self.live_start_ts: Optional[float] = None
 
         # Paced Candlestick Cadence Dispatcher (emits stable slices at 1s real-time heartbeat)
@@ -1567,8 +1572,21 @@ class LiveArenaEngine:
         if self.candles:
             self._update_mtf_regimes(self.candles[-1])
             if self.is_bootstrapped and self._is_current_generation():
+                # Audit §5.7: persist only on bar close. The current
+                # minute bar is still forming and its in-memory copy
+                # keeps updating every tick; the previous bar becomes
+                # final exactly when a tick lands in a new minute, so
+                # that is the only moment a SQLite write is due (~60x
+                # fewer commits). The _last_saved_candle_t guard keeps
+                # a closed bar from being re-saved on later ticks (and
+                # covers the one-time re-save of a warmup bar that the
+                # bootstrap batch already persisted).
                 try:
-                    self.storage.save_candle(self.candles[-1])
+                    if len(self.candles) >= 2:
+                        closed = self.candles[-2]
+                        if closed["t"] != self._last_saved_candle_t:
+                            self.storage.save_candle(closed)
+                            self._last_saved_candle_t = closed["t"]
                 except Exception as e:
                     logger.debug("SQLite candle save skipped: %s", e)
 
