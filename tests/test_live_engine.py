@@ -926,6 +926,87 @@ def test_restore_open_position_recomputes_margin_and_stops():
     assert any(e.get("tag") == "RESTORE_WARN" for e in engine2.live_logs)
 
 
+
+def test_restore_applies_genome_leverage_to_portfolio():
+    # Audit 3.2: the restored genome's leverage must reach the portfolio
+    # ledger. Before the fix the ledger kept the constructor default, so
+    # a genome evolved to 4.5x resumed with 3x margin math (RiskGuard
+    # sizing, margin affordability, total_equity all diverge).
+    from decimal import ROUND_HALF_UP
+
+    from src.arena.order import OrderSide, OrderTicket, OrderType
+
+    engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+
+    def _genome(**overrides):
+        base = {
+            "position_ratio": "0.40", "risk_per_trade_pct": "0.015",
+            "stop_loss_pct": "0.015", "take_profit_pct": "0.025",
+            "atr_risk_pct": "0.015", "atr_stop_mult": "1.5",
+            "atr_target_mult": "2.5", "trailing_trigger_pct": "2.0",
+            "trailing_distance_pct": "0.006", "cooldown_bars": 0,
+            "generation": 5, "leverage_enabled": False,
+            "leverage": "1.0", "news_sensitivity": 0.5,
+        }
+        base.update(overrides)
+        return base
+
+    def _flat_comp(pid, genome):
+        return {"portfolio_id": pid, "cash": "100000.00",
+                "position_qty": "0", "position_side": "FLAT",
+                "avg_entry_price": "0", "current_market_price": "3500.00",
+                "realized_pnl": "0", "total_fees_paid": "0",
+                "gross_profit": "0", "gross_loss": "0",
+                "win_count": 0, "loss_count": 0,
+                "peak_equity": "100000.00", "max_drawdown_pct": "0.00",
+                "is_circuit_breaker_tripped": False, "genome": genome}
+
+    snapshot = {"competitors": [
+        # Aggressive default is 3x: an evolved 4.5x genome must win.
+        _flat_comp("comp_agg", _genome(position_ratio="0.70",
+                                       risk_per_trade_pct="0.025",
+                                       stop_loss_pct="0.035",
+                                       take_profit_pct=None,
+                                       leverage_enabled=True,
+                                       leverage="4.5",
+                                       news_sensitivity=0.8)),
+        # Trailing Guard default is 2x enabled: a stored genome with
+        # leverage switched off must land at 1.0x, not keep 2.0x.
+        _flat_comp("comp_trail", _genome(leverage_enabled=False,
+                                         leverage="2.0",
+                                         news_sensitivity=0.5)),
+    ]}
+    assert engine.restore_session_state(snapshot) is True
+
+    agg = engine.comp_a
+    assert agg.genome.leverage == Decimal("4.5")
+    assert agg.genome.leverage_enabled is True
+    assert agg.portfolio.leverage == Decimal("4.5")
+    assert agg.portfolio.leverage_enabled is True
+
+    trail = engine.comp_d
+    assert trail.genome.leverage_enabled is False
+    assert trail.portfolio.leverage == Decimal("1.0")
+    assert trail.portfolio.leverage_enabled is False
+
+    # Derived quantity: the next fill's margin must be struck at the
+    # restored 4.5x, not the 3x constructor default.
+    engine.broker.on_tick(Decimal("3500"), high=Decimal("3500.05"),
+                          low=Decimal("3499.95"), timestamp=time.time(),
+                          open_price=Decimal("3500"))
+    fill = engine.broker.submit_order(OrderTicket(
+        portfolio_id="comp_agg", symbol="ETH/USD", side=OrderSide.BUY,
+        order_type=OrderType.MARKET, qty=Decimal("1"),
+        timestamp=time.time()))
+    assert fill is not None
+    expected_margin = ((fill.qty * fill.price) / Decimal("4.5")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP)
+    assert agg.portfolio.margin_locked == expected_margin
+    stale_margin = ((fill.qty * fill.price) / Decimal("3.0")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP)
+    assert agg.portfolio.margin_locked != stale_margin
+
+
 def test_binance_quote_success_parses_all_fields():
     import unittest.mock as mock
 

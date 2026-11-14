@@ -2334,6 +2334,18 @@ class LiveArenaEngine:
                                 c.max_position_ratio = new_genome.position_ratio
                                 gen_tag = f" [G{new_genome.generation}]" if new_genome.generation > 1 else ""
                                 c.name = f"{c.base_name}{gen_tag}"
+                                # Audit 3.2: mirror reset_for_new_generation
+                                # (base.py) -- the ledger must use the
+                                # restored genome's leverage, not the
+                                # constructor default. Only the two
+                                # leverage lines are mirrored; restore does
+                                # its own name/ratio assignment and must NOT
+                                # reset the circuit breaker (a restored
+                                # tripped breaker is session state, not a
+                                # generation boundary).
+                                eff_lev = new_genome.leverage if new_genome.leverage_enabled else Decimal("1.0")
+                                c.portfolio.leverage = eff_lev
+                                c.portfolio.leverage_enabled = new_genome.leverage_enabled
 
                         p = c.portfolio
                         p.name = c.name
