@@ -1970,7 +1970,10 @@ class LiveArenaEngine:
             leader_roi = float(rankings[0].roi_pct) if rankings else 0.0
 
             logs = GeneticEvolver.evolve_generation(self.competitors, rankings, preserve_portfolio=True, save_history=False)
-            records_to_save = GeneticEvolver._last_records
+            # Audit 3.11: guard the read as well as the class default --
+            # evolve_generation returns early (without setting
+            # _last_records) when fewer than 2 rankings are available.
+            records_to_save = getattr(GeneticEvolver, "_last_records", None)
             # Update broker position caps with evolved genomes while preserving open positions & active brackets
             for c in self.competitors:
                 self.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio

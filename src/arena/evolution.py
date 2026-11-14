@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import asdict
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import json
 import logging
 import os
@@ -25,6 +25,13 @@ class GeneticEvolver:
     # is SEED_SALT + generation * 97, so the same generation with the same
     # parents always mutates the same way and an evolution run is replayable.
     SEED_SALT: int = 20261113
+
+    # Audit 3.11: the last evolution's records, shared with evolve_now so
+    # the history can be saved outside the engine lock. Set only at the
+    # end of evolve_generation; the None default keeps the read path safe
+    # before any evolution has run (an early return with < 2 rankings
+    # used to leave the attribute unset and raise AttributeError).
+    _last_records: Optional[Tuple[int, List[Dict[str, Any]]]] = None
 
     @classmethod
     def _generation_seed(cls, next_gen: int) -> int:
