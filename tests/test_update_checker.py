@@ -43,6 +43,14 @@ def _mock_response(payload, status_ok=True):
     ("2.0.0", "1.9.9", 1),
     ("V2.6.0", "V2.6.1", -1),
     ("V2.6.0", "V2.6.0", 0),
+    # Audit 3.14: date versions are the superseded scheme and always
+    # compare older than a semver, in either direction.
+    ("V2.6.0", "2026.11.20", 1),
+    ("2026.11.20", "V2.6.0", -1),
+    ("V2.7.0", "2026.12.01", 1),
+    ("2026.12.01", "V2.7.0", -1),
+    ("v2026.11.13", "V2.6.0", -1),
+    ("2.6.0", "2026.11.20", 1),
 ])
 def test_compare_versions(a, b, expected):
     assert compare_versions(a, b) == expected
@@ -88,7 +96,7 @@ def test_not_configured_makes_no_request(monkeypatch):
 def test_update_available_with_manifest(monkeypatch):
     monkeypatch.delenv("TRADEBOT0_UPDATE_URL", raising=False)
     payload = {
-        "version": "2026.11.20",
+        "version": "V2.7.0",
         "download_url": "https://example.invalid/TradeBot0Setup.exe",
         "notes": "Bug fixes.",
     }
@@ -96,10 +104,23 @@ def test_update_available_with_manifest(monkeypatch):
         result = check_for_updates(manifest_url="https://example.invalid/manifest.json")
     mock_get.assert_called_once_with("https://example.invalid/manifest.json", timeout=5.0)
     assert result["status"] == "update_available"
-    assert result["latest_version"] == "2026.11.20"
+    assert result["latest_version"] == "V2.7.0"
     assert result["download_url"] == "https://example.invalid/TradeBot0Setup.exe"
     assert result["notes"] == "Bug fixes."
     assert result["current_version"] == APP_VERSION
+
+
+def test_date_manifest_is_not_newer_than_v_release():
+    # Audit 3.14: "2026.11.20" is the superseded date scheme, so it
+    # must not offer an update to an app running V2.6.0.
+    payload = {"version": "2026.11.20", "download_url": "https://example.invalid/TradeBot0Setup.exe"}
+    with patch("src.update_checker.requests.get", return_value=_mock_response(payload)):
+        result = check_for_updates(manifest_url="https://example.invalid/manifest.json")
+    assert result["status"] == "up_to_date"
+    assert result["latest_version"] == "2026.11.20"
+    # NOTE: the checker echoes the manifest's download_url even when
+    # up_to_date (its docstring claims otherwise -- observed, not part
+    # of 3.14, so not asserted here and not changed here).
 
 
 def test_up_to_date_same_version():

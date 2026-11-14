@@ -7,10 +7,15 @@ nothing else. There is no download, no install, and no automatic update.
 Manifest format (plain HTTPS GET, no login required)::
 
     {
-      "version": "2026.11.20",
+      "version": "V2.7.0",
       "download_url": "https://example.invalid/TradeBot0Setup.exe",
       "notes": "What changed in this release."
     }
+
+A date-stamped version (``YYYY.MM.DD``) is the superseded scheme from
+before the V2.5.3 switch; it always compares older than a ``VX.Y.Z``
+version (see :func:`compare_versions`), so a stale date manifest
+never offers a bogus update to a V-release app.
 
 The manifest URL comes from the environment variable
 ``TRADEBOT0_UPDATE_URL`` (or an explicit argument). With no URL
@@ -74,13 +79,31 @@ def get_manifest_url(explicit_url: Optional[str] = None) -> str:
     return os.environ.get(UPDATE_MANIFEST_URL_ENV, "").strip()
 
 
+def _is_date_version(parts: tuple) -> bool:
+    """True when a parsed version is a date version (``YYYY.MM.DD``).
+
+    A date version is recognised by a 4-digit year as its first
+    segment (1900-2099). The ``v``/``V`` prefix is stripped before
+    this check, so ``"v2026.11.13"`` is a date version too.
+    """
+    return bool(parts) and 1900 <= parts[0] <= 2099
+
+
 def compare_versions(a: str, b: str) -> int:
     """Compares two version strings, returning -1, 0, or 1.
 
     Accepts date versions (``YYYY.MM.DD``), semver (``X.Y.Z``), and an
-    optional ``v`` prefix. Segments are compared numerically; missing
-    segments count as 0, so ``"1.2" == "1.2.0"`` and
-    ``"2026.11.13" < "2026.11.20"``. Non-numeric segments count as 0.
+    optional ``v`` prefix. Within one scheme, segments are compared
+    numerically; missing segments count as 0, so ``"1.2" == "1.2.0"``
+    and ``"2026.11.13" < "2026.11.20"``. Non-numeric segments count
+    as 0.
+
+    Across schemes, a date version always compares OLDER than a
+    semver: the project switched from date versions to the ``VX.Y.Z``
+    scheme at V2.5.3, so ``"2026.11.20"`` belongs to the superseded
+    scheme. (Audit 3.14: the old purely-numeric comparison ordered
+    them the other way -- 2026 > 2 in the first segment -- so a stale
+    date-stamped manifest looked newer than any V release.)
     """
     def _parts(version: str) -> tuple:
         text = (version or "").strip()
@@ -94,6 +117,8 @@ def compare_versions(a: str, b: str) -> int:
 
     left = _parts(a)
     right = _parts(b)
+    if _is_date_version(left) != _is_date_version(right):
+        return -1 if _is_date_version(left) else 1
     width = max(len(left), len(right))
     left = left + (0,) * (width - len(left))
     right = right + (0,) * (width - len(right))
