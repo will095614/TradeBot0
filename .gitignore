@@ -41,3 +41,6 @@ $RECYCLE.BIN/
 
 # TradeBot0 runtime logs (audit 3.10)
 data/logs/
+
+# Runtime system config (audit 3.18): per-machine state, never versioned
+data/system_config.json
