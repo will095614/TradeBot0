@@ -117,11 +117,17 @@ class Leaderboard:
 
     @staticmethod
     def calculate_win_rate(portfolio: Portfolio) -> Decimal:
-        closed_fills = [t for t in portfolio.trade_history if t.is_closing_fill]
-        if not closed_fills:
+        # Audit 3.7: derive from the lifetime counters, not trade_history.
+        # The snapshot keeps only the last 50 fills but the full counters,
+        # so counting the history understated the win rate after a restore
+        # (and the churn penalty in calculate_fitness, which takes the
+        # closed-trades count from get_rankings). Breakeven closes
+        # (realized_pnl == 0) increment neither counter, so they are
+        # excluded from the denominator: wins / decided trades.
+        total = portfolio.win_count + portfolio.loss_count
+        if total == 0:
             return Decimal("0.00")
-        wins = sum(1 for t in closed_fills if t.realized_pnl > Decimal("0"))
-        win_rate = (Decimal(wins) / Decimal(len(closed_fills))) * Decimal("100")
+        win_rate = (Decimal(portfolio.win_count) / Decimal(total)) * Decimal("100")
         return win_rate.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     @staticmethod
@@ -156,7 +162,9 @@ class Leaderboard:
             sharpe, sortino = cls.calculate_sharpe_and_sortino(p)
             win_rate = cls.calculate_win_rate(p)
             status = "CIRCUIT_TRIPPED" if p.is_circuit_breaker_tripped else "ACTIVE"
-            closed_count = sum(1 for t in p.trade_history if t.is_closing_fill)
+            # Audit 3.7: lifetime closed trades from the counters, not
+            # the truncated history (see calculate_win_rate).
+            closed_count = p.closed_trades_count
             fitness = cls.calculate_fitness(
                 float(p.roi_pct),
                 float(p.max_drawdown_pct),
@@ -179,7 +187,7 @@ class Leaderboard:
                 sortino_ratio=sortino if sortino is not None else 0.0,
                 profit_factor=p.profit_factor,
                 win_rate_pct=win_rate,
-                total_trades=len(p.trade_history),
+                total_trades=p.total_fills,
                 closed_trades=closed_count,
                 current_qty=p.position_qty,
                 cash=p.cash,

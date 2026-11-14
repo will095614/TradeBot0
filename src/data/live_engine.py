@@ -2323,6 +2323,16 @@ class LiveArenaEngine:
                         "peak_equity": str(p.peak_equity),
                         "max_drawdown_pct": str(p.max_drawdown_pct),
                         "is_circuit_breaker_tripped": p.is_circuit_breaker_tripped,
+                        # Audit 3.7: trade_history below is the last 50
+                        # fills only -- a recent sample, not the complete
+                        # record. The lifetime totals travel with it so no
+                        # consumer mistakes the sample for the whole
+                        # session: the win/loss/gross counters above are
+                        # the complete record, trade_history_total is the
+                        # full fill count, total_fills is its counter.
+                        "trade_history_total": len(p.trade_history),
+                        "trade_history_truncated": len(p.trade_history) > 50,
+                        "total_fills": p.total_fills,
                         "trade_history": [self._serialize_fill(f) for f in p.trade_history[-50:] if f is not None],
                         "equity_history": [[float(ts), str(eq)] for ts, eq in p.equity_history[-100:]],
                         "genome": {
@@ -2478,12 +2488,18 @@ class LiveArenaEngine:
                         p.gross_loss = Decimal(str(cd.get("gross_loss", "0")))
                         p.win_count = int(cd.get("win_count", 0))
                         p.loss_count = int(cd.get("loss_count", 0))
+                        p.total_fills = int(cd.get("total_fills", 0))
                         p.peak_equity = Decimal(str(cd.get("peak_equity", p.cash)))
                         p.max_drawdown_pct = Decimal(str(cd.get("max_drawdown_pct", "0.00")))
                         p.is_circuit_breaker_tripped = bool(cd.get("is_circuit_breaker_tripped", False))
 
                         if "trade_history" in cd and isinstance(cd["trade_history"], list):
                             p.trade_history = [f for f in (self._deserialize_fill(d) for d in cd["trade_history"]) if f is not None]
+                        if "total_fills" not in cd:
+                            # Pre-3.7 saves carry no lifetime fill count;
+                            # the retained history is the best available
+                            # total (never less than the fills restored).
+                            p.total_fills = len(p.trade_history)
                         if "equity_history" in cd and isinstance(cd["equity_history"], list):
                             p.equity_history = [
                                 (float(pt[0]), Decimal(str(pt[1])))

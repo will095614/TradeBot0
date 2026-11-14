@@ -42,6 +42,11 @@ class Portfolio:
         self.gross_loss: Decimal = Decimal("0.00")
         self.win_count: int = 0
         self.loss_count: int = 0
+        # Audit 3.7: lifetime fill count. trade_history is truncated to
+        # the last 50 fills at save time, but the leaderboard's
+        # total_trades must still describe the whole session, so the
+        # count lives here next to win_count/loss_count.
+        self.total_fills: int = 0
         self.fee_rate: Decimal = maker_taker_fee_rate
 
         self.current_market_price: Decimal = Decimal("0.00")
@@ -121,6 +126,7 @@ class Portfolio:
         self.gross_loss = Decimal("0.00")
         self.win_count = 0
         self.loss_count = 0
+        self.total_fills = 0
 
         self.current_market_price = Decimal("0.00")
         self.peak_equity = self.cash
@@ -320,6 +326,7 @@ class Portfolio:
                     self.open_position_entry_fee = Decimal("0.00")
                     self.margin_locked = Decimal("0.00")
 
+        self.total_fills += 1
         self.trade_history.append(enriched_fill)
         self.update_market_price(fill.price, fill.timestamp)
         return enriched_fill
