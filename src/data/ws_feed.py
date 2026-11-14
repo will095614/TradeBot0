@@ -134,6 +134,11 @@ class StreamingCryptoFeed:
                 self._active_ws = None
                 if not self.running:
                     break
+                # Audit 3.15: a clean server close is still a re-establishment
+                # of the feed, so it counts as a reconnect like a failed
+                # connect does (only when we actually reconnect -- after the
+                # running check above).
+                self.reconnect_count += 1
                 logger.warning("WebSocket stream closed cleanly. Reconnecting in %.1fs...", backoff)
                 for _ in range(int(backoff * 10)):
                     if not self.running:

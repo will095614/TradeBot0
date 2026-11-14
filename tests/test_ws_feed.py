@@ -161,6 +161,42 @@ def test_ws_reconnect_backoff_on_disconnect(monkeypatch):
     assert per_cycle == {1: 10, 2: 15, 3: 22, 4: 33, 5: 50, 6: 75, 7: 113, 8: 150, 9: 150}
 
 
+def test_ws_clean_server_close_counts_as_reconnect(monkeypatch):
+    """Audit 3.15: a clean server-initiated close followed by a reconnect
+    increments reconnect_count, just like a failed connect does."""
+    monkeypatch.delenv("ARENA_FAST_TEST", raising=False)
+    quotes = []
+    feed = StreamingCryptoFeed(on_quote_callback=quotes.append)
+    feed.running = True
+
+    def _on_quote(q):
+        quotes.append(q)
+        if len(quotes) >= 2:
+            feed.running = False
+
+    feed.on_quote = _on_quote
+    first = FakeWS([_ticker_msg("3010.50")])
+    second = FakeWS([_ticker_msg("3020.00")])
+    connect_calls = []
+
+    def _fake_connect(url, **kwargs):
+        connect_calls.append(url)
+        return first if len(connect_calls) == 1 else second
+
+    async def _fake_sleep(delay):
+        return None
+
+    with (
+        patch("src.data.ws_feed.websockets.connect", side_effect=_fake_connect),
+        patch("asyncio.sleep", side_effect=_fake_sleep),
+    ):
+        _run_feed(feed)
+
+    assert [str(q.price) for q in quotes] == ["3010.50", "3020.00"]
+    assert len(connect_calls) == 2
+    assert feed.reconnect_count == 1
+
+
 def test_ws_start_stop_delivers_then_stops(monkeypatch):
     """start() spawns the streaming thread; stop() ends delivery: no quote
     arrives after stop() returns."""
