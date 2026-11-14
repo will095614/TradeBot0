@@ -139,6 +139,18 @@ class _ArenaBridgeApi:
 
     def __init__(self, dashboard: "ArenaDashboard") -> None:
         self._dashboard = dashboard
+        # Save & Launch stage reporting: the wizard polls this while the
+        # synchronous save_and_launch_gateway call runs, so the user sees
+        # which step is running instead of a frozen button. Percentages
+        # are stage milestones, never measured time; 100% is set only
+        # when the call is about to return ok.
+        self._save_launch_lock = threading.Lock()
+        self._save_launch_stage = {
+            "status": "idle",
+            "message": "",
+            "progress": None,
+            "phase": "",
+        }
 
     def get_state(self) -> Dict[str, Any]:
         return self._dashboard.engine.get_ui_state()
@@ -366,6 +378,41 @@ class _ArenaBridgeApi:
             logger.error("Error testing API key (%s): %s", provider, e)
             return {"ok": False, "message": f"Verification failed: {e}", "latency_ms": 0}
 
+    def _set_save_launch_stage(
+        self, status: str, message: str,
+        progress: Optional[int] = None, phase: str = "",
+    ) -> None:
+        """Records the current Save & Launch step for the wizard poll loop.
+
+        Mirrors GatewaySupervisor._set_install_status: the stage dict is
+        the single source of truth the frontend polls while the
+        synchronous save_and_launch_gateway call runs (pywebview runs
+        each JS bridge call on its own thread, so the poll is served
+        concurrently). Progress values are stage milestones, never a
+        measured percent; 100 is set only when the call is about to
+        return ok.
+        """
+        with self._save_launch_lock:
+            self._save_launch_stage = {
+                "status": status,
+                "message": message,
+                "progress": progress,
+                "phase": phase,
+            }
+
+    def get_save_launch_status(self) -> Dict[str, Any]:
+        """Current Save & Launch stage for the wizard poll loop.
+
+        Fail-safe: never raises. Returns a copy so the caller cannot
+        mutate the stored stage.
+        """
+        try:
+            with self._save_launch_lock:
+                return dict(self._save_launch_stage)
+        except Exception as e:
+            logger.debug("Save launch status read failed: %s", e)
+            return {"status": "idle", "message": "", "progress": None, "phase": ""}
+
     def save_and_launch_gateway(
         self, keys: Dict[str, str], admin_password: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -379,21 +426,30 @@ class _ArenaBridgeApi:
         built-in default password; the value is never logged or returned.
         """
         try:
+            # Fresh stage for this run: a previous save's "done" must never
+            # leak into the new run's progress bar.
+            self._set_save_launch_stage("idle", "", None, "")
+
             # 0. Admin password (item 10 A1): no shared default password may
             # survive. A password must be supplied or already configured before
             # onboarding can complete (pure-math mode is the password-free path).
             _cm = self._dashboard.config_manager
             if admin_password is not None:
+                self._set_save_launch_stage("saving-password", "Saving admin password...", 10, "password")
                 _pw_res = _cm.set_admin_password(admin_password)
                 if not _pw_res.get("ok"):
+                    self._set_save_launch_stage("failed", _pw_res.get("error", "Invalid admin password."), 10, "password")
                     return {"status": "error", "ok": False, "message": _pw_res.get("error", "Invalid admin password."), "gateway_online": False}
             elif not _cm.is_admin_password_configured():
+                self._set_save_launch_stage("failed", "Please set an admin password for the local gateway console before launching the arena.", None, "password")
                 return {"status": "error", "ok": False, "message": "Please set an admin password for the local gateway console before launching the arena.", "gateway_online": False}
 
             # 1. Sync keys into ~/.omniroute/.env
+            self._set_save_launch_stage("syncing-keys", "Synchronizing API keys with local gateway...", 25, "keys")
             sync_res = self._dashboard.config_manager.sync_omniroute_keys(keys or {})
 
             # 2. Update system config
+            self._set_save_launch_stage("saving-config", "Saving setup...", 40, "config")
             configured = self._dashboard.config_manager.get_configured_providers()
             self._dashboard.config_manager.save_config({
                 "has_completed_onboarding": True,
@@ -409,6 +465,7 @@ class _ArenaBridgeApi:
             if admin_password is not None:
                 _sup = self._dashboard.gateway_supervisor
                 if _sup.is_self_spawned and _sup.child_process is not None:
+                    self._set_save_launch_stage("restarting-gateway", "Restarting gateway with new password...", 55, "gateway")
                     try:
                         _sup.shutdown()
                     except Exception as e:
@@ -420,19 +477,25 @@ class _ArenaBridgeApi:
             msg = "Credentials saved successfully."
 
             if is_open:
+                self._set_save_launch_stage("connecting-gateway", "Connecting to active OmniRoute gateway...", 70, "gateway")
                 healthy, _ = self._dashboard.gateway_supervisor.probe_health(timeout=0.6)
                 if healthy:
                     msg = "Connected to active OmniRoute gateway."
             else:
                 # Auto-launch is mandatory (offline mode removed): the gateway
                 # is always started when the port is not already open.
+                self._set_save_launch_stage("starting-gateway", "Starting OmniRoute gateway...", 70, "gateway")
                 spawn_ok, spawn_msg = self._dashboard.gateway_supervisor.start_daemon(max_wait_sec=30.0)
                 healthy = spawn_ok
                 msg = spawn_msg
 
             # 4. Start engine live loop if held in onboarding standby
+            self._set_save_launch_stage("starting-engine", "Starting live engine...", 85, "engine")
             self._dashboard.start_engine_if_needed()
 
+            # 100% only here: the procedure has actually finished. The
+            # message carries the outcome (gateway healthy or not).
+            self._set_save_launch_stage("done", msg, 100, "")
             return {
                 "status": "ok",
                 "ok": True,
@@ -442,6 +505,7 @@ class _ArenaBridgeApi:
             }
         except Exception as e:
             logger.error("Error saving credentials & launching gateway: %s", e)
+            self._set_save_launch_stage("failed", str(e), None, "")
             return {"status": "error", "ok": False, "message": str(e), "gateway_online": False}
 
     def install_gateway_runtime(self) -> Dict[str, Any]:

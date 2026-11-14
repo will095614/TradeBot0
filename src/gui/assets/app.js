@@ -14,6 +14,12 @@ let hasFirstTableRendered = false;
 let splashLoop = null;
 let splashSafetyTimer = null;
 let currentSplashSteps = [];
+// Exit-gate timing, hoisted so setSplashTarget() can tell whether the
+// gate is open: 100% is only ever shown once the first chart frame and
+// the first tables are really rendered AND the minimum splash duration
+// has elapsed.
+let splashStartTimeMs = 0;
+let splashMinDurationMs = 2500;
 
 // Coordinated boot & setup states
 let hasBootInitiated = false;
@@ -137,8 +143,8 @@ function startSplashSequence(isReset = false) {
     hasFirstChartDrawn = false;
     hasFirstTableRendered = false;
     currentSplashSteps = isReset ? resetSplashSteps : initialSplashSteps;
-    const splashStartTime = performance.now();
-    const minSplashDurationMs = isReset ? 2200 : 2500;
+    splashStartTimeMs = performance.now();
+    splashMinDurationMs = isReset ? 2200 : 2500;
 
     // Reset local tracking states and queues so toasts never fire prematurely behind the splash screen
     knownStrategyPositions = {};
@@ -173,17 +179,17 @@ function startSplashSequence(isReset = false) {
         : "Simulating 120m Orderflow & Pre-Rendering Arena...";
     }
 
-    // If backend state is already populated/bootstrapped, advance smoothly to 100% across the 6 milestones
+    // If backend state is already populated/bootstrapped, advance smoothly
+    // across the milestones. The step to 100% is NOT on a timer: it is
+    // released only by the exit gate (first chart frame + first tables
+    // really rendered), so the bar can never claim 100% early. The 2350ms
+    // jump below only tops the target up to the 90% cap.
     if (latestState && latestState.is_bootstrapped) {
       setTimeout(() => setSplashTarget(35), 350);
       setTimeout(() => setSplashTarget(55), 800);
       setTimeout(() => setSplashTarget(75), 1300);
       setTimeout(() => setSplashTarget(90), 1800);
-      setTimeout(() => {
-        hasFirstChartDrawn = true;
-        hasFirstTableRendered = true;
-        setSplashTarget(100);
-      }, 2350);
+      setTimeout(() => setSplashTarget(100), 2350);
     }
 
     // Smooth animation loop for progress bar
@@ -194,8 +200,15 @@ function startSplashSequence(isReset = false) {
         return;
       }
 
-      const elapsedMs = performance.now() - splashStartTime;
-      const canComplete = elapsedMs >= minSplashDurationMs;
+      const elapsedMs = performance.now() - splashStartTimeMs;
+      const canComplete = elapsedMs >= splashMinDurationMs;
+
+      // Release the 90% cap the moment the exit gate genuinely opens:
+      // the bar animates 90 -> 100 only when the arena is ready to
+      // reveal, never before.
+      if (canComplete && hasFirstChartDrawn && hasFirstTableRendered) {
+        setSplashTarget(100);
+      }
 
       if (splashProgress < targetSplashProgress) {
         const remaining = targetSplashProgress - splashProgress;
@@ -310,9 +323,22 @@ function startSplashSequence(isReset = false) {
   }
 }
 
+// The exit gate: first chart frame drawn, first tables rendered, and the
+// minimum splash duration elapsed. The bar must not show 100% while this
+// is closed.
+function isSplashGateOpen() {
+  return hasFirstChartDrawn && hasFirstTableRendered &&
+    (performance.now() - splashStartTimeMs) >= splashMinDurationMs;
+}
+
 function setSplashTarget(percent) {
   if (splashCompleted) return;
-  targetSplashProgress = Math.min(100, Math.max(targetSplashProgress, percent));
+  // Honest 100%: while the gate is closed the target is capped at 90,
+  // so the displayed percent (and the final step label) can never claim
+  // the arena is ready before it is. The animation loop releases the
+  // cap to 100 the moment the gate opens.
+  const cap = isSplashGateOpen() ? 100 : 90;
+  targetSplashProgress = Math.min(cap, Math.max(targetSplashProgress, percent));
 }
 
 function updateSplashProgress(percent) {
@@ -3815,6 +3841,7 @@ function updateUiClockDisplay() {
   }
 
   let runtimeInstallPollTimer = null;
+  let saveLaunchPollTimer = null;
 
   // Gateway availability (item 10 A4): show the reason + one-click install
   // button when Node.js / OmniRoute is missing; hide both when available.
@@ -3893,6 +3920,44 @@ function updateUiClockDisplay() {
       // In progress: append the real percent when the backend has one
       // (Node.js download); otherwise show the phase message as-is.
       setWizardBanner(pct !== null ? (msg + ' ' + pct + '%') : (msg || 'Installing...'), 'info');
+    }
+  }
+
+  function stopSaveLaunchPoll() {
+    if (saveLaunchPollTimer) { clearInterval(saveLaunchPollTimer); saveLaunchPollTimer = null; }
+  }
+
+  // Save & Launch progress: same fixed-slot bar pattern as the install
+  // progress. The backend reports stage milestones (10/25/40/55/70/85);
+  // the bar is determinate by stage, and 100% appears only when the
+  // save actually finished (status 'done'). The failed state hides the
+  // bar and leaves the error banner to explain what went wrong.
+  function updateSaveLaunchProgress(statusObj) {
+    if (!statusObj) return;
+    const st = statusObj.status || 'idle';
+    const msg = statusObj.message || '';
+    const pct = (typeof statusObj.progress === 'number') ? statusObj.progress : null;
+    const prog = document.getElementById('setupSaveProgress');
+    const fill = document.getElementById('setupSaveProgressFill');
+    const inProgress = (st === 'saving-password' || st === 'syncing-keys' ||
+      st === 'saving-config' || st === 'restarting-gateway' ||
+      st === 'connecting-gateway' || st === 'starting-gateway' ||
+      st === 'starting-engine');
+    const showBar = inProgress || st === 'done';
+    if (prog) {
+      // Fixed slot: visibility + opacity, never display: none.
+      prog.style.visibility = showBar ? 'visible' : 'hidden';
+      prog.style.opacity = showBar ? '1' : '0';
+      if (showBar && fill && pct !== null) {
+        fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+        prog.setAttribute('aria-valuenow', String(pct));
+      } else if (showBar && fill) {
+        prog.removeAttribute('aria-valuenow');
+      }
+    }
+    if (st === 'done' || st === 'failed' || st === 'idle') return;
+    if (inProgress) {
+      setWizardBanner(pct !== null ? (msg + ' ' + pct + '%') : (msg || 'Saving...'), 'info');
     }
   }
 
@@ -4007,17 +4072,34 @@ function updateUiClockDisplay() {
     }
     setWizardBanner('Synchronizing credentials with local gateway...', 'info');
 
+    // Save progress: show the bar immediately, then poll the backend
+    // stage (~500 ms) while the synchronous bridge call runs, so the
+    // user sees which step is running. The bar only reaches 100% when
+    // the call actually returns ok.
+    updateSaveLaunchProgress({ status: 'saving-password', message: 'Saving admin password...', progress: 0, phase: 'password' });
+    if (saveLaunchPollTimer) clearInterval(saveLaunchPollTimer);
+    saveLaunchPollTimer = setInterval(() => {
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_save_launch_status === 'function') {
+        window.pywebview.api.get_save_launch_status().then((r) => {
+          if (r) updateSaveLaunchProgress(r);
+        }).catch((e) => console.debug('save launch poll err:', e));
+      }
+    }, 500);
+
     try {
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.save_and_launch_gateway === 'function') {
         const res = await window.pywebview.api.save_and_launch_gateway(keys, adminPw || null);
         if (res && res.ok) {
+          stopSaveLaunchPoll();
+          updateSaveLaunchProgress({ status: 'done', message: res.message || 'Credentials saved successfully!', progress: 100, phase: '' });
           hasCompletedSetup = true;
           setWizardBanner(res.message || 'Credentials saved successfully!', 'success');
           setTimeout(() => {
             closeSetupWizardModal();
             if (!splashCompleted) {
+              // No jump-start: the splash begins at its real starting
+              // point and advances by real milestones.
               startSplashSequence(false);
-              setSplashTarget(75);
             } else {
               if (typeof showChartToast === 'function') {
                 showChartToast({
@@ -4033,22 +4115,28 @@ function updateUiClockDisplay() {
             }
           }, 400);
         } else {
+          stopSaveLaunchPoll();
+          updateSaveLaunchProgress({ status: 'failed', message: (res && res.message) || 'Failed to launch gateway', progress: null, phase: '' });
           setWizardBanner((res && res.message) ? res.message : 'Failed to launch gateway', 'error');
         }
       } else {
+        stopSaveLaunchPoll();
+        updateSaveLaunchProgress({ status: 'done', message: 'Configured in mock mode. Launching arena...', progress: 100, phase: '' });
         hasCompletedSetup = true;
         setWizardBanner('Configured in mock mode. Launching arena...', 'success');
         setTimeout(() => {
           closeSetupWizardModal();
           if (!splashCompleted) {
             startSplashSequence(false);
-            setSplashTarget(75);
           }
         }, 400);
       }
     } catch (err) {
+      stopSaveLaunchPoll();
+      updateSaveLaunchProgress({ status: 'failed', message: `Encountered error: ${err}`, progress: null, phase: '' });
       setWizardBanner(`Encountered error: ${err}`, 'error');
     } finally {
+      stopSaveLaunchPoll();
       if (saveBtn) {
         saveBtn.disabled = false;
         saveBtn.innerHTML = '<span>Save &amp; Launch Arena</span>';

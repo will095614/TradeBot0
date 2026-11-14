@@ -5053,6 +5053,32 @@ body:not(.arena-ready) .lg-glass {
   100% { transform: translateX(250%); }
 }
 
+/* Save & Launch progress: same fixed-slot bar as the install progress
+   (determinate by stage milestone; 100% only when the save actually
+   finished). The slot is always reserved so the bar fading in never
+   moves anything. */
+.setup-save-progress {
+  margin-top: -2px;
+  min-height: 8px;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+}
+.setup-save-progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.setup-save-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #00F2FE 0%, #10F5A0 100%);
+  transition: width 0.4s ease;
+}
+
 .setup-wizard-actions {
   display: flex;
   justify-content: flex-end;
