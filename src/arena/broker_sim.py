@@ -2,7 +2,10 @@ from __future__ import annotations
 from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 from src.arena.order import (
     OrderTicket,
     OrderSide,
@@ -216,7 +219,21 @@ class BrokerSim:
             fill_seq=self._seq_counter
         )
 
-        enriched_fill = portfolio.apply_fill(raw_fill)
+        # Audit 3.22: a fill the ledger cannot apply (insufficient
+        # cash / oversell -- RiskGuard validated against its own price
+        # basis, which can disagree with the ledger) must not kill the
+        # cadence. Log it, record it like any other rejection (same
+        # 500 cap), skip the fill, and let the rest of the tick run.
+        # Only ValueError is caught: the KeyError for an unknown
+        # portfolio above is a programming error and still raises.
+        try:
+            enriched_fill = portfolio.apply_fill(raw_fill)
+        except ValueError as exc:
+            logger.warning("apply_fill failed for %s: %s", ticket.portfolio_id, exc)
+            self.rejection_audit.append((ticket.portfolio_id, f"apply_fill failed: {exc}"))
+            if len(self.rejection_audit) > 500:
+                del self.rejection_audit[:-500]
+            return None
         self.execution_audit.append(enriched_fill)
 
         # Register or clear Bracket Exits
