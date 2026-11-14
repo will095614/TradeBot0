@@ -2170,6 +2170,11 @@ class LiveArenaEngine:
             "price": str(getattr(ticket, "price", "0")) if getattr(ticket, "price", None) is not None else None,
             "stop_loss": str(getattr(ticket, "stop_loss", "0")) if getattr(ticket, "stop_loss", None) is not None else None,
             "take_profit": str(getattr(ticket, "take_profit", "0")) if getattr(ticket, "take_profit", None) is not None else None,
+            # Audit 3.8: reason + timestamp round-trip (same pattern as
+            # _serialize_fill). Without reason every restored stop-loss
+            # defaulted to SIGNAL and displayed as "Strategy Signal".
+            "reason": getattr(ticket.reason, "value", str(ticket.reason)) if hasattr(ticket, "reason") else "SIGNAL",
+            "timestamp": float(getattr(ticket, "timestamp", 0.0)),
         }
 
     @staticmethod
@@ -2212,6 +2217,20 @@ class LiveArenaEngine:
                 # it instead of letting restore mount it as a live stop.
                 logger.debug("Dropping deserialized ticket with non-positive qty: %s", data)
                 return None
+            # Audit 3.8: reason + timestamp round-trip. Old saves have
+            # neither field: fall back to the current default display
+            # (SIGNAL) and now, same as the side / order_type fallbacks
+            # above -- a missing reason must never abort the restore.
+            try:
+                reason = ExecutionReason(data.get("reason", "SIGNAL"))
+            except Exception as e:
+                logger.debug("Invalid reason in saved ticket, defaulting to SIGNAL: %s", e)
+                reason = ExecutionReason.SIGNAL
+            try:
+                ts_val = float(data["timestamp"]) if data.get("timestamp") is not None else None
+            except Exception as e:
+                logger.debug("Invalid timestamp in saved ticket, defaulting to now: %s", e)
+                ts_val = None
             return OrderTicket(
                 portfolio_id=str(data.get("portfolio_id", "")),
                 symbol=str(data.get("symbol", "ETH/USD")),
@@ -2220,7 +2239,9 @@ class LiveArenaEngine:
                 qty=qty_val,
                 price=price_val,
                 stop_loss=sl_val,
-                take_profit=tp_val
+                take_profit=tp_val,
+                reason=reason,
+                timestamp=ts_val if ts_val is not None else time.time()
             )
         return None
 
