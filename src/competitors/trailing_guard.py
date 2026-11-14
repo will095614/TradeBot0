@@ -1,7 +1,7 @@
 from __future__ import annotations
 from decimal import Decimal
 from typing import Optional, Dict, Any
-from src.arena.order import OrderTicket, OrderSide, OrderType, ExecutionReason
+from src.arena.order import OrderTicket, OrderSide, OrderType, PositionSide, ExecutionReason
 from src.arena.broker_sim import BrokerSim
 from src.competitors.base import BaseCompetitor, CompetitorGenome
 
@@ -60,47 +60,94 @@ class TrailingGuardCompetitor(BaseCompetitor):
         if self.portfolio.is_circuit_breaker_tripped:
             return None
 
-        # Check existing long position for dynamic ratchet trailing stop
+        # Check existing position for dynamic ratchet trailing stop.
+        # Audit 3.6: the old code ran the LONG branch for both sides
+        # (position_qty > 0 holds for shorts too): it armed "trailing"
+        # when the price ROSE 2% -- a 2% loss for a short -- and wrote a
+        # SELL stop whose price chased the rally upward instead of
+        # ratcheting down. The SHORT branch below is the mirror of the
+        # live engine's comp_trail SHORT ratchet (live_engine.py
+        # _evaluate_live_strategies) plus the breakeven step this method
+        # already applies to longs; the live inline ratchet itself is
+        # untouched, so live behaviour does not change.
         if self.portfolio.position_qty > Decimal("0") and self.portfolio.avg_entry_price > Decimal("0"):
-            if market_price > self.highest_price_since_entry:
-                self.highest_price_since_entry = market_price
-
             entry = self.portfolio.avg_entry_price
-            gain_pct = ((self.highest_price_since_entry - entry) / entry) * Decimal("100")
-
-            if gain_pct >= self.genome.trailing_trigger_pct:
-                self.trailing_active = True
-
             current_stop_order = broker.active_stops.get(self.portfolio_id)
 
-            if self.trailing_active:
-                trail_stop = (
-                    self.highest_price_since_entry * (Decimal("1") - self.genome.trailing_distance_pct)
-                ).quantize(Decimal("0.01"))
-                if current_stop_order is None or trail_stop > current_stop_order.price:
-                    broker.active_stops[self.portfolio_id] = OrderTicket(
-                        portfolio_id=self.portfolio_id,
-                        symbol=broker.symbol,
-                        side=OrderSide.SELL,
-                        order_type=OrderType.STOP_MARKET,
-                        qty=self.portfolio.position_qty,
-                        price=trail_stop,
-                        reason=ExecutionReason.TRAILING_STOP,
-                        timestamp=timestamp
-                    )
-            elif gain_pct >= Decimal("1.0"):
-                be_stop = (entry * Decimal("1.0005")).quantize(Decimal("0.01"))
-                if current_stop_order is None or be_stop > current_stop_order.price:
-                    broker.active_stops[self.portfolio_id] = OrderTicket(
-                        portfolio_id=self.portfolio_id,
-                        symbol=broker.symbol,
-                        side=OrderSide.SELL,
-                        order_type=OrderType.STOP_MARKET,
-                        qty=self.portfolio.position_qty,
-                        price=be_stop,
-                        reason=ExecutionReason.TRAILING_STOP,
-                        timestamp=timestamp
-                    )
+            if self.portfolio.position_side == PositionSide.SHORT:
+                if self.lowest_price_since_entry == Decimal("0") or market_price < self.lowest_price_since_entry:
+                    self.lowest_price_since_entry = market_price
+
+                gain_pct = ((entry - self.lowest_price_since_entry) / entry) * Decimal("100")
+
+                if gain_pct >= self.genome.trailing_trigger_pct:
+                    self.trailing_active = True
+
+                if self.trailing_active:
+                    trail_stop = (
+                        self.lowest_price_since_entry * (Decimal("1") + self.genome.trailing_distance_pct)
+                    ).quantize(Decimal("0.01"))
+                    if current_stop_order is None or trail_stop < current_stop_order.price:
+                        broker.active_stops[self.portfolio_id] = OrderTicket(
+                            portfolio_id=self.portfolio_id,
+                            symbol=broker.symbol,
+                            side=OrderSide.BUY,
+                            order_type=OrderType.STOP_MARKET,
+                            qty=self.portfolio.position_qty,
+                            price=trail_stop,
+                            reason=ExecutionReason.TRAILING_STOP,
+                            timestamp=timestamp
+                        )
+                elif gain_pct >= Decimal("1.0"):
+                    be_stop = (entry * Decimal("0.9995")).quantize(Decimal("0.01"))
+                    if current_stop_order is None or be_stop < current_stop_order.price:
+                        broker.active_stops[self.portfolio_id] = OrderTicket(
+                            portfolio_id=self.portfolio_id,
+                            symbol=broker.symbol,
+                            side=OrderSide.BUY,
+                            order_type=OrderType.STOP_MARKET,
+                            qty=self.portfolio.position_qty,
+                            price=be_stop,
+                            reason=ExecutionReason.TRAILING_STOP,
+                            timestamp=timestamp
+                        )
+            else:
+                if market_price > self.highest_price_since_entry:
+                    self.highest_price_since_entry = market_price
+
+                gain_pct = ((self.highest_price_since_entry - entry) / entry) * Decimal("100")
+
+                if gain_pct >= self.genome.trailing_trigger_pct:
+                    self.trailing_active = True
+
+                if self.trailing_active:
+                    trail_stop = (
+                        self.highest_price_since_entry * (Decimal("1") - self.genome.trailing_distance_pct)
+                    ).quantize(Decimal("0.01"))
+                    if current_stop_order is None or trail_stop > current_stop_order.price:
+                        broker.active_stops[self.portfolio_id] = OrderTicket(
+                            portfolio_id=self.portfolio_id,
+                            symbol=broker.symbol,
+                            side=OrderSide.SELL,
+                            order_type=OrderType.STOP_MARKET,
+                            qty=self.portfolio.position_qty,
+                            price=trail_stop,
+                            reason=ExecutionReason.TRAILING_STOP,
+                            timestamp=timestamp
+                        )
+                elif gain_pct >= Decimal("1.0"):
+                    be_stop = (entry * Decimal("1.0005")).quantize(Decimal("0.01"))
+                    if current_stop_order is None or be_stop > current_stop_order.price:
+                        broker.active_stops[self.portfolio_id] = OrderTicket(
+                            portfolio_id=self.portfolio_id,
+                            symbol=broker.symbol,
+                            side=OrderSide.SELL,
+                            order_type=OrderType.STOP_MARKET,
+                            qty=self.portfolio.position_qty,
+                            price=be_stop,
+                            reason=ExecutionReason.TRAILING_STOP,
+                            timestamp=timestamp
+                        )
 
             if signal == "SELL":
                 self.highest_price_since_entry = Decimal("0")
