@@ -215,6 +215,7 @@ def test_run_loads_config_once_and_uses_window_title_constant():
     assert src.count("load_config()") == 1
     assert "title=WINDOW_TITLE" in src
     assert dashboard_mod.WINDOW_TITLE.startswith("TradeBot0")
+    assert dashboard_mod.APP_VERSION in dashboard_mod.WINDOW_TITLE
     assert callable(dashboard_mod._get_native_hwnd)
     assert dashboard_mod._get_native_hwnd(SimpleNamespace()) is None
     fake = SimpleNamespace(native=SimpleNamespace(Handle=SimpleNamespace(ToInt64=lambda: 12345)))
