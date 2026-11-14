@@ -2036,11 +2036,19 @@ class LiveArenaEngine:
         """
         Atomically publishes double-buffered UI snapshot for lock-free IPC consumption.
         Called at the completion of each cadence evaluation or state-changing command.
+
+        Audit 3.1: the snapshot build (which harvests fills) runs under the
+        engine RLock, so off-lock callers -- the intel digest thread and the
+        pause/config setters, which publish after releasing the lock -- cannot
+        race the live loop's harvest and double-count fills. self.lock is an
+        RLock, so callers that already hold it re-enter safely; the
+        double-buffer swap stays under _snapshot_lock as before.
         """
         if not self._is_current_generation():
             logger.debug("Stale engine epoch %.3f: skipping state publish from a superseded generation", self.engine_epoch)
             return
-        snapshot = self._build_snapshot_locked()
+        with self.lock:
+            snapshot = self._build_snapshot_locked()
         with self._snapshot_lock:
             self._ui_state_snapshot = snapshot
 
