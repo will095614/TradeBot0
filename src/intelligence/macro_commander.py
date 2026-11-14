@@ -246,10 +246,15 @@ class MacroCommander:
         Hub stream loading bar can show honest milestone progress.
         """
         fetch_error: Optional[str] = None
+        # Audit 3.12: check_health catches every Exception and returns a
+        # bool, so a dead gateway never raised here -- the "failed" stage
+        # was unreachable and gateway death surfaced as waiting/done.
+        # Record the boolean result and use it at the end of the refresh.
+        gateway_healthy = True
         try:
             self._set_sync_stage("checking", "Checking AI gateway")
             try:
-                await self.client.check_health()
+                gateway_healthy = await self.client.check_health()
             except Exception as ex:
                 self._set_sync_stage("failed", f"Gateway unreachable: {str(ex)[:60]}")
                 raise
@@ -292,6 +297,10 @@ class MacroCommander:
                 return state
             if fetch_error:
                 self._set_sync_stage("failed", f"Sync failed: {fetch_error}")
+            elif not gateway_healthy:
+                # Audit 3.12: the gateway is dead and the refresh produced
+                # nothing to synthesize -- say so instead of "waiting".
+                self._set_sync_stage("failed", "Gateway unreachable")
             else:
                 self._set_sync_stage("waiting", "No new events yet")
             return self.current_state

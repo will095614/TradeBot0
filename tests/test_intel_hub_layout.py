@@ -39,7 +39,11 @@ def _rule(css, selector):
 def _commander():
     mock_client = MagicMock()
     mock_client.is_gateway_online = False
-    mock_client.check_health = AsyncMock(return_value=None)
+    # Audit 3.12: the mock must say what it means. These tests mean
+    # "gateway healthy, feeds fine, just no events" (waiting) or "events
+    # arrive" (done), so check_health returns True here. A dead gateway
+    # is covered by test_312_gateway_failed.py (returns False).
+    mock_client.check_health = AsyncMock(return_value=True)
     # The refresh finally-block only closes the client when it owns
     # the session; a MagicMock attribute would be truthy and await on
     # a non-async close, so pin it off explicitly.
