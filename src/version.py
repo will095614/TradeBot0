@@ -6,10 +6,17 @@ release time: bump APP_VERSION here and MyAppVersion there to the same
 value. The in-app update checker (src/update_checker.py) compares the
 running version against the manifest version using this constant.
 
-Version scheme: date-based ``YYYY.MM.DD`` (e.g. "2026.11.13"), matching
-the installer version. A ``v`` prefix and ``X.Y.Z`` semver strings are
-also accepted by the comparison helper, but releases use the date form.
+Version scheme: ``VX.Y.Z`` (e.g. "V2.5.3"), matching the installer
+version. X = major changes (release milestones / breaking changes),
+Y = feature groups (one subsystem counts once, e.g. the whole AI
+intelligence stack is one group), Z = fix / optimization groups.
+Counts were reconstructed from git history (2026-11-15: V2.5.3) and
+are grouped by subsystem so the numbers stay single-digit longer.
+Going forward each new batch bumps the matching number by 1 (new
+feature group -> Y, fix / optimization batch -> Z, breaking change
+-> X with Y and Z reset to 0). The comparison helper accepts an
+optional ``v``/``V`` prefix and plain ``X.Y.Z`` too.
 """
 
 APP_NAME = "TradeBot0"
-APP_VERSION = "2026.11.14"
+APP_VERSION = "V2.5.3"

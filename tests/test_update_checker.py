@@ -41,6 +41,8 @@ def _mock_response(payload, status_ok=True):
     ("1.2", "1.2.0", 0),
     ("1.2", "1.2.1", -1),
     ("2.0.0", "1.9.9", 1),
+    ("V2.5.3", "V2.5.4", -1),
+    ("V2.5.3", "V2.5.3", 0),
 ])
 def test_compare_versions(a, b, expected):
     assert compare_versions(a, b) == expected
@@ -48,7 +50,7 @@ def test_compare_versions(a, b, expected):
 
 def test_version_single_source():
     assert APP_NAME == "TradeBot0"
-    assert APP_VERSION == "2026.11.14"
+    assert APP_VERSION == "V2.5.3"
 
 
 def test_iss_version_matches_version_py():
@@ -97,19 +99,19 @@ def test_update_available_with_manifest(monkeypatch):
     assert result["latest_version"] == "2026.11.20"
     assert result["download_url"] == "https://example.invalid/TradeBot0Setup.exe"
     assert result["notes"] == "Bug fixes."
-    assert result["current_version"] == "2026.11.14"
+    assert result["current_version"] == APP_VERSION
 
 
 def test_up_to_date_same_version():
-    payload = {"version": "2026.11.14", "download_url": "https://example.invalid/TradeBot0Setup.exe"}
+    payload = {"version": APP_VERSION, "download_url": "https://example.invalid/TradeBot0Setup.exe"}
     with patch("src.update_checker.requests.get", return_value=_mock_response(payload)):
         result = check_for_updates(manifest_url="https://example.invalid/manifest.json")
     assert result["status"] == "up_to_date"
-    assert result["latest_version"] == "2026.11.14"
+    assert result["latest_version"] == APP_VERSION
 
 
 def test_up_to_date_older_manifest():
-    payload = {"version": "2026.11.01"}
+    payload = {"version": "V2.5.2"}
     with patch("src.update_checker.requests.get", return_value=_mock_response(payload)):
         result = check_for_updates(manifest_url="https://example.invalid/manifest.json")
     assert result["status"] == "up_to_date"
