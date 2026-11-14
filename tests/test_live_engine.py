@@ -794,14 +794,19 @@ def test_recompute_candle_indicators_rsi_atr_orb_mean():
         ([3500 + 10 * i for i in range(20)], "100.00", "15.00", "3645.00", "3495.00", "3595.00"),  # all up
         ([3500 - 10 * i for i in range(20)], "0.00", "15.00", "3505.00", "3355.00", "3405.00"),  # all down
     ]
+    # Audit 3.4: the ORB range is frozen once a session's first 15 bars
+    # are in, so each boundary case needs its own fresh engine (a new
+    # session) instead of reusing one engine's frozen range. The asserted
+    # RSI/ATR/ORB/mean values are unchanged.
     for closes_b, rsi_b, atr_b, orb_h_b, orb_l_b, mean_b in cases:
-        engine.candles = _candles(closes_b)
-        engine._recompute_candle_indicators()
-        assert engine.live_rsi == Decimal(rsi_b)
-        assert engine.live_atr == Decimal(atr_b)
-        assert engine.live_orb_high == Decimal(orb_h_b)
-        assert engine.live_orb_low == Decimal(orb_l_b)
-        assert engine.live_typical_mean == Decimal(mean_b)
+        case_engine = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+        case_engine.candles = _candles(closes_b)
+        case_engine._recompute_candle_indicators()
+        assert case_engine.live_rsi == Decimal(rsi_b)
+        assert case_engine.live_atr == Decimal(atr_b)
+        assert case_engine.live_orb_high == Decimal(orb_h_b)
+        assert case_engine.live_orb_low == Decimal(orb_l_b)
+        assert case_engine.live_typical_mean == Decimal(mean_b)
 
     # Fewer than 15 candles: indicators are left untouched.
     fresh = LiveArenaEngine(initial_cash=Decimal("100000.00"))

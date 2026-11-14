@@ -69,14 +69,15 @@ class TimeMachineArena:
         prev_bar: Optional[CandleBar] = None
         cum_vol = Decimal("0")
         cum_pv = Decimal("0")
-        window_bars: List[CandleBar] = []
+        # Audit 3.4: the opening range is anchored to the FIRST 15 bars
+        # of the session tape and frozen for the whole run -- the old
+        # rolling 14-bar window made backtest ORB a rolling-channel
+        # breakout, a different strategy from live ORB.
+        orb_anchor = bars[:15]
         # Rolling true ranges for the measured backtest ATR (F3).
         true_ranges: List[Decimal] = []
 
-        for bar in bars:
-            window_bars.append(bar)
-            if len(window_bars) > 15:
-                window_bars.pop(0)
+        for i, bar in enumerate(bars):
 
             typ_price = (bar.high + bar.low + bar.close) / Decimal("3")
             # P0-B / F2: a zero-volume bar weighs 0 in the VWAP -- the old
@@ -91,10 +92,17 @@ class TimeMachineArena:
 
             # ORB range is built from CLOSED bars only: including the current
             # bar makes its own high the range ceiling, so a breakout can
-            # almost never trigger (ORB was dead in backtest).
-            orb_window = window_bars[:-1]
-            orb_high = max(b.high for b in orb_window) if orb_window else bar.high
-            orb_low = min(b.low for b in orb_window) if orb_window else bar.low
+            # almost never trigger (ORB was dead in backtest). While the
+            # first 15 bars are still forming the range uses the closed
+            # bars so far; from bar 15 on it is the frozen bars[:15].
+            if i >= 15:
+                orb_high = max(b.high for b in orb_anchor)
+                orb_low = min(b.low for b in orb_anchor)
+            elif i > 0:
+                orb_high = max(b.high for b in bars[:i])
+                orb_low = min(b.low for b in bars[:i])
+            else:
+                orb_high, orb_low = bar.high, bar.low
             orb_mid = (orb_high + orb_low) / Decimal("2")
 
             # P0-B / F3: the backtest ATR is measured from the bars being

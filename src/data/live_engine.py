@@ -139,6 +139,11 @@ class LiveArenaEngine:
         self.live_typical_mean: Decimal = Decimal("0.00")
         self.live_orb_high: Decimal = Decimal("0.00")
         self.live_orb_low: Decimal = Decimal("0.00")
+        # Audit 3.4: the ORB opening range is anchored to the first 15
+        # bars of the session and frozen once complete; the old code
+        # recomputed it from cs[:15] every tick, so it slid with the
+        # rolling 200-bar buffer (~3h of drift).
+        self._orb_range_frozen: bool = False
 
         # 1-minute OHLC candles (bootstrap bars + live ticks aggregated) for charting & live RSI/ATR
         self.candles: List[Dict[str, float]] = []
@@ -627,11 +632,15 @@ class LiveArenaEngine:
                 self._update_candle(float(bar.timestamp), bar.close, bar.high, bar.low, bar.open)
                 self._record_series_point(bar.close, bar.timestamp)
 
-            # Rolling ORB range (first 15m or recent 15 bars)
+            # Audit 3.4: anchor the opening range to the FIRST 15 bars
+            # of the session (the warmup tape) and freeze it once 15 bars
+            # exist. While fewer than 15 bars exist the range is still
+            # forming and uses the bars so far.
             if len(recent_bars) >= 15:
                 first_15 = recent_bars[:15]
                 self.live_orb_high = max(b.high for b in first_15)
                 self.live_orb_low = min(b.low for b in first_15)
+                self._orb_range_frozen = True
             elif recent_bars:
                 self.live_orb_high = max(b.high for b in recent_bars)
                 self.live_orb_low = min(b.low for b in recent_bars)
@@ -1555,13 +1564,20 @@ class LiveArenaEngine:
         self.live_atr = max(Decimal("1.50"), Decimal(str(round(atr, 2))))
         self.broker.current_atr = self.live_atr
 
-        if len(cs) >= 15:
-            first_15 = cs[:15]
-            self.live_orb_high = Decimal(str(round(max(x["h"] for x in first_15), 2)))
-            self.live_orb_low = Decimal(str(round(min(x["l"] for x in first_15), 2)))
-        elif cs:
-            self.live_orb_high = Decimal(str(round(max(x["h"] for x in cs), 2)))
-            self.live_orb_low = Decimal(str(round(min(x["l"] for x in cs), 2)))
+        # Audit 3.4: only (re)build the range while it is not frozen.
+        # Once the session's first 15 bars are in, the range never moves
+        # again -- recomputing from cs[:15] here let it slide with the
+        # rolling buffer. While fewer than 15 bars exist (offline start)
+        # the range keeps forming from the bars so far.
+        if not self._orb_range_frozen:
+            if len(cs) >= 15:
+                first_15 = cs[:15]
+                self.live_orb_high = Decimal(str(round(max(x["h"] for x in first_15), 2)))
+                self.live_orb_low = Decimal(str(round(min(x["l"] for x in first_15), 2)))
+                self._orb_range_frozen = True
+            elif cs:
+                self.live_orb_high = Decimal(str(round(max(x["h"] for x in cs), 2)))
+                self.live_orb_low = Decimal(str(round(min(x["l"] for x in cs), 2)))
 
         if cs:
             # Session typical-price mean over the last <=200 1m candles.
