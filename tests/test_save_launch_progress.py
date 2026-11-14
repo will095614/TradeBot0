@@ -56,8 +56,12 @@ def test_save_launch_stage_advances_and_done_only_on_return(tmp_path):
         return (True, "ok")
 
     try:
+        # start_watchdog is mocked: a real watchdog thread must never start
+        # in tests — a delayed first tick could outlive these mocks and spawn
+        # a real gateway on the machine.
         with patch.object(dash.gateway_supervisor, "is_port_open", return_value=False), \
-             patch.object(dash.gateway_supervisor, "start_daemon", side_effect=fake_start_daemon):
+             patch.object(dash.gateway_supervisor, "start_daemon", side_effect=fake_start_daemon), \
+             patch.object(dash.gateway_supervisor, "start_watchdog", return_value=True):
             res = bridge.save_and_launch_gateway(
                 {"deepseek": "sk-test-key"}, admin_password="test-password-1"
             )
@@ -69,6 +73,7 @@ def test_save_launch_stage_advances_and_done_only_on_return(tmp_path):
         assert final["status"] == "done"
         assert final["progress"] == 100
     finally:
+        dash.gateway_supervisor.stop_watchdog()
         dash.engine.stop()
 
 
@@ -90,8 +95,12 @@ def test_save_launch_stage_resets_between_runs(tmp_path):
     """A second, failing run must not show the first run's stale 'done'."""
     dash, bridge = _make_bridge(tmp_path)
     try:
+        # start_watchdog is mocked: a real watchdog thread must never start
+        # in tests — a delayed first tick could outlive these mocks and spawn
+        # a real gateway on the machine.
         with patch.object(dash.gateway_supervisor, "is_port_open", return_value=True), \
-             patch.object(dash.gateway_supervisor, "probe_health", return_value=(True, "ok")):
+             patch.object(dash.gateway_supervisor, "probe_health", return_value=(True, "ok")), \
+             patch.object(dash.gateway_supervisor, "start_watchdog", return_value=True):
             res = bridge.save_and_launch_gateway(
                 {"deepseek": "sk-test-key"}, admin_password="test-password-1"
             )
@@ -103,6 +112,7 @@ def test_save_launch_stage_resets_between_runs(tmp_path):
         assert res2["ok"] is False
         assert bridge.get_save_launch_status()["status"] == "failed"
     finally:
+        dash.gateway_supervisor.stop_watchdog()
         dash.engine.stop()
 
 

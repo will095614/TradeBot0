@@ -38,13 +38,18 @@ def test_save_and_launch_gateway_waits_30_seconds(tmp_path):
     )
     bridge = _ArenaBridgeApi(dash)
     try:
+        # start_watchdog is mocked: a real watchdog thread must never start
+        # in tests — a delayed first tick could outlive these mocks and spawn
+        # a real gateway on the machine.
         with patch.object(dash.gateway_supervisor, "is_port_open", return_value=False), \
-             patch.object(dash.gateway_supervisor, "start_daemon", return_value=(True, "ok")) as mock_start:
+             patch.object(dash.gateway_supervisor, "start_daemon", return_value=(True, "ok")) as mock_start, \
+             patch.object(dash.gateway_supervisor, "start_watchdog", return_value=True):
             res = bridge.save_and_launch_gateway({"deepseek": "sk-test-item8-000000000000000000000000"}, admin_password="TestAdmin123")
         assert res["status"] == "ok"
         assert res["gateway_online"] is True
         mock_start.assert_called_once_with(max_wait_sec=30.0)
     finally:
+        dash.gateway_supervisor.stop_watchdog()
         dash.engine.stop()
 
 

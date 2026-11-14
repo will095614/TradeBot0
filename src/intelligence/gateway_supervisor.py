@@ -42,6 +42,18 @@ RUNTIME_NODE_VERSION = "24.21.0"
 RUNTIME_NODE_ZIP_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
 RUNTIME_INSTALL_LOG_FILENAME = "omniroute_install.log"
 
+# Gateway auto-restart watchdog (gateway diagnosis workstream): the
+# frontend polls state once a second; the watchdog probes the gateway
+# over HTTP with a 1 s timeout, so a 5 s cadence keeps detection fast
+# without hammering a recovering gateway. After 5 consecutive failed
+# restarts it stops trying and reports connection_problem persistently
+# instead of spinning forever. Backoff before the next attempt after N
+# consecutive failures: 10s, 20s, 40s, 80s, 160s, capped at 300s.
+WATCHDOG_POLL_SEC = 5.0
+WATCHDOG_MAX_CONSECUTIVE_FAILURES = 5
+WATCHDOG_RETRY_BASE_SEC = 10.0
+WATCHDOG_RETRY_MAX_SEC = 300.0
+
 
 class _InstallCancelledError(Exception):
     """Raised inside the runtime-install worker when the user cancels.
@@ -81,6 +93,11 @@ class GatewaySupervisor:
 
     @classmethod
     def _shutdown_all_at_exit(cls) -> None:
+        for sup in list(cls._live_supervisors):
+            try:
+                sup.stop_watchdog()
+            except Exception as e:
+                logger.debug("Gateway watchdog stop at exit failed: %s", e)
         for sup in list(cls._live_supervisors):
             try:
                 sup.shutdown()
@@ -128,6 +145,20 @@ class GatewaySupervisor:
         self._daemon_starting_thread: Optional[int] = None
         self.install_status: str = "idle"  # idle | downloading-node | installing-omniroute | done | failed | cancelled
         self.install_message: str = ""
+        # Auto-restart watchdog state (gateway diagnosis workstream),
+        # guarded by _watchdog_lock: the thread only ever restarts a
+        # gateway the app has seen healthy (or the caller just verified
+        # healthy via start_watchdog(armed=True)). _watchdog_armed is
+        # sticky once any probe finds the gateway healthy.
+        self._watchdog_lock = threading.Lock()
+        self._watchdog_thread: Optional[threading.Thread] = None
+        self._watchdog_stop = threading.Event()
+        self._watchdog_state: str = "idle"  # idle | ok | restarting | stopped
+        self._watchdog_healthy: Optional[bool] = None
+        self._watchdog_armed: bool = False
+        self._watchdog_failures: int = 0
+        self._watchdog_next_retry_ts: float = 0.0
+        self._watchdog_last_restart_ts: Optional[float] = None
 
         # Exit hook: a single class-level handler shuts down whatever
         # supervisors are still alive (WeakSet, so dead instances drop out
@@ -545,6 +576,178 @@ class GatewaySupervisor:
             return text[-n_chars:]
         except Exception:
             return ""
+
+    # --- Auto-restart watchdog (gateway diagnosis workstream) ---------
+    def start_watchdog(self, armed: bool = False) -> bool:
+        """Starts the auto-restart watchdog thread (idempotent).
+
+        Pass armed=True when the caller just verified the gateway is
+        healthy (run() after a successful auto-launch, or
+        save_and_launch_gateway after a healthy connect/spawn), so a
+        gateway that dies before the first probe still gets restarted.
+        A watchdog that has never seen the gateway healthy never
+        restarts it: a gateway that never started belongs to the setup
+        flow, not the watchdog. Returns False when already running.
+        """
+        with self._watchdog_lock:
+            old = self._watchdog_thread
+            if old is not None and old.is_alive():
+                return False
+            self._watchdog_stop.clear()
+            self._watchdog_armed = bool(armed)
+            t = threading.Thread(target=self._watchdog_loop, name="omniroute-gateway-watchdog", daemon=True)
+            self._watchdog_thread = t
+            t.start()
+            return True
+
+    def stop_watchdog(self) -> None:
+        """Stops the watchdog thread (best-effort join, never blocks long).
+
+        If the thread is mid-restart when asked to stop, the join times
+        out and the reference is kept so a later start_watchdog() does
+        not spawn a duplicate; the old thread is a daemon and exits on
+        its own once its current attempt finishes.
+        """
+        self._watchdog_stop.set()
+        t = None
+        with self._watchdog_lock:
+            t = self._watchdog_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=2.0)
+        with self._watchdog_lock:
+            if t is self._watchdog_thread and (t is None or not t.is_alive()):
+                self._watchdog_thread = None
+
+    def watchdog_status(self) -> Dict[str, Any]:
+        """Current watchdog state for the dashboard diagnosis line.
+
+        state: idle (never started) | ok | restarting (a restart is in
+        flight) | stopped (gave up after repeated failures). healthy is
+        None until the first probe. Never raises.
+        """
+        try:
+            with self._watchdog_lock:
+                return {
+                    "state": self._watchdog_state,
+                    "healthy": self._watchdog_healthy,
+                    "armed": self._watchdog_armed,
+                    "consecutive_failures": self._watchdog_failures,
+                    "last_restart_ts": self._watchdog_last_restart_ts,
+                }
+        except Exception:
+            return {"state": "idle", "healthy": None, "armed": False, "consecutive_failures": 0, "last_restart_ts": None}
+
+    @staticmethod
+    def _watchdog_backoff_sec(failures: int) -> float:
+        """Backoff before the next restart attempt after `failures`
+        consecutive failures: 10s, 20s, 40s, 80s, 160s, capped at 300s."""
+        if failures <= 0:
+            return WATCHDOG_RETRY_BASE_SEC
+        return min(WATCHDOG_RETRY_MAX_SEC, WATCHDOG_RETRY_BASE_SEC * (2 ** (failures - 1)))
+
+    def _watchdog_loop(self) -> None:
+        """Background loop: probe health every WATCHDOG_POLL_SEC and restart a
+        dead gateway. Runs until _watchdog_stop is set. Never raises.
+
+        Wait-then-tick: the first probe happens one interval after start, not
+        immediately, so the probe cadence is uniform from the start. This also
+        guarantees a caller that stops the watchdog right after starting it
+        (e.g. a test tearing down its mocks) never sees a tick run after its
+        own mocks are gone — a tick-then-wait loop could fire a real
+        start_daemon once the mocks had exited.
+        """
+        while not self._watchdog_stop.is_set():
+            self._watchdog_stop.wait(WATCHDOG_POLL_SEC)
+            if self._watchdog_stop.is_set():
+                break
+            try:
+                self._watchdog_tick()
+            except Exception as e:
+                logger.debug("Gateway watchdog tick failed: %s", e)
+
+    def _probe_gateway_healthy(self) -> bool:
+        """Cheap liveness check: port open AND /api/health answers 200."""
+        try:
+            if not self.is_port_open(timeout=0.35):
+                return False
+            healthy, _ = self.probe_health(timeout=1.0)
+            return bool(healthy)
+        except Exception as e:
+            logger.debug("Gateway watchdog health probe failed: %s", e)
+            return False
+
+    def _watchdog_tick(self) -> None:
+        """One watchdog iteration: probe health, restart once if dead.
+
+        Never restarts while a runtime install is running (the install
+        finishes by starting the gateway itself), never restarts a
+        gateway it has never seen healthy, and never restarts after
+        giving up (state "stopped") until the gateway recovers on its
+        own -- the dashboard then reports connection_problem persistently
+        instead of spinning forever. A restart already in flight when
+        stop_watchdog() is called still finishes (bounded by
+        start_daemon's 30 s wait); the double-spawn guard serializes
+        it against any concurrent start_daemon caller.
+        """
+        # Install in progress: the installer owns the gateway lifecycle.
+        try:
+            with self._install_lock:
+                installing = self.install_status in ("downloading-node", "installing-omniroute")
+        except Exception:
+            installing = False
+        if installing:
+            return
+        if self._watchdog_stop.is_set():
+            return
+        healthy = self._probe_gateway_healthy()
+        with self._watchdog_lock:
+            self._watchdog_healthy = healthy
+            if healthy:
+                self._watchdog_armed = True
+                self._watchdog_failures = 0
+                self._watchdog_next_retry_ts = 0.0
+                # A manual recovery (user started the gateway by hand)
+                # after give-up brings the watchdog back to ok.
+                self._watchdog_state = "ok"
+                return
+            if self._watchdog_state == "stopped":
+                # Gave up: keep reporting unhealthy, never restart again
+                # until the gateway comes back on its own.
+                return
+            if not self._watchdog_armed:
+                # Never saw this gateway healthy: it never started, so
+                # restarting is the setup flow's job, not the watchdog's.
+                return
+            now = time.monotonic()
+            if now < self._watchdog_next_retry_ts:
+                return
+            self._watchdog_state = "restarting"
+        # Restart outside the lock: start_daemon can block up to 30 s.
+        ok, msg = self.start_daemon(max_wait_sec=30.0)
+        with self._watchdog_lock:
+            if ok:
+                self._watchdog_state = "ok"
+                self._watchdog_failures = 0
+                self._watchdog_next_retry_ts = 0.0
+                self._watchdog_last_restart_ts = time.time()
+                self._watchdog_healthy = True
+                logger.info("Gateway watchdog restarted the OmniRoute gateway.")
+            else:
+                self._watchdog_failures += 1
+                failures = self._watchdog_failures
+                logger.warning(
+                    "Gateway watchdog restart attempt %d failed: %s", failures, msg
+                )
+                if failures >= WATCHDOG_MAX_CONSECUTIVE_FAILURES:
+                    self._watchdog_state = "stopped"
+                    logger.warning(
+                        "Gateway watchdog gave up after %d consecutive failed restarts; "
+                        "reporting connection problem until the gateway recovers.",
+                        failures,
+                    )
+                else:
+                    self._watchdog_state = "ok"
+                    self._watchdog_next_retry_ts = time.monotonic() + self._watchdog_backoff_sec(failures)
 
     def is_port_open(self, timeout: float = 0.35) -> bool:
         """Fast TCP socket probe to verify if port is actively listening."""

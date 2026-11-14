@@ -247,8 +247,12 @@ def test_bridge_stepwise_simulation_erroneous_then_valid(tmp_path: Path):
         "groq": "gsk_correct_key_44444444",
         "openrouter": "sk-or-v1-correct-key-55555555",
     }
+    # start_watchdog is mocked: a real watchdog thread must never start in
+    # tests — a delayed first tick could outlive these mocks and spawn a real
+    # gateway on the machine.
     with patch.object(dash.gateway_supervisor, "is_port_open", return_value=True), \
-         patch.object(dash.gateway_supervisor, "probe_health", return_value=(True, {"status": "ok"})):
+         patch.object(dash.gateway_supervisor, "probe_health", return_value=(True, {"status": "ok"})), \
+         patch.object(dash.gateway_supervisor, "start_watchdog", return_value=True):
         res_launch = bridge.save_and_launch_gateway(keys_payload, admin_password="TestAdmin123")
         assert res_launch["status"] == "ok"
         assert res_launch["ok"] is True
@@ -261,6 +265,11 @@ def test_bridge_stepwise_simulation_erroneous_then_valid(tmp_path: Path):
     assert "gemini" in st_final["configured_providers"]
     assert "groq" in st_final["configured_providers"]
     assert "openrouter" in st_final["configured_providers"]
+
+    # Gateway diagnosis workstream: save_and_launch_gateway starts the
+    # auto-restart watchdog; stop it so no thread outlives the test.
+    dash.gateway_supervisor.stop_watchdog()
+    dash.engine.stop()
 
 
 # =============================================================================

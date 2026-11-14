@@ -3339,6 +3339,25 @@ function updateUiClockDisplay() {
       }
       const fbLine = document.getElementById('intelFallbackLine');
       if (fbLine) fbLine.classList.toggle('visible', isFallback);
+      // Gateway diagnosis workstream: one plain-language line under
+      // the pill -- quota exhausted (all providers), connection
+      // problem, or restarting. Only the two user-facing states plus
+      // the restarting line; anything else leaves the line empty.
+      // The box is fixed (width 100%, reserved slot), so showing the
+      // line never moves anything.
+      const diagLine = document.getElementById('intelDiagnosisLine');
+      if (diagLine) {
+        const diag = omni.diagnosis || 'ok';
+        let diagText = '';
+        if (diag === 'quota_exhausted') diagText = 'AI quota exhausted — all providers out of credits';
+        else if (diag === 'connection_problem') diagText = 'Connection problem — AI services unreachable';
+        else if (diag === 'restarting') diagText = 'AI services stopped — restarting…';
+        if (diagLine._lastDiag !== diag) {
+          diagLine.textContent = diagText;
+          diagLine._lastDiag = diag;
+        }
+        diagLine.classList.toggle('visible', diagText !== '');
+      }
     }
 
     const epEl = document.getElementById('omniEndpointVal');

@@ -153,10 +153,32 @@ class _ArenaBridgeApi:
         }
 
     def get_state(self) -> Dict[str, Any]:
-        return self._dashboard.engine.get_ui_state()
+        state = self._dashboard.engine.get_ui_state()
+        self._inject_gateway_diagnosis(state)
+        return state
 
     def get_state_delta(self, force_full: bool = False) -> Dict[str, Any]:
-        return self._dashboard.engine.get_ui_state_delta(force_full=force_full)
+        state = self._dashboard.engine.get_ui_state_delta(force_full=force_full)
+        self._inject_gateway_diagnosis(state)
+        return state
+
+    def _inject_gateway_diagnosis(self, state: Dict[str, Any]) -> None:
+        """Adds the gateway diagnosis to the Intel Hub payload of a state
+        dict the frontend polls (get_state / get_state_delta, every 1 s).
+        Never raises; a state without an intel_hub payload is left alone.
+        The delta publisher only ever omits candles/fills, so intel_hub
+        is present on every poll."""
+        try:
+            diagnosis = self._dashboard.get_gateway_diagnosis()
+            intel = state.get("intel_hub")
+            if not isinstance(intel, dict):
+                return
+            omni = intel.get("omniroute")
+            if not isinstance(omni, dict):
+                return
+            omni["diagnosis"] = diagnosis
+        except Exception as e:
+            logger.debug("Gateway diagnosis injection failed: %s", e)
 
     def evolve_now(self) -> Dict[str, Any]:
         """Runs a manual evolution on a background thread so the UI never blocks.
@@ -522,6 +544,16 @@ class _ArenaBridgeApi:
             self._set_save_launch_stage("starting-engine", "Starting live engine...", 85, "engine")
             self._dashboard.start_engine_if_needed()
 
+            # Gateway diagnosis workstream: the gateway is expected to be
+            # running from here on; watch it and restart it if it dies.
+            # armed=True when the gateway is healthy now (spawned or
+            # already running); a failed spawn leaves the watchdog
+            # unarmed, so it never restarts a gateway that never started.
+            try:
+                self._dashboard.gateway_supervisor.start_watchdog(armed=bool(healthy))
+            except Exception as e:
+                logger.debug("Gateway watchdog start failed: %s", e)
+
             # 100% only here: the procedure has actually finished. The
             # message carries the outcome (gateway healthy or not).
             self._set_save_launch_stage("done", msg, 100, "")
@@ -586,6 +618,45 @@ class ArenaDashboard:
         self._evolution_running = False
         self._evolution_lock = threading.Lock()
         self._bridge = _ArenaBridgeApi(self)
+
+    def get_gateway_diagnosis(self) -> str:
+        """Gateway failure diagnosis for the Intel Hub line (gateway
+        diagnosis workstream). One of "ok", "quota_exhausted",
+        "connection_problem", "restarting". Never raises.
+
+        Precedence: a restart in flight beats everything; a dead
+        gateway beats a quota signal (quota cannot be known while the
+        gateway is down). "quota_exhausted" means every configured
+        provider has failed with a quota/credit signal, or the user's
+        own daily token budget is used up -- never a computed %.
+        Before the watchdog's first probe there is no health signal, so
+        a gateway that never started shows no line (the setup wizard
+        owns that case).
+        """
+        try:
+            wd = self.gateway_supervisor.watchdog_status()
+        except Exception as e:
+            logger.debug("Gateway watchdog status read failed: %s", e)
+            wd = {"state": "idle", "healthy": None}
+        if wd.get("state") == "restarting":
+            return "restarting"
+        if wd.get("healthy") is False:
+            return "connection_problem"
+        try:
+            client = getattr(self.engine, "omniroute_client", None)
+            if client is None:
+                return "ok"
+            budget_fn = getattr(client, "is_daily_budget_exhausted", None)
+            if callable(budget_fn) and budget_fn() is True:
+                return "quota_exhausted"
+            exhausted_fn = getattr(client, "is_all_providers_quota_exhausted", None)
+            if callable(exhausted_fn):
+                configured = self.config_manager.get_configured_providers()
+                if exhausted_fn(configured) is True:
+                    return "quota_exhausted"
+        except Exception as e:
+            logger.debug("Gateway quota diagnosis failed: %s", e)
+        return "ok"
 
     def reset_engine(self) -> None:
         """Rebuilds the engine, preserving the arena state a reset must not discard.
@@ -664,6 +735,10 @@ class ArenaDashboard:
     def stop(self) -> None:
         """Cleanly halts trading engine, persistence, and background daemon supervisor."""
         try:
+            self.gateway_supervisor.stop_watchdog()
+        except Exception as e:
+            logger.debug("Error stopping gateway watchdog: %s", e)
+        try:
             self.engine.stop()
         except Exception as e:
             logger.debug("Error stopping engine: %s", e)
@@ -719,9 +794,23 @@ class ArenaDashboard:
                 # setup wizard forces the user to set one first.
                 and self.config_manager.is_admin_password_configured()
             ):
+                _gw_healthy = False
                 if not self.gateway_supervisor.is_port_open(timeout=0.25):
                     logger.info("Auto-spawning background OmniRoute gateway daemon...")
-                    self.gateway_supervisor.start_daemon(max_wait_sec=30.0)
+                    _spawn_ok, _ = self.gateway_supervisor.start_daemon(max_wait_sec=30.0)
+                    _gw_healthy = bool(_spawn_ok)
+                else:
+                    try:
+                        _healthy, _ = self.gateway_supervisor.probe_health(timeout=0.6)
+                        _gw_healthy = bool(_healthy)
+                    except Exception as e:
+                        logger.debug("Gateway health probe at startup failed: %s", e)
+                        _gw_healthy = False
+                # Gateway diagnosis workstream: watch the daemon while the
+                # app runs and restart it if it dies. Only started when
+                # the gateway is expected to be running (onboarding done,
+                # password set, not pure-math mode).
+                self.gateway_supervisor.start_watchdog(armed=_gw_healthy)
         except Exception as e:
             logger.warning("Auto-launch check encountered non-fatal error: %s", e)
 

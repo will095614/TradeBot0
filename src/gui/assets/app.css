@@ -3529,10 +3529,16 @@ tbody td {
   visibility: visible;
   opacity: 1;
 }
-/* Reserved for the gateway-diagnosis workstream: it fills this line
-   ('quota exhausted' / 'connection problem') and styles it. */
+/* Gateway diagnosis workstream: the diagnosis line is filled with
+   the plain-language state ('quota exhausted' / 'connection problem' /
+   'restarting'). It must never wrap: the line is a fixed reserved slot
+   and a wrap would grow the box and shift the cards below it. Long
+   text is ellipsised instead. */
 .intel-diagnosis-line {
   color: var(--ss-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* AI panels (I2/I3/I4): one shared Advanced section holding the
