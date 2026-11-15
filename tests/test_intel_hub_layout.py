@@ -162,13 +162,21 @@ def test_top_deck_cards_share_height_without_dead_void():
     css = _css()
     body = _rule(css, ".intel-panel-body {")
     assert "flex: 1;" in body
-    # The Market Direction metric row takes the free height and its
-    # cells center vertically; the Refresh row pins to the bottom of
-    # the AI Services card.
-    row = _rule(css, ".intel-top-deck .intel-panel:last-child .intel-metrics-row {")
-    assert "flex: 1;" in row
-    assert "align-content: stretch;" in row
-    metric = _rule(css, ".intel-top-deck .intel-panel:last-child .intel-metric {")
-    assert "justify-content: center;" in metric
-    subrow = _rule(css, ".intel-top-deck .intel-panel:first-child .intel-meta-subrow {")
-    assert "margin-top: auto;" in subrow
+    # Deck port (2026-11-15, sim direction): every metric box is
+    # 76px min-height, top-left, in both cards. The workstream-3
+    # rules that stretched the Market Direction row (flex: 1) and
+    # centered its cells are gone -- they made the right boxes taller
+    # than the left ones. The two cards still share one height via
+    # the deck's align-items: stretch (the hub harness measures it:
+    # 221px, equal, tops and bottoms aligned).
+    metric = _rule(css, "\n.intel-metric {")
+    assert "min-height: 76px;" in metric
+    assert ".intel-top-deck .intel-panel:last-child .intel-metrics-row {" not in css
+    assert ".intel-top-deck .intel-panel:last-child .intel-metric {" not in css
+    # Both footer rows (left: Password + Refresh; right: ACTIVE
+    # DIRECTIVE) share one height; the left footer pins to the
+    # bottom of the AI Services card.
+    subrow = _rule(css, "\n.intel-meta-subrow {")
+    assert "min-height: 32px;" in subrow
+    first_subrow = _rule(css, ".intel-top-deck .intel-panel:first-child .intel-meta-subrow {")
+    assert "margin-top: auto;" in first_subrow

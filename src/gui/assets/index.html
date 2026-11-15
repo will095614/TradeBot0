@@ -605,7 +605,6 @@
                       </svg>
                       <span>Launch Console</span>
                     </button>
-                    <span class="intel-metric-sub" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" onclick="copyOmniPassword()" title="Admin password is stored in ~/.omniroute/.env"><span>********</span><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code></span>
                   </div>
                   <div class="intel-metric lg-glass lg-spot-card intel-metric--wide">
                     <span class="intel-metric-lbl">Token Utilization</span>
@@ -620,7 +619,12 @@
                 </div>
               </div>
             </div>
+            <!-- Deck port (2026-11-15, sim direction): the Password row
+                 moved out of the OmniRoute Controller box into this shared
+                 footer row (Password left, Refresh right), so all three
+                 small boxes are a uniform 76px. -->
             <div class="intel-meta-subrow">
+              <span class="intel-metric-sub" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" onclick="copyOmniPassword()" title="Admin password is stored in ~/.omniroute/.env"><span>********</span><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code></span>
               <button class="btn btn-primary lg-btn lg-btn--primary" onclick="requestAiIntelDigest()" id="btnRefreshDigest" style="margin-left:auto;">
                 <svg class="ss-svg-icon btn-spin-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9L14 6.5M14 2.5v4h-4"></path>

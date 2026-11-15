@@ -3285,30 +3285,28 @@ tbody td {
   gap: 8px;
 }
 
-/* Intel Hub layout (workstream 3): the Market Direction card used to
-   end in a dead void -- its four metric cells were short while the
-   AI Services card set the row height. The row now takes the free
-   height (and its single grid row stretches to fill it), the cell
-   content centers vertically, and the Refresh row pins to the bottom
-   of the AI Services card, so both top cards read as intentionally
-   filled instead of half-empty. The Advanced reserved slot is
-   untouched, so expanding/collapsing it still moves nothing. */
-.intel-top-deck .intel-panel:last-child .intel-metrics-row {
-  flex: 1;
-  align-content: stretch;
-}
-.intel-top-deck .intel-panel:last-child .intel-metric {
-  justify-content: center;
-}
+/* Deck port (2026-11-15, sim direction): the workstream-3 rule that
+   stretched the Market Direction metric row (flex: 1) and centered its
+   cells is gone -- it made the right boxes taller than the left ones,
+   and the sim direction fixes every box at 76px, top-left. The right
+   card now ends with slack below its throttle line (it carries fewer
+   reserved slots than the left card); the two cards still share one
+   height via the deck's align-items: stretch. */
 .intel-top-deck .intel-panel:first-child .intel-meta-subrow {
   margin-top: auto;
 }
 
+/* Deck port (2026-11-15, sim direction): every small box in both
+   cards is one height (76px, label / value / sub-line, top-left).
+   min-height, not height: the Token value is allowed to wrap, and the
+   grid stretches the whole row, so alignment survives a wrap instead
+   of clipping. */
 .intel-metric {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 7px 11px;
+  min-height: 76px;
   border-radius: var(--r-md);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -3330,7 +3328,9 @@ tbody td {
 }
 
 .omni-console-card {
-  justify-content: space-between;
+  /* Deck port: Password moved out of this box, so space-between would
+     push the button to the bottom; top-left like the sim instead. */
+  justify-content: flex-start;
 }
 
 .lg-btn--console {
@@ -3505,11 +3505,14 @@ tbody td {
     opacity 0.20s ease;
 }
 
+/* Deck port (2026-11-15, sim direction): the left footer
+   (Password + Refresh) and the right directive row are one height. */
 .intel-meta-subrow {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  min-height: 32px;
 }
 
 .intel-tag {
