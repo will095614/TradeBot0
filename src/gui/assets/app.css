@@ -816,7 +816,7 @@ body.arena-paused #liveBadge .lg-wave-bars i,
   min-width: max-content !important;
   margin: 0;
   gap: 12px;
-  padding: 0 32px 0 20px !important;
+  padding: 0 56px 0 20px !important;
   overflow: visible !important;
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
@@ -3043,6 +3043,14 @@ tbody td {
     inset 0 -1px 0 rgba(56, 189, 248, 0.18);
   overflow: hidden;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* FLIP reorder animation: renderStrategies moves the stable card nodes
+   with an inverted transform, then clears it; this class supplies the
+   transform transition only while a reorder is playing, so equity
+   updates on the 1s tick never animate. */
+.strat-card-mini.strat-card-reordering {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.35s ease;
 }
 
 .strat-card-mini:hover {
@@ -5405,7 +5413,7 @@ body:not(.arena-ready) .lg-glass {
   .spatial-dock-bar .lg-dock-pod { padding: 0 10px; gap: 6px; }
   .spatial-dock-bar .lg-dock-pod--brand { width: 482px !important; min-width: 482px !important; max-width: 482px !important; }
   .spatial-dock-bar .title-group, .spatial-dock-bar .title-sub { width: 140px !important; min-width: 140px !important; max-width: 140px !important; }
-  .spatial-dock-bar .lg-dock-pod--island { padding: 0 20px 0 16px !important; gap: 8px; }
+  .spatial-dock-bar .lg-dock-pod--island { padding: 0 44px 0 16px !important; gap: 8px; }
   .spatial-dock-bar .btn, .spatial-dock-bar .lg-btn { padding: 0 9px; }
 }
 

@@ -1629,10 +1629,70 @@ function renderStrategies(state) {
   const currentCardOrder = Array.from(grid.children).map(el => el.dataset.stratId).join(',');
   const nextCardOrder = strategies.map(s => s.id).join(',');
   if (currentCardOrder !== nextCardOrder) {
+    // FLIP reorder animation: cards are stable nodes (stratCardDomMap),
+    // so record each card's position, move the nodes to their new slots,
+    // then invert with a transform and let the .strat-card-reordering
+    // transition play it back to the natural position. Transform-only,
+    // so no layout is triggered. Only runs when the ORDER changes --
+    // equity updates on the 1s tick never animate.
+    const reduceMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const firstRects = new Map();
+    strategies.forEach(s => {
+      const card = stratCardDomMap.get(s.id);
+      if (!card) return;
+      // Cancel any in-flight reorder cleanly: drop the class and the
+      // transform so the card sits at its current DOM slot before we
+      // measure. Renders are 1s apart and the animation is 0.35s, so
+      // this only fires on non-cadence re-renders.
+      card.classList.remove('strat-card-reordering');
+      card.style.transform = '';
+      firstRects.set(s.id, card.getBoundingClientRect());
+    });
     strategies.forEach(s => {
       const card = stratCardDomMap.get(s.id);
       if (card) grid.appendChild(card);
     });
+    if (!reduceMotion) {
+      const moved = [];
+      strategies.forEach(s => {
+        const card = stratCardDomMap.get(s.id);
+        const first = firstRects.get(s.id);
+        if (!card || !first) return;
+        const last = card.getBoundingClientRect();
+        const dx = first.left - last.left;
+        const dy = first.top - last.top;
+        if (dx !== 0 || dy !== 0) {
+          card.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
+          moved.push(card);
+        }
+      });
+      if (moved.length > 0) {
+        // Force a reflow so the inverted transform paints before the
+        // transition class is added; otherwise the browser may skip it.
+        void grid.offsetHeight;
+        const flipToken = performance.now();
+        moved.forEach(card => {
+          card._flipToken = flipToken;
+          card.classList.add('strat-card-reordering');
+        });
+        requestAnimationFrame(() => {
+          moved.forEach(card => { card.style.transform = ''; });
+        });
+        // Single timeout cleanup (350ms + slack): never depends on
+        // transitionend delivery, so a render arriving mid-flight
+        // cannot leave a stuck class or transform behind. The token
+        // guard keeps a newer reorder's animation alive if a second
+        // reorder lands inside this window.
+        setTimeout(() => {
+          moved.forEach(card => {
+            if (card._flipToken !== flipToken) return;
+            card.classList.remove('strat-card-reordering');
+            card.style.transform = '';
+          });
+        }, 400);
+      }
+    }
   }
 }
 
