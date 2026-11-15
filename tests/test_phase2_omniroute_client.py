@@ -265,3 +265,61 @@ def test_chat_json_400_response_format_rejection_is_not_quota():
         assert client._unattributed_quota_ts is None
         assert classify_llm_error(400, body)["kind"] == "unknown"
     asyncio.run(_run())
+
+
+def test_chat_json_repair_retry_turns_prose_into_json():
+    """A 200 with prose gets exactly ONE repair attempt (original
+    messages + a JSON-only reminder); if the repair returns JSON, the
+    call succeeds and the second post carries the reminder."""
+    async def _run():
+        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
+        prose = _mock_resp(200, {}, {"choices": [{"message": {"content": "**Analysis Summary:** prose, no braces"}}]})
+        fixed = _mock_resp(200, {}, {"choices": [{"message": {"content": '{"regime": "NORMAL"}'}}]})
+        mock_session = _mock_429_session([prose, fixed])
+        client._session = mock_session
+        client._owns_session = False
+
+        result = await client.chat_json("auto", "system", "user")
+        assert result == {"regime": "NORMAL"}
+        assert mock_session.post.call_count == 2
+        assert client.successful_requests == 1
+        assert client.retried_requests == 1
+        repair_payload = mock_session.post.call_args_list[1].kwargs["json"]
+        assert repair_payload["messages"][-1]["content"].startswith("Your previous reply was not a JSON object")
+        assert repair_payload["messages"][0]["content"] == "system"
+        assert repair_payload["response_format"] == {"type": "json_object"}
+    asyncio.run(_run())
+
+
+def test_chat_json_repair_retry_gives_up_after_one_failure():
+    """Both the first 200 and the repair 200 are prose: result None,
+    exactly two posts, no infinite repair loop."""
+    async def _run():
+        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
+        prose = lambda: _mock_resp(200, {}, {"choices": [{"message": {"content": "plain prose, no braces"}}]})
+        mock_session = _mock_429_session([prose(), prose()])
+        client._session = mock_session
+        client._owns_session = False
+
+        result = await client.chat_json("auto", "system", "user")
+        assert result is None
+        assert mock_session.post.call_count == 2
+        assert client.successful_requests == 0
+    asyncio.run(_run())
+
+
+def test_chat_json_per_call_timeout_override():
+    """timeout_sec=150 reaches the post call as ClientTimeout(total=150)."""
+    async def _run():
+        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
+        mock_session = _mock_429_session([
+            _mock_resp(200, {}, {"choices": [{"message": {"content": '{"regime": "NORMAL"}'}}]}),
+        ])
+        client._session = mock_session
+        client._owns_session = False
+
+        result = await client.chat_json("auto", "system", "user", timeout_sec=150.0)
+        assert result == {"regime": "NORMAL"}
+        sent_timeout = mock_session.post.call_args.kwargs["timeout"]
+        assert sent_timeout.total == 150.0
+    asyncio.run(_run())

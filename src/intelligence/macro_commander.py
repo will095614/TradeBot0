@@ -503,12 +503,16 @@ class MacroCommander:
             return None, "gateway offline"
         system_prompt, user_prompt = build_event_article_prompts(evt)
         try:
+            # Article timeout 150s (2026-11-15 A/B probe: the routed
+            # model takes 69-100s to generate a ~1000-word article, so
+            # the 60s client default can never complete it).
             parsed = await self.client.chat_json(
                 model=self.client.model_ingest,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.0,
                 max_tokens=2500,
+                timeout_sec=150.0,
             )
         except Exception as ex:
             return None, f"LLM call failed: {ex}"

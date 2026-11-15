@@ -588,21 +588,31 @@ class OmniRouteClient:
         user_prompt: str,
         temperature: float = 0.0,
         max_tokens: int = 1500,
+        timeout_sec: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Sends an OpenAI-compatible chat completion request and returns a parsed JSON dictionary.
         Applies exponential backoff on 429/502/503. Falls back safely to None on failure.
         """
         sess = await self.get_session()
+        # Per-call timeout override (None = the client default). Article
+        # generation passes 150s: the A/B probe measured 69-100s for a
+        # ~1000-word article from the routed model, so the 60s default
+        # can never complete it.
+        call_timeout = timeout_sec if timeout_sec is not None else self.timeout_sec
         # 2026-11-15: the gateway routes some calls to a model that
         # answers in prose ("**Analysis Summary:**", "**headline_zh:**",
         # plain sentences, even an empty string) -- 44x "200 OK returned
         # unparseable content" in one afternoon's app log. extract_json
         # then finds no braces and the whole digest/article call is
-        # wasted. Force JSON mode (OpenAI-compatible standard): a
+        # wasted. Ask for JSON mode (OpenAI-compatible standard): a
         # provider that rejects it answers 400, which is terminal here
-        # and falls back exactly as an unparseable 200 does today.
+        # and falls back exactly as an unparseable 200 does today, and
         # classify_llm_error maps 400 to kind "unknown", never quota.
+        # Honest limit, measured the same day by A/B probe: the routed
+        # provider (cfp / zai-org/glm-5.2) accepts the parameter but
+        # IGNORES it and answers in prose anyway. So a 200 with prose
+        # also gets one repair retry below (_repair_json_once).
         payload = {
             "model": model,
             "temperature": temperature,
@@ -628,7 +638,7 @@ class OmniRouteClient:
                         endpoint,
                         json=payload,
                         headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout_sec),
+                        timeout=aiohttp.ClientTimeout(total=call_timeout),
                     ) as resp:
                         status = resp.status
                         retry_after = resp.headers.get("Retry-After")
@@ -672,6 +682,18 @@ class OmniRouteClient:
                                     self.successful_requests += 1
                                     return parsed
                                 logger.warning("OmniRoute 200 OK returned unparseable content: %s", content[:150])
+                                # Repair retry (2026-11-15): the routed
+                                # model ignores both the JSON-only system
+                                # instruction and response_format, and
+                                # answers in prose. Ask once more for
+                                # JSON only; if that also fails, fall
+                                # back exactly as before.
+                                repaired = await self._repair_json_once(
+                                    sess, endpoint, headers, payload, call_timeout
+                                )
+                                if repaired is not None:
+                                    self.successful_requests += 1
+                                    return repaired
                             return None
 
                         if status in _RETRY_STATUSES and attempt < self.max_retries:
@@ -714,6 +736,54 @@ class OmniRouteClient:
 
         self.failed_requests += 1
         return None
+
+    async def _repair_json_once(
+        self,
+        sess: Any,
+        endpoint: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        timeout_sec: float,
+    ) -> Optional[Dict[str, Any]]:
+        """One repair attempt after a 200 with unparseable content.
+
+        Re-sends the original messages plus a short user reminder
+        demanding a JSON object only. Returns the parsed dict or None.
+        Never raises. Bounded to exactly one extra call: a model that
+        ignores the reminder (like the routed glm-5.2, which also
+        ignores response_format) must not be re-asked forever.
+        """
+        try:
+            repair_payload = dict(payload)
+            repair_payload["messages"] = list(payload.get("messages", [])) + [
+                {"role": "user",
+                 "content": "Your previous reply was not a JSON object. "
+                            "Reply again with ONLY a JSON object, no other "
+                            "text, no markdown, no explanation."},
+            ]
+            self.retried_requests += 1
+            async with self._get_semaphore():
+                async with sess.post(
+                    endpoint,
+                    json=repair_payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout_sec),
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    body = await resp.json()
+                    choices = body.get("choices", [])
+                    if choices and "message" in choices[0]:
+                        content = choices[0]["message"].get("content", "")
+                        parsed = extract_json(content)
+                        if parsed is not None:
+                            logger.info("OmniRoute repair retry returned usable JSON")
+                            return parsed
+                        logger.warning("OmniRoute repair retry still unparseable: %s", content[:150])
+                    return None
+        except Exception as e:
+            logger.debug("OmniRoute repair retry failed: %s", e)
+            return None
 
     async def close(self) -> None:
         """Properly closes underlying aiohttp session to prevent resource leaks."""

@@ -216,3 +216,13 @@ def test_bridge_get_event_article():
     assert bridge.get_event_article(_event_id(commander))["ok"] is True
     assert client.chat_json.await_count == 1
     assert bridge.get_event_article("evt_missing")["ok"] is False
+
+
+def test_article_generation_uses_long_timeout():
+    """Article generation passes timeout_sec=150: the routed model takes
+    69-100s for a ~1000-word article (A/B probe 2026-11-15), so the 60s
+    client default can never complete it."""
+    commander, client = _make_commander(chat_result={"article": ARTICLE_TEXT})
+    res = commander.get_event_article(_event_id(commander))
+    assert res["ok"] is True
+    assert client.chat_json.await_args.kwargs["timeout_sec"] == 150.0
