@@ -692,6 +692,11 @@
           <div class="panel-tools">
             <span class="intel-feed-desc">Multi-Domain: US Macro, Fed, Crypto ETFs, AI Semis, Geopolitics</span>
             <span id="intelEventCountLabel" class="intel-count-badge lg-pill num">5 Curated Events</span>
+            <div class="ss-seg lg-seg intel-sort-seg" style="--n:2;" data-active-idx="0" id="intelSortSeg" role="group" aria-label="Sort events">
+              <span class="ss-seg__thumb lg-seg__thumb" aria-hidden="true"></span>
+              <button class="seg-btn ss-seg__option active" id="intelSortTime" data-on onclick="setIntelSortMode('time')" title="Sort by time">Time</button>
+              <button class="seg-btn ss-seg__option" id="intelSortImpact" onclick="setIntelSortMode('impact')" title="Sort by impact">Impact</button>
+            </div>
           </div>
         </div>
         <div class="intel-events-scroll" id="intelEventsScroll">

@@ -52,6 +52,11 @@
   --lg-specular-top:    rgba(255, 255, 255, 0.42);
   --lg-specular-bottom: rgba(255, 255, 255, 0.06);
   --lg-spring:          cubic-bezier(0.22, 1, 0.36, 1);
+  /* Phase B accordion spring: aimran smooth-accordion (stiffness 300,
+     damping 30) translated to CSS -- near-critically damped, ~0.35s,
+     a touch of overshoot. */
+  --intel-accordion-ease: cubic-bezier(0.3, 1.15, 0.4, 1);
+  --intel-accordion-duration: 0.35s;
   --lg-bounce:          cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* --- Volumetric Pure Black & High-Contrast Obsidian Stage Defaults --- */
@@ -3658,17 +3663,17 @@ tbody td {
 }
 
 .intel-events-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
 /* Intel Hub stream loading (workstream 3): while the first curated
-   events are still missing, the list switches from grid to a
+   events are still missing, the list switches from a column flex to a
    centering flex, so the loading block (label + meter + percent)
    sits in the middle of the stream section instead of a line pinned
    to the top of a void. When the first events render, the class is
-   removed and the cards lay out as a grid from the top. */
+   removed and the rows lay out full-width from the top. */
 .intel-events-list.is-loading {
   display: flex;
   align-items: center;
@@ -3708,14 +3713,13 @@ tbody td {
   gap: 8px;
   padding: 12px 14px;
   border-radius: var(--r-md);
-  background: linear-gradient(
-    155deg,
-    rgba(24, 28, 38, 0.75) 0%,
-    rgba(12, 14, 20, 0.88) 100%
-  );
-  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: var(--lg-fill);
+  backdrop-filter: var(--lg-blur);
+  -webkit-backdrop-filter: var(--lg-blur);
+  border: 1px solid rgba(255, 255, 255, 0.20);
   box-shadow: var(--ss-shadow-card);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  cursor: pointer;
 }
 
 .intel-event-card:hover {
@@ -3724,6 +3728,107 @@ tbody td {
     0 12px 28px -6px rgba(2, 6, 23, 0.85),
     0 0 20px rgba(0, 242, 254, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+/* ==========================================================================
+   INTEL HUB STREAM REDESIGN (Phase B): full-width rows, expand, chips
+   ========================================================================== */
+/* Expand chevron: "<" at the header's right edge; opening the row
+   rotates it to point down. Rotation + expansion share the aimran
+   smooth-accordion spring (stiffness 300, damping 30) translated to
+   CSS: near-critically damped, ~0.35s, a touch of overshoot. */
+.intel-expand-chevron {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+  color: #94A3B8;
+  transition: transform var(--intel-accordion-duration) var(--intel-accordion-ease), color 0.2s ease;
+}
+.intel-event-card.is-open .intel-expand-chevron {
+  transform: rotate(-90deg);
+  color: #67E8F9;
+}
+/* Collapsible detail: the grid-rows 0fr -> 1fr expansion (same spring
+   as the chevron) plus a fade; the inner clips the content while shut. */
+.intel-event-detail {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--intel-accordion-duration) var(--intel-accordion-ease), opacity 0.25s ease;
+}
+.intel-event-card.is-open .intel-event-detail {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.intel-event-detail-inner {
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 2px;
+}
+/* Lazy article body: paragraphs, honest loading pulse, honest error. */
+.intel-article-body {
+  font-size: 12px;
+  line-height: 1.75;
+  color: #E2E8F0;
+}
+.intel-article-body:empty {
+  display: none;
+}
+.intel-article-body.is-loading {
+  min-height: 20px;
+}
+.intel-article-para {
+  margin: 0 0 10px;
+}
+.intel-article-para:last-child {
+  margin-bottom: 0;
+}
+.intel-article-loading {
+  color: #67E8F9;
+  animation: intel-article-pulse 1.2s ease-in-out infinite;
+}
+@keyframes intel-article-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+.intel-article-error {
+  color: var(--ss-down);
+}
+/* Ticker chips: bordered art boxes (not literal "[]" characters), one
+   fixed colour per ticker; unknown tickers get a stable hash colour. */
+.intel-tick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.intel-tick {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+}
+.intel-tick[data-t="BTC"] { color: #FB923C; border-color: rgba(251, 146, 60, 0.50); background: rgba(251, 146, 60, 0.12); }
+.intel-tick[data-t="ETH"] { color: #818CF8; border-color: rgba(129, 140, 248, 0.50); background: rgba(129, 140, 248, 0.12); }
+.intel-tick[data-t="AI"] { color: #22D3EE; border-color: rgba(34, 211, 238, 0.50); background: rgba(34, 211, 238, 0.12); }
+.intel-tick[data-t="XRP"] { color: #34D399; border-color: rgba(52, 211, 153, 0.50); background: rgba(52, 211, 153, 0.12); }
+.intel-tick[data-t="MACRO"] { color: #FBBF24; border-color: rgba(251, 191, 36, 0.50); background: rgba(251, 191, 36, 0.12); }
+.intel-tick.tick-fh0 { color: #F472B6; border-color: rgba(244, 114, 182, 0.50); background: rgba(244, 114, 182, 0.12); }
+.intel-tick.tick-fh1 { color: #A78BFA; border-color: rgba(167, 139, 250, 0.50); background: rgba(167, 139, 250, 0.12); }
+.intel-tick.tick-fh2 { color: #38BDF8; border-color: rgba(56, 189, 248, 0.50); background: rgba(56, 189, 248, 0.12); }
+.intel-tick.tick-fh3 { color: #FACC15; border-color: rgba(250, 204, 21, 0.50); background: rgba(250, 204, 21, 0.12); }
+.intel-tick.tick-fh4 { color: #94A3B8; border-color: rgba(148, 163, 184, 0.50); background: rgba(148, 163, 184, 0.12); }
+/* Sort control: the existing sliding-pill seg, sized to the header. */
+.intel-sort-seg {
+  flex: 0 0 auto;
 }
 
 .intel-event-card > * {
@@ -4034,6 +4139,13 @@ body:not(.arena-ready) .lg-glass {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
+  }
+  .intel-event-detail,
+  .intel-expand-chevron {
+    transition: none !important;
+  }
+  .intel-article-loading {
+    animation: none !important;
   }
 }
 

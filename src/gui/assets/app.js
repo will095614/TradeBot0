@@ -3373,6 +3373,259 @@ function updateUiClockDisplay() {
   }
   window.requestAiIntelDigest = requestAiIntelDigest;
 
+  // Intel Hub stream redesign (Phase B): full-width rows, sort + expand.
+  // Sort mode: 'time' (telemetry order) or 'impact' (urgency desc,
+  // ties keep telemetry order). Expand state lives outside the render
+  // so it survives re-sorts and the 1s re-render.
+  let intelSortMode = 'time';
+  const intelExpandedIds = new Set();
+  const intelEventNodes = {};
+  const intelArticleCache = {};
+  const intelArticlePending = {};
+
+  // Summary cleaner (sim splitBody): the harvester summary starts with
+  // a fixed prefix and ends with a parenthetical tail carrying the
+  // related tickers and the raw title. The display shows only the
+  // cleaned summary sentence. The CJK literals are unicode escapes so
+  // the static assets stay zero-CJK.
+  const INTEL_SUMMARY_PREFIX = '\u7D9C\u5408\u5916\u96FB\u5831\u5C0E\uFF1A';
+  const INTEL_TAIL_MARK_A = '\u95DC\u806F\u6A19\u7684';
+  const INTEL_TAIL_MARK_B = '\u539F\u6587\u6A19\u984C';
+  function cleanIntelSummary(summary) {
+    let s = String(summary || '');
+    if (s.indexOf(INTEL_SUMMARY_PREFIX) === 0) s = s.slice(INTEL_SUMMARY_PREFIX.length);
+    let cutTail = false;
+    const tailIdx = s.lastIndexOf('\uFF08');
+    if (tailIdx >= 0) {
+      const tail = s.slice(tailIdx);
+      if (tail.indexOf(INTEL_TAIL_MARK_A) >= 0 || tail.indexOf(INTEL_TAIL_MARK_B) >= 0) {
+        s = s.slice(0, tailIdx);
+        cutTail = true;
+      }
+    }
+    s = s.trim();
+    // The tail carried the sentence-final period; put it back so the
+    // cleaned sentence still ends with one.
+    if (cutTail && s && s.charAt(s.length - 1) !== '\u3002') s += '\u3002';
+    return s;
+  }
+
+  // Ticker chips: fixed colour per ticker. The five known tickers get
+  // their colour from CSS [data-t] rules; anything else gets a stable
+  // fallback class from a deterministic hash of the name, so the same
+  // ticker is the same colour everywhere (including after a re-sort).
+  const INTEL_KNOWN_TICKERS = ['BTC', 'ETH', 'AI', 'XRP', 'MACRO'];
+  function hashTickerName(name) {
+    let h = 5381;
+    for (let i = 0; i < name.length; i++) h = ((h << 5) + h + name.charCodeAt(i)) >>> 0;
+    return h;
+  }
+  function tickerChipClass(name) {
+    const up = String(name || '').trim().toUpperCase();
+    if (INTEL_KNOWN_TICKERS.indexOf(up) !== -1) return '';
+    return 'tick-fh' + (hashTickerName(up) % 5);
+  }
+
+  function intelEventKey(evt) {
+    return (evt && (evt.id || evt.headline)) || '';
+  }
+
+  // Stable sort: Impact orders by urgency descending; ties keep the
+  // telemetry order (the decorate step makes the tie-break explicit).
+  function sortIntelEvents(events) {
+    if (intelSortMode !== 'impact') return events.slice();
+    return events
+      .map(function (evt, idx) { return { evt: evt, idx: idx }; })
+      .sort(function (a, b) {
+        const du = Number(b.evt.urgency || 5) - Number(a.evt.urgency || 5);
+        return du !== 0 ? du : a.idx - b.idx;
+      })
+      .map(function (x) { return x.evt; });
+  }
+
+  function setIntelSortMode(mode) {
+    if (mode !== 'time' && mode !== 'impact') return;
+    if (intelSortMode === mode) return;
+    intelSortMode = mode;
+    syncSegThumb('intelSortSeg', mode === 'impact' ? 1 : 0);
+    const list = document.getElementById('intelEventsList');
+    if (list) list._intelOrder = '';
+    if (latestState) renderIntelHub(latestState);
+  }
+
+  function intelArticleBodyEl(eventId) {
+    // Event ids are generated as evt_<ts>_<n> (alphanumeric + '_'), so
+    // the attribute selector needs no escaping.
+    const card = document.querySelector('.intel-event-card[data-event-id="' + eventId + '"]');
+    return card ? card.querySelector('.intel-article-body') : null;
+  }
+
+  function renderIntelArticle(eventId, result) {
+    const body = intelArticleBodyEl(eventId);
+    if (!body) return;
+    if (result.state === 'ready') {
+      const paras = String(result.article || '').split(/\n\s*\n/);
+      const blocks = paras.length > 1 ? paras : String(result.article || '').split('\n');
+      body.innerHTML = blocks
+        .map(function (p) { return p.trim(); })
+        .filter(function (p) { return p.length > 0; })
+        .map(function (p) { return '<p class="intel-article-para">' + escapeHtml(p) + '</p>'; })
+        .join('');
+      body.classList.remove('is-loading');
+    } else {
+      // Honest failure: show the backend reason. The one-line summary
+      // is never passed off as the article.
+      body.innerHTML = '<div class="intel-article-error">Article unavailable: ' + escapeHtml(result.reason || 'Unknown error') + '</div>';
+      body.classList.remove('is-loading');
+    }
+  }
+
+  // Lazy article load: first expand of an event calls the bridge once;
+  // the result (ready or failed) is cached per event id, and an
+  // in-flight call is never duplicated.
+  function requestIntelArticle(eventId) {
+    const cached = intelArticleCache[eventId];
+    if (cached) { renderIntelArticle(eventId, cached); return; }
+    if (intelArticlePending[eventId]) return;
+    const body = intelArticleBodyEl(eventId);
+    if (body) {
+      body.innerHTML = '<div class="intel-article-loading">Loading article\u2026</div>';
+      body.classList.add('is-loading');
+    }
+    if (!window.pywebview || !window.pywebview.api || typeof window.pywebview.api.get_event_article !== 'function') {
+      const fail = { state: 'failed', reason: 'Article service unavailable (bridge not connected)' };
+      intelArticleCache[eventId] = fail;
+      renderIntelArticle(eventId, fail);
+      return;
+    }
+    const p = window.pywebview.api.get_event_article(eventId);
+    intelArticlePending[eventId] = p;
+    p.then(function (res) {
+      delete intelArticlePending[eventId];
+      let result;
+      if (res && res.ok === true && typeof res.article === 'string' && res.article.trim()) {
+        result = { state: 'ready', article: res.article };
+      } else {
+        result = { state: 'failed', reason: (res && res.reason) || 'Article unavailable' };
+      }
+      intelArticleCache[eventId] = result;
+      renderIntelArticle(eventId, result);
+    }).catch(function (err) {
+      delete intelArticlePending[eventId];
+      const result = { state: 'failed', reason: 'Article request failed: ' + (err && err.message ? err.message : String(err)) };
+      intelArticleCache[eventId] = result;
+      renderIntelArticle(eventId, result);
+    });
+  }
+
+  function buildIntelEventCard(evt) {
+    const card = document.createElement('article');
+    card.className = 'intel-event-card lg-spot-card';
+    card.dataset.eventId = intelEventKey(evt);
+    card.innerHTML =
+      '<div class="intel-card-header">'
+      + '<span class="intel-event-time num"></span>'
+      + '<span class="intel-domain-badge"></span>'
+      + '<span class="intel-source-badge"></span>'
+      + '<span class="intel-urgency-badge num"></span>'
+      + '<span class="intel-sentiment-badge num"></span>'
+      + '<span class="intel-expand-chevron" aria-hidden="true">&lt;</span>'
+      + '</div>'
+      + '<div class="intel-card-headline"></div>'
+      + '<div class="intel-card-summary"></div>'
+      + '<div class="intel-event-detail"><div class="intel-event-detail-inner">'
+      + '<div class="intel-article-body"></div>'
+      + '<div class="intel-tick-row"></div>'
+      + '<div class="intel-strategy-actions-box">'
+      + '<div class="intel-strategy-box-title">Arena Competitor Impact (Strategies 1 ~ 6)</div>'
+      + '<div class="strat-actions-wrap"></div>'
+      + '</div>'
+      + '</div></div>';
+    return card;
+  }
+
+  function updateIntelEventCard(card, evt, macro) {
+    const head = card.querySelector('.intel-card-header');
+    const timeEl = head.querySelector('.intel-event-time');
+    const domEl = head.querySelector('.intel-domain-badge');
+    const srcEl = head.querySelector('.intel-source-badge');
+    // Stable-node cache: this badge's class is swapped to
+    // 'intel-domain-badge' below when urg < 8, so a fresh
+    // '.intel-urgency-badge' query on the next 1s re-render would
+    // return null and crash renderIntelHub. The card node (and its
+    // header spans) is never rebuilt, so caching the reference is safe.
+    const urgEl = card._urgEl || (card._urgEl = head.querySelector('.intel-urgency-badge'));
+    const sentEl = head.querySelector('.intel-sentiment-badge');
+    const nextTime = evt.time || '';
+    if (timeEl.textContent !== nextTime) timeEl.textContent = nextTime;
+    const nextDom = (evt.domain || 'macro').toUpperCase();
+    if (domEl.textContent !== nextDom) domEl.textContent = nextDom;
+    const nextSrc = evt.source || 'News Wire';
+    if (srcEl.textContent !== nextSrc) srcEl.textContent = nextSrc;
+    const urg = Number(evt.urgency || 5);
+    const nextUrg = urg >= 8 ? ('URG ' + urg + '/10 CRITICAL') : ('URG ' + urg + '/10');
+    if (urgEl.textContent !== nextUrg) urgEl.textContent = nextUrg;
+    const nextUrgCls = urg >= 8 ? 'intel-urgency-badge num' : 'intel-domain-badge num';
+    if (urgEl.className !== nextUrgCls) urgEl.className = nextUrgCls;
+    const sent = Number(evt.sentiment || 0);
+    let sentCls = 'neutral';
+    let sentTxt = (sent >= 0 ? '+' : '') + sent.toFixed(2) + ' Neutral';
+    if (sent > 0.2) { sentCls = 'bullish'; sentTxt = '+' + sent.toFixed(2) + ' Bullish'; }
+    else if (sent < -0.2) { sentCls = 'bearish'; sentTxt = sent.toFixed(2) + ' Bearish'; }
+    const nextSentCls = 'intel-sentiment-badge num ' + sentCls;
+    if (sentEl.className !== nextSentCls) sentEl.className = nextSentCls;
+    if (sentEl.textContent !== sentTxt) sentEl.textContent = sentTxt;
+    const headEl = card.querySelector('.intel-card-headline');
+    const nextHead = evt.headline || '';
+    if (headEl.textContent !== nextHead) headEl.textContent = nextHead;
+    const sumEl = card.querySelector('.intel-card-summary');
+    const nextSum = cleanIntelSummary(evt.summary || '');
+    if (sumEl.textContent !== nextSum) sumEl.textContent = nextSum;
+    const tickers = Array.isArray(evt.tickers) ? evt.tickers : [];
+    const tickKey = tickers.join('|');
+    if (card._tickKey !== tickKey) {
+      card._tickKey = tickKey;
+      card.querySelector('.intel-tick-row').innerHTML = tickers.map(function (t) {
+        const name = String(t).trim().toUpperCase();
+        return '<span class="intel-tick ' + tickerChipClass(name) + '" data-t="' + escapeHtml(name) + '">' + escapeHtml(name) + '</span>';
+      }).join('');
+    }
+    const actions = evt.strategy_actions || [];
+    let actionsHtml = '';
+    if (actions.length > 0) {
+      actionsHtml = actions.map(function (act) {
+        const bCls = act.badge_cls || 'neutral';
+        return `<span class="strat-action-pill ${bCls}">`
+          + '<strong>' + escapeHtml(act.name) + '</strong>: ' + escapeHtml(act.action) + ' <small style="opacity:0.75;">(' + escapeHtml(act.time || '') + ')</small>'
+          + '</span>';
+      }).join('');
+    } else {
+      actionsHtml = '<span class="strat-action-pill neutral">Strategies 1~6: Active Monitoring under ' + escapeHtml(macro.directional_bias || 'BIDIRECTIONAL') + ' Directive</span>';
+    }
+    if (card._impactHtml !== actionsHtml) {
+      card._impactHtml = actionsHtml;
+      card.querySelector('.strat-actions-wrap').innerHTML = actionsHtml;
+    }
+    const eventId = intelEventKey(evt);
+    const isOpen = intelExpandedIds.has(eventId);
+    card.classList.toggle('is-open', isOpen);
+    if (isOpen) requestIntelArticle(eventId);
+  }
+
+  function toggleIntelEventCard(card) {
+    if (!card) return;
+    const eventId = card.dataset.eventId || '';
+    if (!eventId) return;
+    if (intelExpandedIds.has(eventId)) {
+      intelExpandedIds.delete(eventId);
+      card.classList.remove('is-open');
+    } else {
+      intelExpandedIds.add(eventId);
+      card.classList.add('is-open');
+      requestIntelArticle(eventId);
+    }
+  }
+
   function renderIntelHub(state) {
     if (!state) return;
     const intel = state.intel_hub || {};
@@ -3515,6 +3768,11 @@ function updateUiClockDisplay() {
         // 90 until the first events actually render -- it never
         // claims 100 while the stream is still loading.
         listContainer.classList.add('is-loading');
+        // The stream is empty: drop the stable nodes (the loading
+        // block replaces them via innerHTML below), so no stale card
+        // can be re-appended when events arrive again.
+        Object.keys(intelEventNodes).forEach(function (key) { delete intelEventNodes[key]; });
+        listContainer._intelOrder = '';
         const sync = intel.sync || {};
         const stage = typeof sync.stage === 'string' ? sync.stage : 'idle';
         const rawPct = Number(sync.percent);
@@ -3532,53 +3790,36 @@ function updateUiClockDisplay() {
         }
       } else {
         listContainer.classList.remove('is-loading');
-        const nextEventsHtml = events.map(evt => {
-          const sent = Number(evt.sentiment || 0);
-          let sentCls = 'neutral', sentTxt = `${sent >= 0 ? '+' : ''}${sent.toFixed(2)} Neutral`;
-          if (sent > 0.2) { sentCls = 'bullish'; sentTxt = `+${sent.toFixed(2)} Bullish`; }
-          else if (sent < -0.2) { sentCls = 'bearish'; sentTxt = `${sent.toFixed(2)} Bearish`; }
-
-          const urg = Number(evt.urgency || 5);
-          const urgBadge = urg >= 8
-            ? `<span class="intel-urgency-badge num">URG ${urg}/10 CRITICAL</span>`
-            : `<span class="intel-domain-badge num">URG ${urg}/10</span>`;
-
-          const actions = evt.strategy_actions || [];
-          let actionsHtml = '';
-          if (actions.length > 0) {
-            actionsHtml = actions.map(act => {
-              const bCls = act.badge_cls || 'neutral';
-              return `<span class="strat-action-pill ${bCls}">
-                <strong>${escapeHtml(act.name)}</strong>: ${escapeHtml(act.action)} <small style="opacity:0.75;">(${escapeHtml(act.time || '')})</small>
-              </span>`;
-            }).join('');
-          } else {
-            actionsHtml = `<span class="strat-action-pill neutral">Strategies 1~6: Active Monitoring under ${escapeHtml(macro.directional_bias || 'BIDIRECTIONAL')} Directive</span>`;
+        // Stable per-event nodes (same pattern as stratCardDomMap):
+        // create once, update in place, never rebuild innerHTML, so
+        // expand state and lazy articles survive the 1s re-render.
+        const sorted = sortIntelEvents(events);
+        const seenKeys = new Set();
+        sorted.forEach(function (evt) {
+          const key = intelEventKey(evt);
+          seenKeys.add(key);
+          let card = intelEventNodes[key];
+          if (!card) {
+            card = buildIntelEventCard(evt);
+            intelEventNodes[key] = card;
+            listContainer.appendChild(card);
           }
-
-          return `
-            <div class="intel-event-card lg-spot-card">
-              <div class="intel-card-header">
-                <span class="intel-event-time num">${escapeHtml(evt.time || '')}</span>
-                <span class="intel-domain-badge">${escapeHtml((evt.domain || 'macro').toUpperCase())}</span>
-                <span class="intel-source-badge">${escapeHtml(evt.source || 'News Wire')}</span>
-                ${urgBadge}
-                <span class="intel-sentiment-badge num ${sentCls}">${sentTxt}</span>
-              </div>
-              <div class="intel-card-headline">${escapeHtml(evt.headline || '')}</div>
-              <div class="intel-card-summary">${escapeHtml(evt.summary || '')}</div>
-              <div class="intel-strategy-actions-box">
-                <div class="intel-strategy-box-title">Arena Competitor Impact (Strategies 1 ~ 6)</div>
-                <div class="strat-actions-wrap">
-                  ${actionsHtml}
-                </div>
-              </div>
-            </div>
-          `;
-        }).join('');
-        if (listContainer._lastHtml !== nextEventsHtml) {
-          listContainer.innerHTML = nextEventsHtml;
-          listContainer._lastHtml = nextEventsHtml;
+          updateIntelEventCard(card, evt, macro);
+        });
+        Object.keys(intelEventNodes).forEach(function (key) {
+          if (!seenKeys.has(key)) {
+            const stale = intelEventNodes[key];
+            if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
+            delete intelEventNodes[key];
+          }
+        });
+        const nextOrder = sorted.map(intelEventKey).join('|');
+        if (listContainer._intelOrder !== nextOrder) {
+          sorted.forEach(function (evt) {
+            const card = intelEventNodes[intelEventKey(evt)];
+            if (card) listContainer.appendChild(card);
+          });
+          listContainer._intelOrder = nextOrder;
         }
       }
     }
@@ -3608,6 +3849,12 @@ function updateUiClockDisplay() {
       };
       iList.addEventListener('pointermove', updateIntelCardSpotlight, { passive: true });
       iList.addEventListener('pointerenter', updateIntelCardSpotlight, true);
+      // Stream redesign (Phase B): clicking anywhere on an event row
+      // expands / collapses it; the "<" chevron is only the visual cue.
+      iList.addEventListener('click', (e) => {
+        const card = e.target.closest('.intel-event-card');
+        if (card) toggleIntelEventCard(card);
+      });
     }
 
     const bentoDock = document.getElementById('tabCardsView');
