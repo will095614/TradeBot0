@@ -3528,7 +3528,7 @@ function updateUiClockDisplay() {
       + '<div class="intel-article-body"></div>'
       + '<div class="intel-tick-row"></div>'
       + '<div class="intel-strategy-actions-box">'
-      + '<div class="intel-strategy-box-title">Arena Competitor Impact (Strategies 1 ~ 6)</div>'
+      + '<div class="intel-strategy-box-title">Arena Competitor Impact (Strategies 1 ~ 5)</div>'
       + '<div class="strat-actions-wrap"></div>'
       + '</div>'
       + '</div></div>';
@@ -3591,7 +3591,7 @@ function updateUiClockDisplay() {
           + '</span>';
       }).join('');
     } else {
-      actionsHtml = '<span class="strat-action-pill neutral">Strategies 1~6: Active Monitoring under ' + escapeHtml(macro.directional_bias || 'BIDIRECTIONAL') + ' Directive</span>';
+      actionsHtml = '<span class="strat-action-pill neutral">Strategies 1~5: Active Monitoring under ' + escapeHtml(macro.directional_bias || 'BIDIRECTIONAL') + ' Directive</span>';
     }
     if (card._impactHtml !== actionsHtml) {
       card._impactHtml = actionsHtml;
@@ -3725,7 +3725,7 @@ function updateUiClockDisplay() {
       if (b === 'LONG_ONLY') biasSub.textContent = 'Strict Veto Active: All Short Trades Blocked';
       else if (b === 'SHORT_ONLY') biasSub.textContent = 'Strict Veto Active: All Long Trades Blocked';
       else if (b === 'HOLD_CASH') biasSub.textContent = 'Severe Risk-Off: All Opening Orders Blocked';
-      else biasSub.textContent = 'All 6 Arena Strategies Permitted';
+      else biasSub.textContent = 'All 5 Arena Strategies Permitted';
     }
 
     const multEl = document.getElementById('macroHubRiskMult');

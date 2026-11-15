@@ -557,7 +557,7 @@ class LiveArenaEngine:
     def bootstrap_intraday_session(self) -> None:
         """
         Loads the last 120 minutes of real 1-minute ETH/USD candles to warm up live indicators
-        and immediately deploy the 6 strategies into the current live market session.
+        and immediately deploy the 5 strategies into the current live market session.
         First attempts cold-start hydration from SQLite WAL storage; if empty, queries live
         feed. If no real bars are available (offline), no bars are fabricated:
         the engine starts with an empty chart and waits for live quotes.
@@ -1248,7 +1248,7 @@ class LiveArenaEngine:
 
     def _evaluate_live_strategies(self, price: Decimal, prev_price: Decimal, ts: float) -> None:
         """
-        Executes differentiated real-time decision logic for each of the 6 strategies on every live tick/bar.
+        Executes differentiated real-time decision logic for each of the 5 strategies on every live tick/bar.
         Incorporates bidirectional Long & Short setups, anti-churn cooldowns, channel stagnation exits,
         and dynamic volatility adaptation.
 
@@ -1972,7 +1972,7 @@ class LiveArenaEngine:
 
                                 self._maybe_auto_redeploy(cadenced_quote.price, float(current_slot))
 
-                                # All 6 strategies evaluated strictly on the 5-second interval
+                                # All 5 strategies evaluated strictly on the 5-second interval
                                 self._evaluate_live_strategies(cadenced_quote.price, prev_p, float(current_slot))
 
                             self._record_series_point(cadenced_quote.price, float(current_slot))
