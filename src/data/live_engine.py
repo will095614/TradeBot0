@@ -50,6 +50,18 @@ QUOTE_STALE_SEC = 5.0
 # so it does not apply here. Both bootstrap cache branches share this
 # one threshold (the first branch already used the literal 600.0).
 CANDLE_CACHE_STALE_SEC = 600.0
+
+# Debug pass, Part C (V2.8.0): chop-gate cold-start seeding. The live chop
+# gate needs 21 CLOSED 15m bars; a 120-bar warmup only builds ~8 buckets
+# (7 closed), so the gate is blind for ~3.3 h of live running after every
+# cold start (196 more 1m bars to reach 22 buckets -- measured in
+# dbg_v280_seed_measure.py). Bootstrap therefore loads up to 360 1m bars:
+# the newest 120 warm up indicators exactly as before, and the up-to-240
+# older bars feed ONLY the MTF 15m aggregation (never the warmup broker
+# simulation, the ORB anchor, or the 1m candle list), so the gate arms at
+# startup with the same 15m closes the backtest gate uses.
+CHOP_GATE_SEED_TOTAL_BARS = 360
+CHOP_GATE_SEED_WARMUP_BARS = 120
 # Audit 2.3: a seeded 1h bar is only trusted while recent. The last 1h bar
 # is the current (partial) hour or the last completed hour, so its open
 # timestamp can legitimately be up to ~2 h old; older than 3 h means the
@@ -553,10 +565,11 @@ class LiveArenaEngine:
         if self._stop_event.is_set():
             return
         recent_bars: List[CandleBar] = []
+        seed_bars: List[Dict[str, Any]] = []
         cached_candles: List[Dict[str, Any]] = []
         is_fresh_cache = False
         try:
-            cached_candles = self.storage.load_latest_candles(120)
+            cached_candles = self.storage.load_latest_candles(CHOP_GATE_SEED_TOTAL_BARS)
             is_fresh_cache = bool(cached_candles) and (time.time() - float(cached_candles[-1]["t"])) < CANDLE_CACHE_STALE_SEC
             if len(cached_candles) >= 30 and is_fresh_cache:
                 recent_bars = [
@@ -572,7 +585,12 @@ class LiveArenaEngine:
                         rsi=Decimal("50.00"),
                         atr=Decimal("12.00"),
                     )
-                    for c in cached_candles
+                    for c in cached_candles[-CHOP_GATE_SEED_WARMUP_BARS:]
+                ]
+                seed_bars = [
+                    {"t": float(c["t"]), "o": float(c["o"]), "h": float(c["h"]),
+                     "l": float(c["l"]), "c": float(c["c"]), "v": float(c.get("v", 0.0))}
+                    for c in cached_candles[:-CHOP_GATE_SEED_WARMUP_BARS]
                 ]
         except Exception as e:
             logger.debug("SQLite candle cache hydration skipped: %s", e)
@@ -583,7 +601,12 @@ class LiveArenaEngine:
         if not recent_bars:
             try:
                 bars = ETHFeed.fetch_historical_bars(ticker="ETH-USD", period="1d", interval="1m")
-                recent_bars = bars[-120:] if len(bars) > 120 else bars
+                recent_bars = bars[-CHOP_GATE_SEED_WARMUP_BARS:] if len(bars) > CHOP_GATE_SEED_WARMUP_BARS else bars
+                seed_bars = [
+                    {"t": float(b.timestamp), "o": float(b.open), "h": float(b.high),
+                     "l": float(b.low), "c": float(b.close), "v": float(b.volume)}
+                    for b in bars[:-CHOP_GATE_SEED_WARMUP_BARS]
+                ]
             except Exception as e:
                 logger.debug("Intraday bars fetch failed: %s", e)
 
@@ -620,6 +643,16 @@ class LiveArenaEngine:
         with self.lock:
             if self._stop_event.is_set():
                 return
+
+            # Debug pass, Part C (V2.8.0): seed the 15m buckets from the
+            # older stored bars so the chop gate arms at startup instead
+            # of ~3.3 h after a cold start. Seeding touches ONLY the MTF
+            # aggregation -- the warmup tape, ORB anchor, 1m candles and
+            # broker simulation below are unchanged.
+            if recent_bars:
+                seeded = self._seed_chop_gate_buckets(seed_bars, float(recent_bars[0].timestamp))
+                if seeded:
+                    logger.info("Chop gate seeded: %d 1m bars -> %d 15m buckets.", seeded, len(self.candles_15m))
 
             for i, bar in enumerate(recent_bars):
                 if self._stop_event.is_set():
@@ -893,6 +926,70 @@ class LiveArenaEngine:
             return False
         closes = [float(b["c"]) for b in closed[-CHOP_GATE_WINDOW_BARS - 1:]]
         return efficiency_ratio(closes) < CHOP_GATE_ER_THRESHOLD
+
+    def _seed_chop_gate_buckets(self, seed_bars: List[Dict[str, Any]], warmup_start_ts: float) -> int:
+        """Feed stored 1m bars into the MTF 15m aggregation so the live
+        chop gate arms at startup (debug pass, Part C).
+
+        The gate needs 21 CLOSED 15m bars; the 120-bar warmup only builds
+        ~8 buckets, so without this the gate is blind for ~3.3 h after
+        every cold start. The seed bars are the bars OLDER than the warmup
+        tape (up to 240 of them); they are fed straight into
+        ``mtf_engine.update_from_1m_bar`` and touch nothing else -- not
+        the 1m candle list, not the ORB anchor, not the broker simulation.
+
+        Guards (any failure degrades to today's behaviour: no seeding, the
+        gate arms after ~3.3 h of live running as it does now):
+        - only the longest continuous minute suffix ending exactly one
+          minute before the warmup tape is used; a gap (engine downtime)
+          truncates the seed at the gap, so the gate never arms on a
+          regime stitched across hours of missing data;
+        - malformed rows are skipped, never fabricated.
+        Returns the number of 1m bars actually fed.
+        """
+        if not seed_bars or not warmup_start_ts:
+            return 0
+        chain: List[Dict[str, Any]] = []
+        expect = float(warmup_start_ts) - 60.0
+        for b in reversed(seed_bars):
+            try:
+                t = float(b["t"])
+            except (KeyError, TypeError, ValueError):
+                break
+            if abs(t - expect) < 1.0:
+                chain.append(b)
+                expect -= 60.0
+            else:
+                break
+        chain.reverse()
+        if not chain:
+            return 0
+        fed = 0
+        for b in chain:
+            try:
+                bar = {
+                    "t": float(b["t"]),
+                    "o": float(b["o"]),
+                    "h": float(b["h"]),
+                    "l": float(b["l"]),
+                    "c": float(b["c"]),
+                    "v": float(b.get("v", 0.0)),
+                }
+            except (KeyError, TypeError, ValueError):
+                continue
+            self.mtf_engine.update_from_1m_bar(bar)
+            fed += 1
+        if fed == 0:
+            return 0
+        # Mirror _update_mtf_regimes: re-sync the engine's aliases of the
+        # MTF lists (plus the regime) after the batch.
+        self.candles_5m = self.mtf_engine.candles_5m
+        self.candles_15m = self.mtf_engine.candles_15m
+        self.candles_1h = self.mtf_engine.candles_1h
+        self.htf_ema_50 = self.mtf_engine.htf_ema_50
+        self.htf_ema_200 = self.mtf_engine.htf_ema_200
+        self.htf_bias = self.mtf_engine.htf_bias
+        return fed
 
     def _seed_mtf_1h_history(self) -> None:
         """
