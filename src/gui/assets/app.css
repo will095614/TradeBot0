@@ -3017,7 +3017,7 @@ tbody td {
   flex-shrink: 0;
 }
 
-/* 6-Column Panoramic Strategy Bento Grid */
+/* 6-Column Panoramic Strategy Bento Grid: 5 strategies + 1 slot reserved for manual mode */
 .strategies-bento-dock {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));

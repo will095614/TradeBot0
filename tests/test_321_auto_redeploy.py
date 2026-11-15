@@ -1,4 +1,4 @@
-"""Audit 3.21: auto-redeploy when all six are flat is behind an explicit
+"""Audit 3.21: auto-redeploy when all five are flat is behind an explicit
 switch -- config key auto_redeploy_when_flat, default ON (current
 behaviour preserved). With the switch OFF a flat arena stays flat;
 with it ON the cadence redeploys, logging one line per flat episode.

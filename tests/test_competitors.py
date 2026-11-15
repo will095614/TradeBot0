@@ -4,7 +4,6 @@ from src.arena.broker_sim import BrokerSim
 from src.arena.order import OrderSide
 from src.competitors.aggressive import AggressiveCompetitor
 from src.competitors.conservative import ConservativeCompetitor
-from src.competitors.atr_dynamic import ATRDynamicCompetitor
 from src.competitors.trailing_guard import TrailingGuardCompetitor
 from src.competitors.orb import ORBCompetitor
 from src.competitors.session_mean import SessionMeanPullbackCompetitor
@@ -15,12 +14,11 @@ def test_all_four_competitors_initialization_and_first_buy():
     
     comp_a = AggressiveCompetitor()
     comp_b = ConservativeCompetitor()
-    comp_c = ATRDynamicCompetitor()
     comp_d = TrailingGuardCompetitor()
     comp_e = ORBCompetitor()
     comp_f = SessionMeanPullbackCompetitor()
     
-    competitors = [comp_a, comp_b, comp_c, comp_d, comp_e, comp_f]
+    competitors = [comp_a, comp_b, comp_d, comp_e, comp_f]
     for c in competitors:
         broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
         assert c.portfolio.cash == Decimal("100000.00")
@@ -56,8 +54,6 @@ def test_all_four_competitors_initialization_and_first_buy():
     assert comp_a.portfolio.position_qty == Decimal("28.0000")
     # B (Conservative Spot 1x ~25% of 100,000 = $25,000 / 2500 = 10 BTC)
     assert comp_b.portfolio.position_qty == Decimal("10.0000")
-    # C (ATR Dynamic 2x Lev)
-    assert comp_c.portfolio.position_qty > Decimal("0")
     # D (Trailing Guard: risk 1.5% of 100,000 = $1,500 / $37.50 stop = 40 ETH,
     #    capped by 40% position cap $40,000 / 2500 = 16.0000 ETH)
     assert comp_d.portfolio.position_qty == Decimal("16.0000")
@@ -69,7 +65,7 @@ def test_all_four_competitors_initialization_and_first_buy():
     
     # Check Leaderboard generation
     rankings = Leaderboard.get_rankings(broker.portfolios)
-    assert len(rankings) == 6
+    assert len(rankings) == 5
     for r in rankings:
         assert r.equity > Decimal("0")
         assert r.status == "ACTIVE"
@@ -226,10 +222,6 @@ _MIRROR_CASES = [
      Decimal("2500.00"), {"atr": Decimal("35.00")},
      Decimal("2500.00"), {"atr": Decimal("35.00")},
      Decimal("2412.50"), None, Decimal("2587.50"), None),
-    ("ATR Dynamic", ATRDynamicCompetitor,
-     Decimal("2500.00"), {"atr": Decimal("35.00")},
-     Decimal("2500.00"), {"atr": Decimal("35.00")},
-     Decimal("2447.50"), Decimal("2587.50"), Decimal("2552.50"), Decimal("2412.50")),
     ("Conservative", ConservativeCompetitor,
      Decimal("2500.00"), {},
      Decimal("2500.00"), {},
@@ -253,7 +245,7 @@ def test_evaluate_signal_short_entries_mirror_long_brackets_all_strategies():
     """P0 §2.1: every strategy's SELL ticket is the exact mirror of its BUY bracket.
 
     Extends test_evaluate_signal_short_entries_mirror_long_brackets (which
-    only covers Aggressive) to all six strategies: the short stop sits above
+    only covers Aggressive) to all five strategies: the short stop sits above
     entry, the short target below entry, and the R multiple equals the long
     version's. Uncapped runners (Aggressive, Trailing Guard) have TP None on
     both sides and equal stop distances instead.
@@ -300,7 +292,7 @@ def test_evaluate_signal_short_entries_mirror_long_brackets_all_strategies():
 
 
 def test_evaluate_signal_returns_none_when_breaker_tripped_all_strategies():
-    """P0 §2.1: all six strategies return None once the breaker has tripped.
+    """P0 §2.1: all five strategies return None once the breaker has tripped.
 
     The guard lives on the portfolio (portfolio.is_circuit_breaker_tripped)
     and sits at the top of every evaluate_signal, ahead of both the entry
@@ -344,12 +336,12 @@ def test_evaluate_signal_returns_none_when_breaker_tripped_all_strategies():
         ) is None, f"{name}: tripped SELL-close of open long must return None"
 
 # =========================================================== P2-A
-# P2 §2.10: zero-qty entries return None on all six strategies.
+# P2 §2.10: zero-qty entries return None on all five strategies.
 # ===========================================================
 
 
 def test_strategy_qty_zero_returns_none():
-    """P2 §2.10: all six strategies return None when the sized quantity
+    """P2 §2.10: all five strategies return None when the sized quantity
     computes to <= 0 -- no empty (zero-qty) ticket is ever sent, on
     either side. The entry inputs are the same ones that produce tickets
     in the mirror test; zeroing the portfolio cash drives

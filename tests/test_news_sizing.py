@@ -9,7 +9,6 @@ import pytest
 from src.arena.broker_sim import BrokerSim
 from src.arena.order import OrderSide
 from src.competitors.aggressive import AggressiveCompetitor
-from src.competitors.atr_dynamic import ATRDynamicCompetitor
 from src.competitors.base import CompetitorGenome
 from src.competitors.conservative import ConservativeCompetitor
 from src.competitors.orb import ORBCompetitor
@@ -59,7 +58,6 @@ def test_per_strategy_sensitivity_scales_the_deviation():
 def test_genome_news_sensitivity_defaults_and_validation():
     assert ORBCompetitor().genome.news_sensitivity == 1.0
     assert AggressiveCompetitor().genome.news_sensitivity == 0.8
-    assert ATRDynamicCompetitor().genome.news_sensitivity == 0.7
     assert ConservativeCompetitor().genome.news_sensitivity == 0.3
     with pytest.raises(ValueError):
         CompetitorGenome(news_sensitivity=1.5)
@@ -91,17 +89,6 @@ def test_evaluate_signal_sizing_shrinks_qty_not_sl():
     assert small.stop_loss == base.stop_loss  # SL is a risk floor, not a mood
     assert small.qty == Decimal("14.2857")
     assert small.qty < base.qty
-
-
-def test_atr_risk_budget_scaled_by_sizing():
-    comp = ATRDynamicCompetitor()
-    broker = _broker()
-    broker.register_portfolio(comp.portfolio, max_position_ratio=comp.max_position_ratio)
-    broker.on_tick(Decimal("2500.00"), timestamp=100.0)
-    ticket = comp.evaluate_signal("BUY", Decimal("2500.00"), {"atr": Decimal("35.00")}, broker, 100.0, sizing_multiplier=Decimal("0.5"))
-    assert ticket is not None
-    # atr budget 1500 * 0.5 = 750; stop dist 52.50 -> 14.2857 (cap 20).
-    assert ticket.qty == Decimal("14.2857")
 
 
 def test_backtest_default_sizing_is_one():

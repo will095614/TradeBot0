@@ -177,16 +177,15 @@ class MacroRegimeState:
 class MacroCommander:
     """
     Stage 2 Macro Commander: Synthesizes cross-market intelligence from OmniRoute
-    and enforces Strict Veto (Option A) across all 6 arena competitors.
+    and enforces Strict Veto (Option A) across all 5 arena competitors.
     """
 
     STRAT_LABELS: Dict[str, str] = {
         "comp_agg": "Strategy 1 (AGG)",
         "comp_cons": "Strategy 2 (CONS)",
-        "comp_atr": "Strategy 3 (ATR)",
-        "comp_trail": "Strategy 4 (TRAIL)",
-        "comp_orb": "Strategy 5 (ORB)",
-        "comp_vwap": "Strategy 6 (Mean)",
+        "comp_trail": "Strategy 3 (TRAIL)",
+        "comp_orb": "Strategy 4 (ORB)",
+        "comp_vwap": "Strategy 5 (Mean)",
     }
 
     def __init__(self, client: OmniRouteClient, harvester: Optional[IntelligenceHarvester] = None) -> None:
@@ -549,7 +548,7 @@ class MacroCommander:
 
     def check_trade_veto(self, side: OrderSide, competitor_name: str, is_close: bool = False) -> Tuple[bool, str]:
         """
-        Enforces Strict Veto (Option A) against incoming orders from any of the 6 competitors.
+        Enforces Strict Veto (Option A) against incoming orders from any of the 5 competitors.
         The veto only ever blocks OPENING orders. Closing / reducing a
         position lowers risk, so a close is never vetoed: under HOLD_CASH a
         trader must still be able to sell a long (or cover a short) to stop

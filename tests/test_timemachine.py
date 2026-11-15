@@ -37,9 +37,9 @@ def test_timemachine_simulation_with_synthetic_bars():
         bars.append(bar)
         
     rankings = arena.run_simulation(bars)
-    assert len(rankings) == 6
+    assert len(rankings) == 5
     for r in rankings:
-        assert r.rank in [1, 2, 3, 4, 5, 6]
+        assert r.rank in [1, 2, 3, 4, 5]
         assert r.equity > Decimal("0")
         
     # The report lands under ARENA_MEMORY_DIR (redirected to a tmp dir by conftest).
@@ -91,7 +91,7 @@ def test_backtest_opens_shorts_on_downtrend():
         for i, (price, ema_fast, ema_slow, rsi) in enumerate(spec)
     ]
     rankings = arena.run_simulation(bars)
-    assert len(rankings) == 6
+    assert len(rankings) == 5
 
     audit = arena.broker.execution_audit
     # At least one short fill on the synthetic downtrend (audit §7).
@@ -138,11 +138,11 @@ def test_timemachine_evolution_preserves_portfolio():
         bars.append(bar)
         
     rankings_g1 = arena.run_simulation(bars)
-    assert len(rankings_g1) == 6
+    assert len(rankings_g1) == 5
     
     # Evolve to Generation 2 with preserve_portfolio=True (Scheme 1)
     logs = arena.evolve_next_generation(rankings_g1, preserve_portfolio=True)
-    assert len(logs) == 6
+    assert len(logs) == 5
     
     # Check that generation advanced and portfolio positions/cash remain intact
     gen = max(c.genome.generation for c in arena.competitors)
@@ -247,7 +247,7 @@ def test_orb_window_excludes_current_bar():
         atr=Decimal("25.00")
     ))
     rankings = arena.run_simulation(bars)
-    assert len(rankings) == 6
+    assert len(rankings) == 5
     # The breakout bar closes above the prior 15-bar high (2500): ORB must fire.
     assert arena.comp_e.portfolio.position_qty > Decimal("0")
 
@@ -326,8 +326,8 @@ def test_evolution_tournament_runs_multiple_generations():
 
     rankings = arena.run_evolution_tournament(bars, generations=3)
 
-    assert len(rankings) == 6
-    assert sorted(r.rank for r in rankings) == [1, 2, 3, 4, 5, 6]
+    assert len(rankings) == 5
+    assert sorted(r.rank for r in rankings) == [1, 2, 3, 4, 5]
     for r in rankings:
         assert r.equity > Decimal("0")
     # Two evolutions happened (gen 1 -> 3): every genome carries gen 3.

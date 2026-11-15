@@ -121,7 +121,7 @@ def test_backtest_orb_range_anchored_to_first_15_tape_bars():
 
     arena.comp_e.evaluate_signal = _spy
     rankings = arena.run_simulation(bars)
-    assert len(rankings) == 6
+    assert len(rankings) == 5
     assert seen, "ORB competitor was never evaluated"
     assert all(h == Decimal("3600") and lo == Decimal("3400") for h, lo in seen), seen
     # The breakout above the anchored 3600 ceiling opens the ORB long, and the

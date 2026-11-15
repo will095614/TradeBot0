@@ -100,7 +100,7 @@ def test_live_engine_enforces_macro_commander_veto():
     engine.macro_commander.current_state.directional_bias = "LONG_ONLY"
     engine.macro_commander.current_state.active_headline = "US Presidential Election: Historic Crypto Surge"
 
-    # Attempt to execute a SHORT bracket order for any of the 6 competitors
+    # Attempt to execute a SHORT bracket order for any of the 5 competitors
     for comp in engine.competitors:
         vetoed = engine._try_enter_bracket(
             competitor=comp,
@@ -116,6 +116,6 @@ def test_live_engine_enforces_macro_commander_veto():
 
     # Check that veto logs were created
     veto_logs = [l for l in engine.live_logs if l["tag"] == "VETO_MACRO"]
-    assert len(veto_logs) == 6
-    assert engine.macro_commander.current_state.veto_count_today == 6
+    assert len(veto_logs) == 5
+    assert engine.macro_commander.current_state.veto_count_today == 5
 

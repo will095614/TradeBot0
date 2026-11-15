@@ -126,7 +126,7 @@ def test_view_model_skips_stale_ranking_entry():
         ]
         vm = build_engine_view_model(engine, rankings, 1)
         assert "error" not in vm
-        assert len(vm["strategies"]) == 6
+        assert len(vm["strategies"]) == 5
     finally:
         engine.stop()
 

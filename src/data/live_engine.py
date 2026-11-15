@@ -17,7 +17,6 @@ from src.arena.leaderboard import Leaderboard
 from src.arena.evolution import GeneticEvolver
 from src.competitors.aggressive import AggressiveCompetitor
 from src.competitors.conservative import ConservativeCompetitor
-from src.competitors.atr_dynamic import ATRDynamicCompetitor
 from src.competitors.trailing_guard import TrailingGuardCompetitor
 from src.competitors.orb import ORBCompetitor
 from src.competitors.session_mean import SessionMeanPullbackCompetitor
@@ -119,12 +118,11 @@ class LiveArenaEngine:
 
         self.comp_a = AggressiveCompetitor(initial_cash=initial_cash)
         self.comp_b = ConservativeCompetitor(initial_cash=initial_cash)
-        self.comp_c = ATRDynamicCompetitor(initial_cash=initial_cash)
         self.comp_d = TrailingGuardCompetitor(initial_cash=initial_cash)
         self.comp_e = ORBCompetitor(initial_cash=initial_cash)
         self.comp_f = SessionMeanPullbackCompetitor(initial_cash=initial_cash)
         self.competitors = [
-            self.comp_a, self.comp_b, self.comp_c,
+            self.comp_a, self.comp_b,
             self.comp_d, self.comp_e, self.comp_f
         ]
 
@@ -175,7 +173,7 @@ class LiveArenaEngine:
         # Automatic evolution: every 6 hours, or every 30 closed trades,
         # whichever comes first, with a 30-minute debounce between runs.
         self.auto_evolve_enabled: bool = True
-        # Audit 3.21: auto-redeploy when all six are flat is behind an
+        # Audit 3.21: auto-redeploy when all five are flat is behind an
         # explicit switch (config key auto_redeploy_when_flat, default
         # ON to preserve current behaviour).
         self.auto_redeploy_when_flat: bool = auto_redeploy_when_flat
@@ -352,7 +350,6 @@ class LiveArenaEngine:
         labels = {
             "comp_agg": "Momentum Breakout (3x Lev / 70% Cap)",
             "comp_cons": "Mean-Reversion Scalper (Spot 1x / 25% Cap)",
-            "comp_atr": "ATR Volatility Adaptive (2x Lev Dynamic)",
             "comp_trail": "Trailing Ratchet Guard (2x Lev / 40% Cap)",
             "comp_orb": "Opening Range Breakout (2.5x Lev / 45% Cap)",
             "comp_vwap": "Session Mean Pullback (Spot 1x / 50% Cap)",
@@ -364,7 +361,6 @@ class LiveArenaEngine:
         rules = {
             "comp_agg": "Breakout > EMA-Fast (Long) or Breakdown < EMA-Slow (Short) | Wide SL, Uncapped Run",
             "comp_cons": "RSI bounce <= 48 (Long) or RSI fade >= 58 (Short) | Tight SL & Quick Scalp TP",
-            "comp_atr": "ATR volatility-scaled Long & Short channels (1.5% risk / Dynamic SL & TP)",
             "comp_trail": "Trend-following Long/Short entry + automatic breakeven & peak/trough ratchet",
             "comp_orb": "Breakout > Range High (Long) / Breakdown < Range Low (Short) | Midpoint SL & 2.0R Target",
             "comp_vwap": "Pullback test & bounce at session mean (Long) / Rejection at session mean (Short) | 2.2R Target",
@@ -1286,23 +1282,7 @@ class LiveArenaEngine:
                             self.position_entry_ts.pop("comp_cons", None)
                             self.log_event("SCALP_TP", f"Conservative locked long profit {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
-        # --- 3. ATR Volatility Adaptive (comp_atr) ---
-        p_atr = self.comp_c.portfolio
-        g_atr = self.comp_c.genome
-        if p_atr.position_qty == Decimal("0"):
-            # Bracket (ATR stop/target + risk budget) now comes from the
-            # strategy's own evaluate_signal; the live $5/$10 floors are gone.
-            if (price >= self.live_ema_fast and vel > Decimal("0")) or self.live_rsi < Decimal("42"):
-                self._enter_via_strategy(self.comp_c, price, ts, "ATR_ADAPT_LONG", side=OrderSide.BUY)
-            elif (price <= self.live_ema_fast and vel < Decimal("0")) or self.live_rsi > Decimal("58"):
-                self._enter_via_strategy(self.comp_c, price, ts, "ATR_ADAPT_SHORT", side=OrderSide.SELL)
-        # No per-tick exit block (audit 2.1): ATR exits via its genome
-        # bracket (SL 1.5xATR / TP 2.5xATR) through broker.on_tick. The old
-        # max($8, 1.4xATR) cap fired before the genome TP (1.4xATR <
-        # 2.5xATR) and was a duplicate exit path with no signal content,
-        # so it is deleted rather than kept.
-
-        # --- 4. Trailing Profit Ratchet Guard (comp_trail) ---
+        # --- 3. Trailing Profit Ratchet Guard (comp_trail) ---
         p_trail = self.comp_d.portfolio
         g_trail = self.comp_d.genome
         if p_trail.position_qty > Decimal("0"):
@@ -1347,7 +1327,7 @@ class LiveArenaEngine:
             elif vel <= Decimal("0") and self.live_rsi > Decimal("34") and ((not is_uptrend) or self.live_rsi >= Decimal("50")):
                 self._enter_via_strategy(self.comp_d, price, ts, "TRAIL_SHORT", side=OrderSide.SELL)
 
-        # --- 5. Opening Range Breakout (comp_orb) ---
+        # --- 4. Opening Range Breakout (comp_orb) ---
         p_orb = self.comp_e.portfolio
         g_orb = self.comp_e.genome
         orb_high = self.live_orb_high if self.live_orb_high > Decimal("0") else (price * Decimal("1.002"))
@@ -1394,7 +1374,7 @@ class LiveArenaEngine:
                             self.position_entry_ts.pop("comp_orb", None)
                             self.log_event("ORB_TP", f"ORB locked long target {fill.qty} ETH @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
 
-        # --- 6. Session Mean Pullback (comp_vwap) ---
+        # --- 5. Session Mean Pullback (comp_vwap) ---
         # NOTE: the reference is the session typical-price mean, NOT a
         # volume-weighted VWAP (live 1m candles carry no volume).
         p_vwap = self.comp_f.portfolio
@@ -1445,7 +1425,7 @@ class LiveArenaEngine:
         self._update_telemetry_snapshot(price)
 
     def _maybe_auto_redeploy(self, price: Decimal, ts: float) -> bool:
-        """Redeploy when all six strategies are flat (audit 3.21).
+        """Redeploy when all five strategies are flat (audit 3.21).
 
         Behind the explicit auto_redeploy_when_flat switch (default ON).
         Returns True only when a redeploy actually ran. One INFO line is
@@ -1463,7 +1443,7 @@ class LiveArenaEngine:
             return False
         if not self._auto_redeploy_logged:
             logger.info(
-                "Auto-redeploy: all six strategies flat -- re-entering via "
+                "Auto-redeploy: all five strategies flat -- re-entering via "
                 "_ensure_active_live_positions (auto_redeploy_when_flat=True)"
             )
             self._auto_redeploy_logged = True
@@ -1502,14 +1482,7 @@ class LiveArenaEngine:
             else:
                 self._enter_via_strategy(self.comp_b, price, ts, "SCALP_LONG", side=OrderSide.BUY)
 
-        # 3. ATR Dynamic
-        if self.comp_c.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_atr", 0.0):
-            if is_uptrend:
-                self._enter_via_strategy(self.comp_c, price, ts, "ATR_ADAPT_LONG", side=OrderSide.BUY)
-            else:
-                self._enter_via_strategy(self.comp_c, price, ts, "ATR_ADAPT_SHORT", side=OrderSide.SELL)
-
-        # 4. Trailing Guard
+        # 3. Trailing Guard
         # evaluate_signal arms highest/lowest on entry, so no manual
         # arming here (same as the cadence path).
         if self.comp_d.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_trail", 0.0):
@@ -1518,14 +1491,14 @@ class LiveArenaEngine:
             else:
                 self._enter_via_strategy(self.comp_d, price, ts, "TRAIL_SHORT", side=OrderSide.SELL)
 
-        # 5. ORB Breakout
+        # 4. ORB Breakout
         if self.comp_e.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_orb", 0.0):
             if price >= orb_mid:
                 self._enter_via_strategy(self.comp_e, price, ts, "ORB_LONG", side=OrderSide.BUY)
             else:
                 self._enter_via_strategy(self.comp_e, price, ts, "ORB_SHORT", side=OrderSide.SELL)
 
-        # 6. Session Mean Pullback
+        # 5. Session Mean Pullback
         if self.comp_f.portfolio.position_qty == Decimal("0") and ts >= self.strategy_cooldown.get("comp_vwap", 0.0):
             if price >= mean_ref:
                 self._enter_via_strategy(self.comp_f, price, ts, "MEAN_LONG", side=OrderSide.BUY)
@@ -1558,8 +1531,6 @@ class LiveArenaEngine:
                     intent = f"{pos_dir} {p.position_qty} ETH @ ${p.avg_entry_price:,.2f} | Uncapped Trend Run ({upnl_pct:+.2f}%)"
                 elif pid == "comp_cons":
                     intent = f"SCALP {pos_dir} {p.position_qty} ETH @ ${p.avg_entry_price:,.2f} | Target ${tp_p:,.2f}" if tp_p else f"{pos_dir} {p.position_qty} ETH"
-                elif pid == "comp_atr":
-                    intent = f"ATR {pos_dir} {p.position_qty} ETH @ ${p.avg_entry_price:,.2f} | 1.5x/2.5x ATR Bracket"
                 elif pid == "comp_orb":
                     intent = f"ORB {pos_dir} {p.position_qty} ETH @ ${p.avg_entry_price:,.2f} | 2.0R Target ${tp_p:,.2f}" if tp_p else f"{pos_dir} {p.position_qty} ETH"
                 elif pid == "comp_vwap":
@@ -2117,7 +2088,6 @@ class LiveArenaEngine:
     STRATEGY_COLORS: Dict[str, str] = {
         "comp_agg": "#FF334B",    # Neon Coral (Aggressive Momentum)
         "comp_cons": "#38BDF8",   # Electric Sky Cyan (Conservative Scalper)
-        "comp_atr": "#FFB800",    # Electric Amber Gold (ATR Dynamic)
         "comp_trail": "#00E676",  # Neon Emerald Green (Trailing Guard)
         "comp_orb": "#A855F7",    # Electric Violet (ORB Breakout)
         "comp_vwap": "#14F195",   # Mint Teal (Session Mean)
@@ -2125,7 +2095,6 @@ class LiveArenaEngine:
     STRATEGY_SHORT: Dict[str, str] = {
         "comp_agg": "AGG",
         "comp_cons": "CONS",
-        "comp_atr": "ATR",
         "comp_trail": "TRAIL",
         "comp_orb": "ORB",
         "comp_vwap": "MEAN",
@@ -2133,7 +2102,6 @@ class LiveArenaEngine:
     STRATEGY_DISPLAY: Dict[str, str] = {
         "comp_agg": "Aggressive Momentum",
         "comp_cons": "Conservative Scalper",
-        "comp_atr": "ATR Dynamic",
         "comp_trail": "Trailing Guard",
         "comp_orb": "ORB Breakout (15m)",
         "comp_vwap": "Session Mean",
@@ -2652,7 +2620,14 @@ class LiveArenaEngine:
                     except (TypeError, ValueError, AttributeError) as e:
                         logger.debug("Invalid position_entry_ts in saved snapshot, ignoring: %s", e)
                 if "strategy_telemetry" in snapshot and isinstance(snapshot["strategy_telemetry"], dict):
-                    self.strategy_telemetry.update(snapshot["strategy_telemetry"])
+                    # Drop telemetry for strategies that no longer exist
+                    # (comp_atr was removed 2026-11-15) so a stale entry is
+                    # not carried into every future snapshot.
+                    roster = {c.portfolio_id for c in self.competitors}
+                    self.strategy_telemetry.update({
+                        k: v for k, v in snapshot["strategy_telemetry"].items()
+                        if k in roster
+                    })
                 if "fill_records" in snapshot and isinstance(snapshot["fill_records"], list):
                     self.fill_records = [f for f in (self._deserialize_fill(d) for d in snapshot["fill_records"]) if f is not None]
                 if "broker_execution_audit" in snapshot and isinstance(snapshot["broker_execution_audit"], list) and hasattr(self, "broker"):

@@ -17,7 +17,6 @@ from src.arena.order import OrderSide
 from src.arena.evolution import GeneticEvolver
 from src.competitors.aggressive import AggressiveCompetitor
 from src.competitors.conservative import ConservativeCompetitor
-from src.competitors.atr_dynamic import ATRDynamicCompetitor
 from src.competitors.trailing_guard import TrailingGuardCompetitor
 from src.competitors.orb import ORBCompetitor
 from src.competitors.session_mean import SessionMeanPullbackCompetitor
@@ -79,12 +78,11 @@ class TimeMachineArena:
         self.initial_cash = initial_cash
         self.comp_a = AggressiveCompetitor(initial_cash=initial_cash)
         self.comp_b = ConservativeCompetitor(initial_cash=initial_cash)
-        self.comp_c = ATRDynamicCompetitor(initial_cash=initial_cash)
         self.comp_d = TrailingGuardCompetitor(initial_cash=initial_cash)
         self.comp_e = ORBCompetitor(initial_cash=initial_cash)
         self.comp_f = SessionMeanPullbackCompetitor(initial_cash=initial_cash)
         self.competitors = [
-            self.comp_a, self.comp_b, self.comp_c,
+            self.comp_a, self.comp_b,
             self.comp_d, self.comp_e, self.comp_f
         ]
         self._rebuild_broker()

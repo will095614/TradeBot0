@@ -423,7 +423,6 @@ function addChartBeacon(s) {
   const tagMap = {
     'comp_agg': 'AGG',
     'comp_cons': 'CONS',
-    'comp_atr': 'ATR',
     'comp_trail': 'TRAIL',
     'comp_orb': 'ORB',
     'comp_vwap': 'VWAP'
@@ -584,7 +583,6 @@ function createPositionToastElement(strat) {
   const tagMap = {
     'comp_agg': 'Aggressive Momentum',
     'comp_cons': 'Conservative Scalper',
-    'comp_atr': 'ATR Dynamic',
     'comp_trail': 'Trailing Guard',
     'comp_orb': 'ORB Breakout (15m)',
     'comp_vwap': 'Institutional VWAP'
@@ -729,7 +727,6 @@ function createPositionClosedToastElement(strat, fill, prevPos) {
   const tagMap = {
     'comp_agg': 'Aggressive Momentum',
     'comp_cons': 'Conservative Scalper',
-    'comp_atr': 'ATR Dynamic',
     'comp_trail': 'Trailing Guard',
     'comp_orb': 'ORB Breakout (15m)',
     'comp_vwap': 'Institutional VWAP'
@@ -1563,7 +1560,6 @@ function renderStrategies(state) {
       'comp_cons': 'Conservative',
       'comp_orb': 'ORB Breakout',
       'comp_vwap': 'Inst. VWAP',
-      'comp_atr': 'ATR Dynamic',
       'comp_trail': 'Trailing Guard'
     };
     const displayName = cardShortNames[s.id] || s.name;
@@ -1811,7 +1807,6 @@ function renderLeaderboard(state) {
   const leadShortCodes = {
     'comp_agg': 'AGG',
     'comp_cons': 'CONS',
-    'comp_atr': 'ATR',
     'comp_trail': 'TRAIL',
     'comp_orb': 'ORB',
     'comp_vwap': 'VWAP'
@@ -1929,9 +1924,6 @@ function renderFills(state) {
     'Aggressive': 'AGG',
     'Conservative Scalper': 'CONS',
     'Conservative': 'CONS',
-    'ATR Dynamic Adaptive': 'ATR',
-    'ATR Dynamic': 'ATR',
-    'ATR': 'ATR',
     'Trailing Ratchet Guard': 'TRAIL',
     'Trailing Guard': 'TRAIL',
     'Opening Range Breakout': 'ORB',
@@ -2340,7 +2332,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
   const tagMap = {
     'comp_agg': 'AGG',
     'comp_cons': 'CONS',
-    'comp_atr': 'ATR',
     'comp_trail': 'TRAIL',
     'comp_orb': 'ORB',
     'comp_vwap': 'VWAP'

@@ -9,7 +9,6 @@ from src.arena.order import ExecutionReason, OrderSide, OrderTicket, OrderType
 from src.arena.portfolio import Portfolio
 from src.arena.risk_guard import RiskGuard
 from src.competitors.aggressive import AggressiveCompetitor
-from src.competitors.atr_dynamic import ATRDynamicCompetitor
 from src.competitors.base import CompetitorGenome
 from src.competitors.conservative import ConservativeCompetitor
 from src.competitors.orb import ORBCompetitor
@@ -44,16 +43,6 @@ def test_risk_budget_ignores_leverage():
     qty = comp.compute_r_multiple_qty(Decimal("2500.00"), Decimal("2412.50"), broker)
     # budget 2500 / 87.50 = 28.5714, capped by 70% cap -> 28.0000 (NOT 84)
     assert qty == Decimal("28.0000")
-
-
-def test_atr_risk_budget_ignores_leverage():
-    comp = ATRDynamicCompetitor()  # 2x lev, atr risk 1.5%
-    broker = _broker()
-    broker.register_portfolio(comp.portfolio, max_position_ratio=comp.max_position_ratio)
-    ticket = comp.evaluate_signal("BUY", Decimal("2500.00"), {"atr": Decimal("35.00")}, broker, 100.0)
-    assert ticket is not None
-    # risk 1500 / 52.50 = 28.5714, capped by 50% cap -> 20.0000
-    assert ticket.qty == Decimal("20.0000")
 
 
 def test_risk_guard_cap_ignores_leverage():
@@ -97,7 +86,7 @@ def test_genome_rejects_nonsense():
 
 
 def test_genome_accepts_all_default_genomes():
-    for cls in (AggressiveCompetitor, ConservativeCompetitor, ATRDynamicCompetitor,
+    for cls in (AggressiveCompetitor, ConservativeCompetitor,
                 TrailingGuardCompetitor, ORBCompetitor, SessionMeanPullbackCompetitor):
         comp = cls()
         assert comp.genome.position_ratio > Decimal("0")

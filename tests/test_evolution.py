@@ -8,7 +8,6 @@ from src.arena.leaderboard import Leaderboard
 from src.arena.evolution import GeneticEvolver
 from src.competitors.aggressive import AggressiveCompetitor
 from src.competitors.conservative import ConservativeCompetitor
-from src.competitors.atr_dynamic import ATRDynamicCompetitor
 from src.competitors.trailing_guard import TrailingGuardCompetitor
 
 
@@ -53,9 +52,8 @@ def test_exact_take_profit_and_win_rate_calculation():
 def test_style_b_genetic_evolution_elitism_and_mutation():
     comp_a = AggressiveCompetitor()
     comp_b = ConservativeCompetitor()
-    comp_c = ATRDynamicCompetitor()
     comp_d = TrailingGuardCompetitor()
-    competitors = [comp_a, comp_b, comp_c, comp_d]
+    competitors = [comp_a, comp_b, comp_d]
 
     broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
     for c in competitors:
@@ -66,8 +64,6 @@ def test_style_b_genetic_evolution_elitism_and_mutation():
     comp_d.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
     comp_b.portfolio.cash = Decimal("505000.00")
     comp_b.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
-    comp_c.portfolio.cash = Decimal("496000.00")
-    comp_c.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
     comp_a.portfolio.cash = Decimal("479000.00")
     comp_a.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
 
@@ -78,7 +74,7 @@ def test_style_b_genetic_evolution_elitism_and_mutation():
     old_trail_sl = comp_d.genome.stop_loss_pct
     # Test Scheme 1: Compounded portfolio equity preserved across generations
     logs = GeneticEvolver.evolve_generation(competitors, rankings, preserve_portfolio=True)
-    assert len(logs) == 4
+    assert len(logs) == 3
     for c in competitors:
         assert c.genome.generation == 2
     assert comp_d.portfolio.total_equity == Decimal("518000.00")
@@ -96,9 +92,8 @@ def test_style_b_genetic_evolution_elitism_and_mutation():
 def test_evolution_save_history_decoupled_from_lock():
     comp_a = AggressiveCompetitor()
     comp_b = ConservativeCompetitor()
-    comp_c = ATRDynamicCompetitor()
     comp_d = TrailingGuardCompetitor()
-    competitors = [comp_a, comp_b, comp_c, comp_d]
+    competitors = [comp_a, comp_b, comp_d]
 
     broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
     for c in competitors:
@@ -107,11 +102,11 @@ def test_evolution_save_history_decoupled_from_lock():
 
     # Calling with save_history=False produces records without disk I/O
     logs = GeneticEvolver.evolve_generation(competitors, rankings, preserve_portfolio=True, save_history=False)
-    assert len(logs) == 4
+    assert len(logs) == 3
     last_records = GeneticEvolver._last_records
     assert last_records is not None
     assert last_records[0] == 2  # next generation
-    assert len(last_records[1]) == 4
+    assert len(last_records[1]) == 3
 
     # Explicit save_history call outside locks succeeds
     GeneticEvolver.save_history(last_records[0], last_records[1])
@@ -128,9 +123,8 @@ def test_tripped_champion_revives_next_generation():
 
     comp_a = AggressiveCompetitor()
     comp_b = ConservativeCompetitor()
-    comp_c = ATRDynamicCompetitor()
     comp_d = TrailingGuardCompetitor()
-    competitors = [comp_a, comp_b, comp_c, comp_d]
+    competitors = [comp_a, comp_b, comp_d]
 
     broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
     for c in competitors:
@@ -145,8 +139,6 @@ def test_tripped_champion_revives_next_generation():
     comp_d.portfolio.is_circuit_breaker_tripped = True
     comp_b.portfolio.cash = Decimal("505000.00")
     comp_b.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
-    comp_c.portfolio.cash = Decimal("496000.00")
-    comp_c.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
     comp_a.portfolio.cash = Decimal("479000.00")
     comp_a.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
 
@@ -172,7 +164,7 @@ def test_tripped_champion_revives_next_generation():
     logs = GeneticEvolver.evolve_generation(
         competitors, rankings, preserve_portfolio=True, save_history=False
     )
-    assert len(logs) == 4
+    assert len(logs) == 3
     # Audit 3.9: the tripped equity leader is no longer the fitness
     # champion, so it is crossed over (not ELITE-preserved) -- but the
     # breaker/drawdown reset still runs for every competitor, so it
@@ -230,13 +222,12 @@ def test_composite_fitness_matches_leaderboard_fitness():
     assert GeneticEvolver.calculate_composite_fitness(tripped) == Decimal("21.06") - Decimal("50")
 
 
-def _ranked_four():
-    """Four competitors with fixed equity order: trail #1, cons #2."""
+def _ranked_three():
+    """Three competitors with fixed equity order: trail #1, cons #2."""
     comp_a = AggressiveCompetitor()
     comp_b = ConservativeCompetitor()
-    comp_c = ATRDynamicCompetitor()
     comp_d = TrailingGuardCompetitor()
-    competitors = [comp_a, comp_b, comp_c, comp_d]
+    competitors = [comp_a, comp_b, comp_d]
     broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
     for c in competitors:
         broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
@@ -244,8 +235,6 @@ def _ranked_four():
     comp_d.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
     comp_b.portfolio.cash = Decimal("505000.00")
     comp_b.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
-    comp_c.portfolio.cash = Decimal("496000.00")
-    comp_c.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
     comp_a.portfolio.cash = Decimal("479000.00")
     comp_a.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
     rankings = Leaderboard.get_rankings(broker.portfolios)
@@ -261,11 +250,11 @@ def test_generation_seed_is_deterministic_and_recorded():
     from dataclasses import asdict
 
     def _run_once():
-        competitors, rankings = _ranked_four()
+        competitors, rankings = _ranked_three()
         logs = GeneticEvolver.evolve_generation(
             competitors, rankings, preserve_portfolio=True, save_history=False
         )
-        assert len(logs) == 4
+        assert len(logs) == 3
         return competitors, GeneticEvolver._last_records
 
     comps1, rec1 = _run_once()
@@ -287,7 +276,7 @@ def test_runner_up_is_fine_tuned_not_copied():
     result still passes genome validation (construction would raise otherwise)."""
     from dataclasses import asdict
 
-    competitors, rankings = _ranked_four()
+    competitors, rankings = _ranked_three()
     comp_b = next(c for c in competitors if c.portfolio_id == "comp_cons")
     comp_d = next(c for c in competitors if c.portfolio_id == "comp_trail")
     old_runner = asdict(comp_b.genome)
@@ -296,7 +285,7 @@ def test_runner_up_is_fine_tuned_not_copied():
     logs = GeneticEvolver.evolve_generation(
         competitors, rankings, preserve_portfolio=True, save_history=False
     )
-    assert len(logs) == 4
+    assert len(logs) == 3
 
     # Champion: preserved except the generation bump.
     new_champ = asdict(comp_d.genome)
@@ -330,11 +319,11 @@ def test_evolution_seed_recorded_in_history():
 
     from src.data.persistence import ArenaStorage
 
-    competitors, rankings = _ranked_four()
+    competitors, rankings = _ranked_three()
     logs = GeneticEvolver.evolve_generation(
         competitors, rankings, preserve_portfolio=True, save_history=True
     )
-    assert len(logs) == 4
+    assert len(logs) == 3
 
     hist_path = os.path.join(os.environ["ARENA_MEMORY_DIR"], "arena_history.json")
     with open(hist_path, encoding="utf-8") as f:
@@ -363,13 +352,13 @@ def test_evolved_genomes_all_valid():
     from src.competitors.session_mean import SessionMeanPullbackCompetitor
 
     competitors = [AggressiveCompetitor(), ConservativeCompetitor(),
-                   ATRDynamicCompetitor(), TrailingGuardCompetitor(),
-                   ORBCompetitor(), SessionMeanPullbackCompetitor()]
+                   TrailingGuardCompetitor(), ORBCompetitor(),
+                   SessionMeanPullbackCompetitor()]
     broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
     for c in competitors:
         broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
     # Fixed equity order: trail #1 (champion), cons #2 (runner-up).
-    cash = {"comp_trail": "518000", "comp_cons": "505000", "comp_atr": "496000",
+    cash = {"comp_trail": "518000", "comp_cons": "505000",
             "comp_agg": "479000", "comp_orb": "470000", "comp_vwap": "460000"}
     for c in competitors:
         c.portfolio.cash = Decimal(cash[c.portfolio_id])
@@ -379,7 +368,7 @@ def test_evolved_genomes_all_valid():
 
     logs = GeneticEvolver.evolve_generation(
         competitors, rankings, preserve_portfolio=True, save_history=False)
-    assert len(logs) == 6
+    assert len(logs) == 5
 
     for c in competitors:
         g = c.genome
@@ -405,9 +394,8 @@ def test_evolution_parents_are_fitness_first_not_equity_first():
     equity-first (user-specified)."""
     comp_a = AggressiveCompetitor()
     comp_b = ConservativeCompetitor()
-    comp_c = ATRDynamicCompetitor()
     comp_d = TrailingGuardCompetitor()
-    competitors = [comp_a, comp_b, comp_c, comp_d]
+    competitors = [comp_a, comp_b, comp_d]
 
     broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0.0"))
     for c in competitors:
@@ -424,10 +412,6 @@ def test_evolution_parents_are_fitness_first_not_equity_first():
     comp_b.portfolio.cash = Decimal("505000.00")
     comp_b.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
     comp_b.portfolio.max_drawdown_pct = Decimal("2.00")
-    # comp_atr: 496k, ROI 396%, 2% DD -> fitness 789.46.
-    comp_c.portfolio.cash = Decimal("496000.00")
-    comp_c.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
-    comp_c.portfolio.max_drawdown_pct = Decimal("2.00")
     # comp_agg: 479k, ROI 379%, 2% DD -> fitness 755.46.
     comp_a.portfolio.cash = Decimal("479000.00")
     comp_a.portfolio.update_market_price(Decimal("2500.00"), timestamp=1000.0)
@@ -436,9 +420,9 @@ def test_evolution_parents_are_fitness_first_not_equity_first():
     rankings = Leaderboard.get_rankings(broker.portfolios)
     # Display order is still equity-first (user-specified, untouched).
     assert [r.portfolio_id for r in rankings] == [
-        "comp_trail", "comp_cons", "comp_atr", "comp_agg",
+        "comp_trail", "comp_cons", "comp_agg",
     ]
-    # ... but the equity leader's fitness is the worst of the four.
+    # ... but the equity leader's fitness is the worst of the three.
     assert rankings[0].fitness_score == pytest.approx(740.50)
     assert rankings[1].fitness_score == pytest.approx(807.46)
 
@@ -446,12 +430,12 @@ def test_evolution_parents_are_fitness_first_not_equity_first():
     logs = GeneticEvolver.evolve_generation(
         competitors, rankings, preserve_portfolio=True, save_history=False
     )
-    assert len(logs) == 4
-    # Fitness-first parents: cons is ELITE #1, atr is ELITE #2; the
+    assert len(logs) == 3
+    # Fitness-first parents: cons is ELITE #1, agg is ELITE #2; the
     # high-equity, tripped trail is crossed over (MUTATED, last).
     assert "ELITE #1" in logs[0] and "comp_cons" in logs[0]
-    assert "ELITE #2" in logs[1] and "comp_atr" in logs[1]
-    assert "MUTATED" in logs[3] and "comp_trail" in logs[3]
+    assert "ELITE #2" in logs[1] and "comp_agg" in logs[1]
+    assert "MUTATED" in logs[2] and "comp_trail" in logs[2]
     # Champion genome preserved; equity untouched.
     assert comp_b.genome.stop_loss_pct == old_cons_sl
     assert comp_b.genome.generation == 2

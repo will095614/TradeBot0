@@ -401,14 +401,13 @@ def test_pending_stop_market_trigger_price():
 
 
 def test_every_ticket_satisfies_tp_ge_sl():
-    """P1 §2.9 (order-level invariant): for all six strategies x both
+    """P1 §2.9 (order-level invariant): for all five strategies x both
     directions, an entry ticket's bracket straddles the entry price --
     long TP > entry > SL, short SL > entry > TP. Aggressive and Trailing
     Guard are uncapped runners (TP None on both sides), so for them only
-    the stop ordering is asserted; the other four must carry a TP on
+    the stop ordering is asserted; the other three must carry a TP on
     both sides."""
     from src.competitors.aggressive import AggressiveCompetitor
-    from src.competitors.atr_dynamic import ATRDynamicCompetitor
     from src.competitors.conservative import ConservativeCompetitor
     from src.competitors.orb import ORBCompetitor
     from src.competitors.session_mean import SessionMeanPullbackCompetitor
@@ -417,9 +416,6 @@ def test_every_ticket_satisfies_tp_ge_sl():
     # (name, class, long_price, long_indicators, short_price, short_indicators)
     cases = [
         ("Aggressive", AggressiveCompetitor,
-         Decimal("2500.00"), {"atr": Decimal("35.00")},
-         Decimal("2500.00"), {"atr": Decimal("35.00")}),
-        ("ATR Dynamic", ATRDynamicCompetitor,
          Decimal("2500.00"), {"atr": Decimal("35.00")},
          Decimal("2500.00"), {"atr": Decimal("35.00")}),
         ("Conservative", ConservativeCompetitor,
@@ -462,9 +458,9 @@ def test_every_ticket_satisfies_tp_ge_sl():
                     assert ticket.take_profit < entry, f"{name} short: TP {ticket.take_profit} not below {entry}"
                     capped += 1
             assert broker.submit_order(ticket) is not None, f"{name} {side}: ticket rejected"
-    # Four capped strategies x two sides = 8 tickets must carry a TP;
+    # Three capped strategies x two sides = 6 tickets must carry a TP;
     # the other four tickets are the uncapped runners' (TP None).
-    assert capped == 8
+    assert capped == 6
 
 # =========================================================== P2-A
 # A4: pool depth 200.0 is a configurable, disclosed model parameter.

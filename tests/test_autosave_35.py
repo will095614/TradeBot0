@@ -72,7 +72,7 @@ def test_periodic_autosave_writes_snapshot_when_interval_elapses(tmp_path, monke
         assert snap is not None
         assert snap["schema_version"] == 2
         assert snap["generation"] == 1
-        assert len(snap["competitors"]) == 6
+        assert len(snap["competitors"]) == 5
 
         # Just saved: not due again 10 s later.
         assert eng._maybe_autosave(now=1000.0 + 70.0) is False
@@ -175,6 +175,6 @@ def test_live_loop_triggers_periodic_autosave(tmp_path, monkeypatch):
             time.sleep(0.1)
         assert snap is not None, "live loop never autosaved within 10 s"
         assert snap["schema_version"] == 2
-        assert len(snap["competitors"]) == 6
+        assert len(snap["competitors"]) == 5
     finally:
         eng.stop()

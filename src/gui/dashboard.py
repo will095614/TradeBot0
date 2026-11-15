@@ -622,7 +622,7 @@ class ArenaDashboard:
             _gw_cfg = self.config_manager.load_config()
             _gw_port = int(_gw_cfg.get("gateway_port", 20128) or 20128)
             _gw_host = str(_gw_cfg.get("gateway_host", "127.0.0.1") or "127.0.0.1")
-            # Audit 3.21: auto-redeploy when all six are flat is an
+            # Audit 3.21: auto-redeploy when all five are flat is an
             # explicit switch (default ON); load_config merges the
             # default for installs whose config predates the key.
             _auto_redeploy = bool(_gw_cfg.get("auto_redeploy_when_flat", True))
