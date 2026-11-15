@@ -759,7 +759,8 @@ class OmniRouteClient:
                 {"role": "user",
                  "content": "Your previous reply was not a JSON object. "
                             "Reply again with ONLY a JSON object, no other "
-                            "text, no markdown, no explanation."},
+                            "text, no markdown, no explanation. Use the exact "
+                            "same schema and fields as the original request."},
             ]
             self.retried_requests += 1
             async with self._get_semaphore():
