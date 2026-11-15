@@ -3781,6 +3781,20 @@ function updateUiClockDisplay() {
         }
       } else {
         listContainer.classList.remove('is-loading');
+        // 2026-11-15: the empty branch writes the loading block into
+        // this container via innerHTML, but this branch only appended
+        // card nodes and never removed it -- on a real cold start the
+        // "Starting sync... 0%" block stayed pinned above the events
+        // forever. Drop it here; the empty branch already cleared
+        // intelEventNodes, so no card can be deleted by mistake.
+        // Reset _lastHtml too: it still claims the loading HTML is
+        // present, and the next empty render would otherwise skip
+        // rewriting innerHTML when the stage/label repeat.
+        const staleLoad = listContainer.querySelector('.intel-stream-loading');
+        if (staleLoad) {
+          staleLoad.parentNode.removeChild(staleLoad);
+          listContainer._lastHtml = '';
+        }
         // Stable per-event nodes (same pattern as stratCardDomMap):
         // create once, update in place, never rebuild innerHTML, so
         // expand state and lazy articles survive the 1s re-render.
