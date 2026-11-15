@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -41,6 +42,65 @@ SYNC_STAGE_PERCENT = {
     "waiting": 85,
     "done": 100,
 }
+
+# Intel Hub stream redesign, Phase A: per-event full article.
+# The harvest pipeline stores only a 35-70 word summary plus a truncated
+# raw snippet (RSS 450 chars / StockTwits 1200 chars), so there is no
+# source full text to excerpt. The article is an LLM-organized piece
+# derived from the event's own headline/summary/raw title, generated
+# lazily on first expand and cached on the curated event.
+ARTICLE_TARGET_WORDS = 1000
+# Below this length an LLM reply is not an article (and never the
+# one-line summary passed off as one); it counts as a failed generation.
+ARTICLE_MIN_CHARS = 200
+# The six article paragraphs, in order.
+ARTICLE_SECTION_HEADINGS = ("事件經過", "背景脈絡", "市場含義", "風險因素", "後續觀察", "總結")
+
+
+def _dedup_tickers(tickers: Any) -> List[str]:
+    """Uppercase, order-preserving dedup of entity tickers.
+
+    Returns [] when the source list is empty or missing, never None, so
+    the frontend can always iterate the field.
+    """
+    seen: List[str] = []
+    for t in tickers or []:
+        up = str(t).strip().upper()
+        if up and up not in seen:
+            seen.append(up)
+    return seen
+
+
+def build_event_article_prompts(evt: Dict[str, Any]) -> Tuple[str, str]:
+    """Builds the (system_prompt, user_prompt) for one event's article.
+
+    The model must return a single JSON object {"article": "..."} so the
+    chat_json contract (parsed JSON dict) is honoured. The article is
+    organized strictly from the event's own material -- headline,
+    summary, raw title, source -- and must not invent figures, dates,
+    quotes or sources that are not in that material.
+    """
+    system_prompt = (
+        "你是一位繁體中文財經情報編輯。請根據提供的單則情報素材，整理成一篇繁體中文文章。\n"
+        "輸出必須是單一 JSON 物件，格式如下：\n"
+        '{"article": "文章全文"}\n'
+        "規則：\n"
+        "- 文章全文必須以繁體中文撰寫，約 1000 字，共 6 段。\n"
+        "- 6 段依序為：事件經過、背景脈絡、市場含義、風險因素、後續觀察、總結。\n"
+        "- 只能使用素材中已有的資訊（標題、摘要、原文標題、來源）；不得編造素材中沒有的具體數字、日期、引言或來源。\n"
+        "- 不得把摘要本身當作文章回傳；文章必須是展開整理的完整內容。\n"
+        "- 若素材不足以支撐 1000 字，寧可寫得精簡誠實，也不要編造細節充數。\n"
+        "- 只輸出 JSON 物件，不要輸出其他文字或說明。"
+    )
+    user_prompt = (
+        f"情報來源：{evt.get('source', '')}\n"
+        f"原文標題：{evt.get('raw_title', '')}\n"
+        f"標題：{evt.get('headline', '')}\n"
+        f"摘要：{evt.get('summary', '')}\n"
+        "請依上述素材整理一篇繁體中文文章，約 1000 字、共 6 段"
+        "（事件經過、背景脈絡、市場含義、風險因素、後續觀察、總結）。"
+    )
+    return system_prompt, user_prompt
 
 
 def _event_age_min(timestamp: str, now: float) -> float:
@@ -146,6 +206,11 @@ class MacroCommander:
             "detail": "",
             "updated_at": 0.0,
         }
+        # Per-event article generation (Phase A): one lock per event id
+        # so concurrent expand calls for the same event coalesce into a
+        # single LLM call; created on demand under _article_locks_guard.
+        self._article_locks: Dict[str, threading.Lock] = {}
+        self._article_locks_guard = threading.Lock()
 
     def _seed_default_events(self) -> None:
         # No fabricated news: the intel timeline starts empty and is filled
@@ -369,6 +434,119 @@ class MacroCommander:
             "sync": dict(self.sync_status),
         }
 
+    def _get_article_lock(self, event_id: str) -> threading.Lock:
+        """One lock per event id, created on demand under a guard lock.
+
+        Concurrent expand calls for the SAME event wait on the same
+        lock and then read the cache, so the LLM is called at most once
+        per event. Different events generate independently.
+        """
+        with self._article_locks_guard:
+            lock = self._article_locks.get(event_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._article_locks[event_id] = lock
+            return lock
+
+    def get_event_article(self, event_id: str) -> Dict[str, Any]:
+        """Returns the cached ~1000-word article for one curated event.
+
+        First call generates it via the ingest model (temperature 0)
+        and caches it on the event; a second call returns the cache
+        without any LLM call. A failed generation leaves the event in
+        state "failed" with the reason in "article_error", and a later
+        explicit call retries (the gateway may have recovered since).
+        Gateway offline or LLM failure returns {"ok": False, ...}
+        honestly -- never a fabricated article, and never the one-line
+        summary passed off as the article. Never raises.
+        """
+        evt = next((x for x in self.curated_events if x.get("id") == event_id), None)
+        if evt is None:
+            return {"ok": False, "event_id": event_id, "state": "none", "reason": "event not found"}
+        lock = self._get_article_lock(event_id)
+        with lock:
+            state = str(evt.get("article_state") or "none")
+            article = evt.get("article")
+            if state == "ready" and isinstance(article, str) and article.strip():
+                return {"ok": True, "event_id": event_id, "state": "ready", "article": article}
+            evt["article_state"] = "loading"
+            evt["article"] = None
+            evt.pop("article_error", None)
+            try:
+                article_text, error = self._generate_article_sync(evt)
+            except Exception as ex:
+                article_text, error = None, f"article generation failed: {ex}"
+            if article_text is None:
+                evt["article_state"] = "failed"
+                evt["article_error"] = error or "article generation failed"
+                logger.warning("Event article generation failed for %s: %s", event_id, evt["article_error"])
+                return {"ok": False, "event_id": event_id, "state": "failed", "reason": evt["article_error"]}
+            evt["article"] = article_text
+            evt["article_state"] = "ready"
+            return {"ok": True, "event_id": event_id, "state": "ready", "article": article_text}
+
+    async def _generate_article_async(self, evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """One LLM call for one article. Returns (article_text, error).
+
+        The error half is a short human-readable reason (gateway
+        offline / no usable JSON / no article text / too short); the
+        caller stores it as "article_error" and reports ok False.
+        """
+        if getattr(self.client, "is_gateway_online", False) is not True:
+            return None, "gateway offline"
+        system_prompt, user_prompt = build_event_article_prompts(evt)
+        try:
+            parsed = await self.client.chat_json(
+                model=self.client.model_ingest,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.0,
+                max_tokens=2500,
+            )
+        except Exception as ex:
+            return None, f"LLM call failed: {ex}"
+        if not isinstance(parsed, dict):
+            return None, "LLM returned no usable JSON"
+        article = parsed.get("article")
+        if not isinstance(article, str) or not article.strip():
+            return None, "LLM returned no article text"
+        article = article.strip()
+        if len(article) < ARTICLE_MIN_CHARS:
+            return None, "LLM returned an article too short to be an article"
+        return article, None
+
+    def _generate_article_sync(self, evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """Runs _generate_article_async from sync code (bridge thread).
+
+        The bridge runs on a pywebview worker thread with no running
+        event loop, so asyncio.run is the normal path. If a loop is
+        already running in this thread (e.g. called from async test
+        code), the coroutine runs on a helper thread with its own loop
+        instead of raising "asyncio.run() cannot be called from a
+        running event loop".
+        """
+        coro = self._generate_article_async(evt)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            return asyncio.run(coro)
+        result: Dict[str, Any] = {}
+
+        def _runner() -> None:
+            try:
+                result["value"] = asyncio.run(coro)
+            except BaseException as ex:
+                result["error"] = ex
+
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+        thread.join()
+        if "error" in result:
+            raise result["error"]
+        return result["value"]
+
     def check_trade_veto(self, side: OrderSide, competitor_name: str, is_close: bool = False) -> Tuple[bool, str]:
         """
         Enforces Strict Veto (Option A) against incoming orders from any of the 6 competitors.
@@ -554,6 +732,12 @@ class MacroCommander:
                         "thread_id": e.thread_id,
                         "consensus": e.consensus,
                         "strategy_actions": [],
+                        # Phase A: tickers ride the telemetry payload so
+                        # the frontend can render fixed-colour tag chips;
+                        # the article is generated lazily on first expand.
+                        "tickers": _dedup_tickers(e.entities_tickers),
+                        "article": None,
+                        "article_state": "none",
                     })
             if len(self.curated_events) > 60:
                 self.curated_events = self.curated_events[:60]

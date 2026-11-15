@@ -68,6 +68,16 @@ KNOWN_DEAD_BRIDGE_METHODS = {
         "update-check scaffolding: no JS call, startup path calls the "
         "imported function directly, frontend not wired yet"
     ),
+    # Intel Hub stream redesign, Phase A (backend only): the bridge
+    # method exists and delegates to the commander, but the frontend is
+    # not wired to it yet -- Phase B will call it on first expand.
+    # tests/test_event_article.py calls it directly -- that is a unit
+    # test exercising it, not production wiring. Remove once the
+    # frontend calls it.
+    "get_event_article": (
+        "Phase A backend: no JS call yet, frontend (Phase B) will call "
+        "it on first expand"
+    ),
 }
 
 # ---------------------------------------------------------------------------

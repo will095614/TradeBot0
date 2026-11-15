@@ -236,6 +236,20 @@ class _ArenaBridgeApi:
         threading.Thread(target=self._dashboard.engine.refresh_intel_digest, daemon=True).start()
         return self._dashboard.engine.get_ui_state()
 
+    def get_event_article(self, event_id: str) -> Dict[str, Any]:
+        """Returns the ~1000-word article for one intel event (Phase A).
+
+        First expand generates it via the ingest model and caches it on
+        the event; later calls return the cache without another LLM call.
+        Gateway or LLM failure returns {"ok": False, "reason": ...} --
+        never a fabricated article. Never raises.
+        """
+        try:
+            return self._dashboard.engine.macro_commander.get_event_article(event_id)
+        except Exception as e:
+            logger.error("Event article fetch failed for %s: %s", event_id, e)
+            return {"ok": False, "event_id": event_id, "state": "failed", "reason": str(e) or e.__class__.__name__}
+
     def toggle_fullscreen(self) -> bool:
         if self._dashboard.window:
             self._dashboard.window.toggle_fullscreen()
