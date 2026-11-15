@@ -315,62 +315,70 @@ class MacroCommander:
         # was unreachable and gateway death surfaced as waiting/done.
         # Record the boolean result and use it at the end of the refresh.
         gateway_healthy = True
+        # NOTE (2026-11-15): no per-refresh session close here any
+        # more. The old finally block closed the shared client
+        # session after every refresh, while a concurrent lazy
+        # article generation (get_event_article, bridge thread) was
+        # still using it -- the in-flight chat_json died with
+        # "Session is closed" (app log 16:52:53/54/59, 16:56:16).
+        # The session now lives with the commander: get_session()
+        # rebuilds it on demand when closed or when the calling
+        # loop differs. No shutdown path closes the LLM client
+        # (dashboard/engine stop don't touch it); __del__ still
+        # runs close_sync() at GC time. Do NOT re-add a per-refresh
+        # close to "prevent leaks" -- that was the race.
+        self._set_sync_stage("checking", "Checking AI gateway")
         try:
-            self._set_sync_stage("checking", "Checking AI gateway")
+            gateway_healthy = await self.client.check_health()
+        except Exception as ex:
+            self._set_sync_stage("failed", f"Gateway unreachable: {str(ex)[:60]}")
+            raise
+        try:
+            self._set_sync_stage("fetching", "Fetching live news feeds")
+            raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 3.5)
+            structured_all: List[StructuredEvent] = []
+            if raw_events:
+                self._set_sync_stage("processing", f"Reading {len(raw_events)} new stories")
+                structured_all.extend(await self.harvester.process_batch(raw_events))
+            # Forum batch (item 12B): StockTwits streams are collected on
+            # their own cadence and scored in a separate batch, so forum
+            # chatter never crowds breaking news out of the 6-event cap.
             try:
-                gateway_healthy = await self.client.check_health()
+                self._set_sync_stage("forum", "Collecting community signals")
+                forum_events = await self.forum_collector.collect_async()
+                if forum_events:
+                    structured_all.extend(await self.harvester.process_batch(forum_events))
             except Exception as ex:
-                self._set_sync_stage("failed", f"Gateway unreachable: {str(ex)[:60]}")
-                raise
-            try:
-                self._set_sync_stage("fetching", "Fetching live news feeds")
-                raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 3.5)
-                structured_all: List[StructuredEvent] = []
-                if raw_events:
-                    self._set_sync_stage("processing", f"Reading {len(raw_events)} new stories")
-                    structured_all.extend(await self.harvester.process_batch(raw_events))
-                # Forum batch (item 12B): StockTwits streams are collected on
-                # their own cadence and scored in a separate batch, so forum
-                # chatter never crowds breaking news out of the 6-event cap.
-                try:
-                    self._set_sync_stage("forum", "Collecting community signals")
-                    forum_events = await self.forum_collector.collect_async()
-                    if forum_events:
-                        structured_all.extend(await self.harvester.process_batch(forum_events))
-                except Exception as ex:
-                    logger.warning("Forum collection failed, continuing with news only: %s", ex)
-                if structured_all:
-                    self._set_sync_stage("synthesizing", "Synthesizing market direction")
-                    state = await self.synthesize_regime(structured_all)
-                    self._set_sync_stage("done", "Stream live" if self.curated_events else "No new events yet",
-                                         percent=100 if self.curated_events else 90)
-                    return state
-            except Exception as ex:
-                if "cannot schedule new futures after shutdown" in str(ex):
-                    logger.debug("Live feed harvest skipped during shutdown: %s", ex)
-                else:
-                    logger.warning("Error harvesting live feeds in refresh_digest_async: %s", ex)
-                fetch_error = str(ex)[:80] or ex.__class__.__name__
-
-            recent = self.harvester.get_latest_events(10)
-            if recent:
+                logger.warning("Forum collection failed, continuing with news only: %s", ex)
+            if structured_all:
                 self._set_sync_stage("synthesizing", "Synthesizing market direction")
-                state = await self.synthesize_regime(recent)
+                state = await self.synthesize_regime(structured_all)
                 self._set_sync_stage("done", "Stream live" if self.curated_events else "No new events yet",
                                      percent=100 if self.curated_events else 90)
                 return state
-            if fetch_error:
-                self._set_sync_stage("failed", f"Sync failed: {fetch_error}")
-            elif not gateway_healthy:
-                # Audit 3.12: the gateway is dead and the refresh produced
-                # nothing to synthesize -- say so instead of "waiting".
-                self._set_sync_stage("failed", "Gateway unreachable")
+        except Exception as ex:
+            if "cannot schedule new futures after shutdown" in str(ex):
+                logger.debug("Live feed harvest skipped during shutdown: %s", ex)
             else:
-                self._set_sync_stage("waiting", "No new events yet")
-            return self.current_state
-        finally:
-            if getattr(self.client, "_owns_session", False):
-                await self.client.close()
+                logger.warning("Error harvesting live feeds in refresh_digest_async: %s", ex)
+            fetch_error = str(ex)[:80] or ex.__class__.__name__
+
+        recent = self.harvester.get_latest_events(10)
+        if recent:
+            self._set_sync_stage("synthesizing", "Synthesizing market direction")
+            state = await self.synthesize_regime(recent)
+            self._set_sync_stage("done", "Stream live" if self.curated_events else "No new events yet",
+                                 percent=100 if self.curated_events else 90)
+            return state
+        if fetch_error:
+            self._set_sync_stage("failed", f"Sync failed: {fetch_error}")
+        elif not gateway_healthy:
+            # Audit 3.12: the gateway is dead and the refresh produced
+            # nothing to synthesize -- say so instead of "waiting".
+            self._set_sync_stage("failed", "Gateway unreachable")
+        else:
+            self._set_sync_stage("waiting", "No new events yet")
+        return self.current_state
 
     def get_intel_hub_telemetry(self) -> Dict[str, Any]:
         """
