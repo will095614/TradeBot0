@@ -594,10 +594,20 @@ class OmniRouteClient:
         Applies exponential backoff on 429/502/503. Falls back safely to None on failure.
         """
         sess = await self.get_session()
+        # 2026-11-15: the gateway routes some calls to a model that
+        # answers in prose ("**Analysis Summary:**", "**headline_zh:**",
+        # plain sentences, even an empty string) -- 44x "200 OK returned
+        # unparseable content" in one afternoon's app log. extract_json
+        # then finds no braces and the whole digest/article call is
+        # wasted. Force JSON mode (OpenAI-compatible standard): a
+        # provider that rejects it answers 400, which is terminal here
+        # and falls back exactly as an unparseable 200 does today.
+        # classify_llm_error maps 400 to kind "unknown", never quota.
         payload = {
             "model": model,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},

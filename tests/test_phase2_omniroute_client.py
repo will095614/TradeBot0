@@ -219,3 +219,49 @@ def test_chat_json_all_retries_429_returns_none():
         assert client.successful_requests == 0
         assert mock_session.post.call_count == 3
     asyncio.run(_run())
+
+
+def test_chat_json_sends_response_format_json_object():
+    """chat_json forces JSON mode: the payload carries
+    response_format {"type": "json_object"} (2026-11-15: the routed
+    model kept answering in prose, wasting every digest/article call)."""
+    async def _run():
+        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
+        mock_session = _mock_429_session([
+            _mock_resp(200, {}, {"choices": [{"message": {"content": '{"regime": "NORMAL"}'}}]}),
+        ])
+        client._session = mock_session
+        client._owns_session = False
+
+        result = await client.chat_json("auto", "system", "user")
+        assert result == {"regime": "NORMAL"}
+        sent = mock_session.post.call_args.kwargs["json"]
+        assert sent["response_format"] == {"type": "json_object"}
+        assert sent["model"] == "auto"
+    asyncio.run(_run())
+
+
+def test_chat_json_400_response_format_rejection_is_not_quota():
+    """A provider that rejects response_format answers 400: chat_json
+    returns None (terminal, same fallback as an unparseable 200) and
+    the failure must NOT be recorded as quota -- classify_llm_error
+    maps 400 to kind "unknown"."""
+    from src.intelligence.omniroute_client import classify_llm_error
+
+    async def _run():
+        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
+        body = {"error": {"message": "response_format is not supported by this model",
+                          "type": "invalid_request_error"}}
+        resp = _mock_resp(400, {}, body)
+        resp.text = AsyncMock(return_value=json.dumps(body))
+        mock_session = _mock_429_session([resp])
+        client._session = mock_session
+        client._owns_session = False
+
+        result = await client.chat_json("auto", "system", "user")
+        assert result is None
+        assert client.failed_requests == 1
+        assert client._quota_failures == {}
+        assert client._unattributed_quota_ts is None
+        assert classify_llm_error(400, body)["kind"] == "unknown"
+    asyncio.run(_run())
