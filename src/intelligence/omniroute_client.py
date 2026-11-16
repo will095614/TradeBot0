@@ -133,7 +133,7 @@ def compute_backoff(attempt: int, retry_after: Optional[str] = None) -> float:
 # dead local gateway process can be auto-fixed (see the watchdog in
 # gateway_supervisor.py).
 
-_KNOWN_PROVIDERS = ("deepseek", "gemini", "groq", "openrouter")
+_KNOWN_PROVIDERS = ("deepseek", "gemini", "groq", "nvidia", "openrouter")
 
 # Terminal credits/billing signals in an error body: the provider is out
 # of money or out of its daily allowance. Checked before any retry hint
@@ -175,7 +175,7 @@ _RETRY_UNIT_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(d(?:ays?)?|h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)\b",
     re.IGNORECASE,
 )
-_PROVIDER_PREFIX_RE = re.compile(r"\[\s*(deepseek|gemini|groq|openrouter)\s*\]")
+_PROVIDER_PREFIX_RE = re.compile(r"\[\s*(deepseek|gemini|groq|nvidia|openrouter)\s*\]")
 
 
 def _error_body_text(body: Any) -> str:

@@ -311,7 +311,7 @@ class _ArenaBridgeApi:
         allowed = {
             "https://openrouter.ai/settings/keys",
             "https://console.groq.com/keys",
-            "https://platform.deepseek.com/api_keys",
+            "https://build.nvidia.com/settings/api-keys",
             "https://aistudio.google.com/apikey",
         }
         if url not in allowed:

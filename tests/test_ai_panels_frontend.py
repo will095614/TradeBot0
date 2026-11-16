@@ -8,7 +8,7 @@ _ASSETS = Path(__file__).resolve().parents[1] / "src" / "gui" / "assets"
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
 _KEY_URLS = (
-    "https://platform.deepseek.com/api_keys",
+    "https://build.nvidia.com/settings/api-keys",
     "https://aistudio.google.com/apikey",
     "https://console.groq.com/keys",
     "https://openrouter.ai/settings/keys",

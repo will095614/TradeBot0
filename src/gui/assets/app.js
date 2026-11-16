@@ -3984,7 +3984,7 @@ function updateUiClockDisplay() {
 
     // Pre-populate configured providers from bridge
     const provIdMap = {
-      deepseek: 'DeepSeek',
+      nvidia: 'Nvidia',
       gemini: 'Gemini',
       groq: 'Groq',
       openrouter: 'OpenRouter'
@@ -4379,7 +4379,7 @@ function updateUiClockDisplay() {
 
   async function testProviderKey(provider) {
     const provIdMap = {
-      deepseek: 'DeepSeek',
+      nvidia: 'Nvidia',
       gemini: 'Gemini',
       groq: 'Groq',
       openrouter: 'OpenRouter'
@@ -4426,7 +4426,7 @@ function updateUiClockDisplay() {
     const saveBtn = document.getElementById('btnSaveAndLaunch');
 
     const keys = {
-      deepseek: (document.getElementById('keyDeepSeek')?.value || '').trim(),
+      nvidia: (document.getElementById('keyNvidia')?.value || '').trim(),
       gemini: (document.getElementById('keyGemini')?.value || '').trim(),
       groq: (document.getElementById('keyGroq')?.value || '').trim(),
       openrouter: (document.getElementById('keyOpenRouter')?.value || '').trim(),

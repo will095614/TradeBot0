@@ -512,8 +512,8 @@ def _js_referenced_ids(js_text):
     - Literal ``getElementById('...')`` calls.
     - Template-literal ``getElementById(`prefix${...}`)`` calls, expanded
       with the provider suffixes from the ``provIdMap`` literals in the
-      same file (DeepSeek / Gemini / Groq / OpenRouter) -- this is how
-      ``statusDeepSeek`` et al. are reached; a rename on either side
+      same file (Nvidia / Gemini / Groq / OpenRouter) -- this is how
+      ``statusNvidia`` et al. are reached; a rename on either side
       breaks the expansion and fails the test.
     - ``querySelector(All)('#id...')`` (the ``:hover`` pseudo-class
       selector yields its base id, which is a real reference).

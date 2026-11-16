@@ -736,22 +736,22 @@
       <div class="setup-wizard-body">
         <div class="setup-wizard-column">
         <div class="setup-keys-intro">Start with one key if you like — you can add the others later.</div>
-        <!-- DeepSeek -->
+        <!-- NVIDIA NIM -->
         <div class="setup-provider-card">
           <div class="setup-provider-meta">
-            <span class="setup-provider-name">DeepSeek API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask DeepSeek to read the news and judge the market.</span></button></span>
-            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://platform.deepseek.com/api_keys'); return false;">Get a key</a></span>
+            <span class="setup-provider-name">NVIDIA NIM API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask NVIDIA NIM to read the news and judge the market.</span></button></span>
+            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://build.nvidia.com/settings/api-keys'); return false;">Get a key</a></span>
           </div>
           <div class="setup-input-group">
-            <input type="password" id="keyDeepSeek" class="setup-key-input num" placeholder="sk-..." autocomplete="off" spellcheck="false" />
-            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyDeepSeek', this)" title="Show / Hide Key">
+            <input type="password" id="keyNvidia" class="setup-key-input num" placeholder="nvapi-..." autocomplete="off" spellcheck="false" />
+            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyNvidia', this)" title="Show / Hide Key">
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
             </button>
-            <button type="button" class="btn lg-btn setup-test-btn" id="btnTestDeepSeek" onclick="testProviderKey('deepseek')">
+            <button type="button" class="btn lg-btn setup-test-btn" id="btnTestNvidia" onclick="testProviderKey('nvidia')">
               <span>Test</span>
             </button>
           </div>
-          <div class="setup-provider-status" id="statusDeepSeek">
+          <div class="setup-provider-status" id="statusNvidia">
             <span class="setup-status-pill neutral">Not added</span>
           </div>
         </div>

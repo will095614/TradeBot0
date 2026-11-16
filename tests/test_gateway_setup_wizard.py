@@ -161,6 +161,22 @@ def test_gateway_supervisor_http_responses(mock_urlopen):
     assert "timed out" in res_timeout["message"].lower() or "offline" in res_timeout["message"].lower()
 
 
+@patch("urllib.request.urlopen")
+def test_gateway_supervisor_nvidia_endpoint(mock_urlopen):
+    """Wizard swap (2026-11-16): DeepSeek card replaced by NVIDIA NIM --
+    the Test button must hit NVIDIA's /v1/models with a Bearer key."""
+    gs = GatewaySupervisor()
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+    res = gs.test_single_key("nvidia", "nvapi-test-key-12345678")
+    assert res["ok"] is True
+    req = mock_urlopen.call_args[0][0]
+    assert req.full_url == "https://integrate.api.nvidia.com/v1/models"
+    assert req.get_header("Authorization") == "Bearer nvapi-test-key-12345678"
+
+
 def test_gateway_supervisor_port_and_health_conflict():
     """Verifies detection of conflicting foreign applications on port 20128."""
     gs = GatewaySupervisor()

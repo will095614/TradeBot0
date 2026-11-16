@@ -28,6 +28,7 @@ PROVIDER_ENDPOINTS = {
     "deepseek": "https://api.deepseek.com/models",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/models",
     "groq": "https://api.groq.com/openai/v1/models",
+    "nvidia": "https://integrate.api.nvidia.com/v1/models",
     "openrouter": "https://openrouter.ai/api/v1/models",
 }
 
@@ -800,7 +801,7 @@ class GatewaySupervisor:
                 req_url = f"{endpoint}?key={key}"
                 req = urllib.request.Request(req_url, headers={"User-Agent": "TradeBot0-Validator/2.0"})
             else:
-                # DeepSeek, Groq, OpenRouter take Bearer token header
+                # DeepSeek, Groq, NVIDIA NIM, OpenRouter take Bearer token header
                 req = urllib.request.Request(
                     endpoint,
                     headers={
