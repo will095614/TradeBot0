@@ -764,11 +764,9 @@ class LiveArenaEngine:
                         if comp.portfolio.position_qty > Decimal("0"):
                             comp.portfolio.current_market_price = last_price
 
-            # Audit 2.3: seed the 1h MTF buckets from real 1h history so
-            # the 1h regime gate is real instead of permanently NEUTRAL.
-            # Degrades to NEUTRAL (today's behaviour) when the feed is down
-            # or the bars are unusable.
-            self._seed_mtf_1h_history()
+            # Audit 2.5: the 1h MTF seed no longer runs here -- it
+            # starts in a daemon thread after bootstrap (below),
+            # so its ~7s worst-case fetch never delays startup.
 
             if not self.live_orders_enabled:
                 self.live_trading_active = False
@@ -788,6 +786,13 @@ class LiveArenaEngine:
             try:
                 if os.environ.get("ARENA_FAST_TEST") != "1":
                     threading.Thread(target=self.refresh_intel_digest, daemon=True).start()
+                    # Audit 2.5: the 1h MTF seed fetch (7d of 1h
+                    # bars) runs in a daemon thread; the fetch
+                    # happens without the lock and only the apply
+                    # takes it. The MTF gate degrades to NEUTRAL
+                    # until the seed lands, so entries are never
+                    # wrongly vetoed meanwhile.
+                    threading.Thread(target=self._seed_mtf_1h_history, daemon=True).start()
             except Exception as e:
                 logger.warning("Failed to start intel digest refresh thread: %s", e)
 
@@ -1001,10 +1006,10 @@ class LiveArenaEngine:
 
         Any failure degrades to today's behaviour: the previous buckets are
         left untouched, the bias stays NEUTRAL, and entries are never
-        blocked. Called only from bootstrap_intraday_session, which runs in
-        _live_loop before the raw-fetch thread, the cadence loop and the
-        digest thread start, so the fetch under the engine lock cannot
-        block any other thread.
+        blocked. Audit 2.5: this runs in its own daemon thread started by
+        bootstrap_intraday_session (after the engine is up), so the
+        network fetch never blocks startup. The fetch happens without the
+        engine lock; only the apply below takes it.
         """
         try:
             bars = ETHFeed.fetch_historical_bars(ticker="ETH-USD", period="7d", interval="1h")
@@ -1032,12 +1037,17 @@ class LiveArenaEngine:
         if len(buckets) < MultiTimeframeEngine.MIN_HTF_BARS:
             logger.debug("MTF 1h history seed skipped (%d bars < %d).", len(buckets), MultiTimeframeEngine.MIN_HTF_BARS)
             return
-        bias = self.mtf_engine.seed_1h_buckets(buckets)
-        self.candles_1h = self.mtf_engine.candles_1h
-        self.htf_ema_50 = self.mtf_engine.htf_ema_50
-        self.htf_ema_200 = self.mtf_engine.htf_ema_200
-        self.htf_bias = bias
-        logger.info("MTF 1h history seeded: %d buckets, bias %s.", len(self.candles_1h), bias)
+        # Audit 2.5: the apply takes the engine lock (briefly -- the
+        # network fetch above already happened without it), so the
+        # seed thread can never race the live loop's
+        # _update_mtf_regimes.
+        with self.lock:
+            bias = self.mtf_engine.seed_1h_buckets(buckets)
+            self.candles_1h = self.mtf_engine.candles_1h
+            self.htf_ema_50 = self.mtf_engine.htf_ema_50
+            self.htf_ema_200 = self.mtf_engine.htf_ema_200
+            self.htf_bias = bias
+            logger.info("MTF 1h history seeded: %d buckets, bias %s.", len(self.candles_1h), bias)
 
     def _live_indicators(self, price: Decimal) -> Dict[str, Any]:
         """Indicator snapshot handed to evaluate_signal for live entries.
