@@ -1245,10 +1245,14 @@ function renderMacroRibbon(state) {
   const catalystImpact = document.getElementById('macroCatalystImpact');
 
   if (badge && regimeTxt) {
-    badge.className = 'macro-badge ss-badge';
-    if (mc.regime === 'BULLISH_SURGE') badge.classList.add('regime-bullish');
-    else if (mc.regime === 'BEARISH_PANIC') badge.classList.add('regime-bearish');
-    else if (mc.regime === 'HIGH_VOLATILITY_CHOP') badge.classList.add('regime-chop');
+    // Guarded className: the regime class is part of the final string,
+    // so one compare-and-set replaces the reset + add. The badge class
+    // set is fully determined here, so the result is identical.
+    const nextBadgeCls = 'macro-badge ss-badge'
+      + (mc.regime === 'BULLISH_SURGE' ? ' regime-bullish'
+        : mc.regime === 'BEARISH_PANIC' ? ' regime-bearish'
+        : mc.regime === 'HIGH_VOLATILITY_CHOP' ? ' regime-chop' : '');
+    if (badge.className !== nextBadgeCls) badge.className = nextBadgeCls;
     
     const regimeLabels = {
       'NORMAL': '\u9ad4\u5236: \u5747\u8861\u5e38\u614b',
@@ -1256,66 +1260,79 @@ function renderMacroRibbon(state) {
       'BEARISH_PANIC': '\u9ad4\u5236: \u6050\u614c\u7194\u65b7',
       'HIGH_VOLATILITY_CHOP': '\u9ad4\u5236: \u9ad8\u6ce2\u9707\u76ea'
     };
-    regimeTxt.textContent = regimeLabels[mc.regime] || ('\u9ad4\u5236: ' + mc.regime);
+    const nextRegimeTxt = regimeLabels[mc.regime] || ('\u9ad4\u5236: ' + mc.regime);
+    if (regimeTxt.textContent !== nextRegimeTxt) regimeTxt.textContent = nextRegimeTxt;
   }
 
   if (biasTag) {
-    biasTag.textContent = mc.directional_bias || 'BIDIRECTIONAL';
+    const nextBias = mc.directional_bias || 'BIDIRECTIONAL';
+    if (biasTag.textContent !== nextBias) biasTag.textContent = nextBias;
     if (mc.directional_bias === 'LONG_ONLY') biasTag.style.color = '#4ADE80';
     else if (mc.directional_bias === 'SHORT_ONLY') biasTag.style.color = '#FB7185';
     else biasTag.style.color = '';
   }
 
   if (multTag) {
-    multTag.textContent = (Number(mc.risk_multiplier) || 1.0).toFixed(2) + 'x';
+    const nextMult = (Number(mc.risk_multiplier) || 1.0).toFixed(2) + 'x';
+    if (multTag.textContent !== nextMult) multTag.textContent = nextMult;
   }
 
   if (vetoTag) {
-    vetoTag.textContent = String(mc.veto_count_today || 0);
+    const nextVeto = String(mc.veto_count_today || 0);
+    if (vetoTag.textContent !== nextVeto) vetoTag.textContent = nextVeto;
   }
 
   if (omniTag) {
+    const nextOmni = mc.status === 'ONLINE' ? '\u667a\u8166: \u9023\u7db2\u5728\u7dda (100k)' : '\u63a8\u8ad6: \u672c\u6a5f NLP \u6975\u901f';
+    if (omniTag.textContent !== nextOmni) omniTag.textContent = nextOmni;
     if (mc.status === 'ONLINE') {
-      omniTag.textContent = '\u667a\u8166: \u9023\u7db2\u5728\u7dda (100k)';
       omniTag.style.color = '#10F5A0';
     } else {
-      omniTag.textContent = '\u63a8\u8ad6: \u672c\u6a5f NLP \u6975\u901f';
       omniTag.style.color = '#38BDF8';
     }
   }
 
   if (headline) {
-    headline.textContent = mc.active_headline || '\u5168\u7403\u8a02\u55ae\u6d41\u7dad\u6301\u5b8f\u89c0\u5747\u8861\u3002\u5be6\u6642\u667a\u80fd\u60c5\u5831\u76e3\u63a7\u904b\u884c\u4e2d\u3002';
+    const nextHeadline = mc.active_headline || '\u5168\u7403\u8a02\u55ae\u6d41\u7dad\u6301\u5b8f\u89c0\u5747\u8861\u3002\u5be6\u6642\u667a\u80fd\u60c5\u5831\u76e3\u63a7\u904b\u884c\u4e2d\u3002';
+    if (headline.textContent !== nextHeadline) headline.textContent = nextHeadline;
   }
 
   // Populate central latest impactful catalyst news
   const evt = mc.latest_event;
   if (evt) {
     if (catalystHeadline) {
-      catalystHeadline.textContent = evt.headline || evt.raw_title || '';
+      const nextCatHead = evt.headline || evt.raw_title || '';
+      if (catalystHeadline.textContent !== nextCatHead) catalystHeadline.textContent = nextCatHead;
     }
     if (catalystSummary) {
-      catalystSummary.textContent = evt.summary || '';
+      const nextCatSum = evt.summary || '';
+      if (catalystSummary.textContent !== nextCatSum) catalystSummary.textContent = nextCatSum;
     }
     if (catalystTime) {
-      catalystTime.textContent = (evt.source || 'Intel Feed') + ' \u00b7 ' + (evt.time || 'Live');
+      const nextCatTime = (evt.source || 'Intel Feed') + ' \u00b7 ' + (evt.time || 'Live');
+      if (catalystTime.textContent !== nextCatTime) catalystTime.textContent = nextCatTime;
     }
     if (catalystImpact) {
       const acts = evt.strategy_actions;
       if (acts && acts.length > 0) {
         const a = acts[0];
-        catalystImpact.textContent = '\u64cd\u4f5c: ' + a.name + ' ' + a.action;
-        catalystImpact.className = 'catalyst-impact-pill ' + (a.badge_cls || 'buy');
+        const nextCatText = '\u64cd\u4f5c: ' + a.name + ' ' + a.action;
+        if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
+        const nextCatCls = 'catalyst-impact-pill ' + (a.badge_cls || 'buy');
+        if (catalystImpact.className !== nextCatCls) catalystImpact.className = nextCatCls;
       } else {
         if (mc.directional_bias === 'LONG_ONLY') {
-          catalystImpact.textContent = '\u7b56\u7565\u653e\u884c: \u591a\u982d\u7a81\u7834 \u00b7 \u5426\u6c7a\u9006\u52e2\u7a7a\u55ae';
-          catalystImpact.className = 'catalyst-impact-pill profit';
+          const nextCatText = '\u7b56\u7565\u653e\u884c: \u591a\u982d\u7a81\u7834 \u00b7 \u5426\u6c7a\u9006\u52e2\u7a7a\u55ae';
+          if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
+          if (catalystImpact.className !== 'catalyst-impact-pill profit') catalystImpact.className = 'catalyst-impact-pill profit';
         } else if (mc.directional_bias === 'SHORT_ONLY') {
-          catalystImpact.textContent = '\u7b56\u7565\u653e\u884c: \u9ed1\u5929\u9d5d\u7194\u65b7 \u00b7 \u5426\u6c7a\u9006\u52e2\u591a\u55ae';
-          catalystImpact.className = 'catalyst-impact-pill loss';
+          const nextCatText = '\u7b56\u7565\u653e\u884c: \u9ed1\u5929\u9d5d\u7194\u65b7 \u00b7 \u5426\u6c7a\u9006\u52e2\u591a\u55ae';
+          if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
+          if (catalystImpact.className !== 'catalyst-impact-pill loss') catalystImpact.className = 'catalyst-impact-pill loss';
         } else {
-          catalystImpact.textContent = '\u7b56\u7565\u653e\u884c: 6\u5927\u7b56\u7565\u96d9\u5411\u5168\u958b \u00b7 \u57fa\u6e96\u904b\u4f5c';
-          catalystImpact.className = 'catalyst-impact-pill info';
+          const nextCatText = '\u7b56\u7565\u653e\u884c: 6\u5927\u7b56\u7565\u96d9\u5411\u5168\u958b \u00b7 \u57fa\u6e96\u904b\u4f5c';
+          if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
+          if (catalystImpact.className !== 'catalyst-impact-pill info') catalystImpact.className = 'catalyst-impact-pill info';
         }
       }
     }
@@ -1357,7 +1374,11 @@ function renderHeader(state) {
   } else {
     highLowEl.textContent = '— / —';
   }
-  document.getElementById('genLabel').textContent = `Gen #${state.generation}`;
+  const genLbl = document.getElementById('genLabel');
+  if (genLbl) {
+    const nextGen = `Gen #${state.generation}`;
+    if (genLbl.textContent !== nextGen) genLbl.textContent = nextGen;
+  }
 
   const isPaused = Boolean(state.paused);
   document.body.classList.toggle('arena-paused', isPaused);
@@ -1612,7 +1633,10 @@ function renderStrategies(state) {
       card.dataset.stratId = s.id;
       stratCardDomMap.set(s.id, card);
     }
-    card.style.setProperty('--strat-color', s.color);
+    if (card._stratColor !== s.color) {
+      card.style.setProperty('--strat-color', s.color);
+      card._stratColor = s.color;
+    }
     if (card._lastHtml !== cardInner) {
       card._lastHtml = cardInner;
       card.innerHTML = cardInner;
@@ -2920,11 +2944,17 @@ window.addEventListener('pointermove', (e) => {
   latestPointerEvent = e;
   lastGlobalPointerX = e.clientX;
   lastGlobalPointerY = e.clientY;
-  document.documentElement.style.setProperty('--gx', `${e.clientX}px`);
-  document.documentElement.style.setProperty('--gy', `${e.clientY}px`);
   if (!spotlightRaf) {
     spotlightRaf = requestAnimationFrame(() => {
       spotlightRaf = null;
+      // The --gx/--gy spotlight vars are consumed only by CSS (a
+      // radial-gradient background), which reads them once per frame at
+      // style/paint time. Writing them here -- once per frame -- instead
+      // of on every pointermove event (which can fire many times per
+      // frame during fast mouse movement) is visually identical and
+      // skips redundant style recalculation.
+      document.documentElement.style.setProperty('--gx', `${latestPointerEvent.clientX}px`);
+      document.documentElement.style.setProperty('--gy', `${latestPointerEvent.clientY}px`);
       trackLgSpotlight(latestPointerEvent);
     });
   }
@@ -3592,17 +3622,21 @@ function updateUiClockDisplay() {
   }
 
   function updateIntelEventCard(card, evt, macro) {
-    const head = card.querySelector('.intel-card-header');
-    const timeEl = head.querySelector('.intel-event-time');
-    const domEl = head.querySelector('.intel-domain-badge');
-    const srcEl = head.querySelector('.intel-source-badge');
+    // Cached refs (same pattern as _urgEl below): the card node and its
+    // header spans are never rebuilt, so one query each on first use and
+    // zero per-tick queries afterwards -- was 7 querySelector calls per
+    // card on every 1s re-render.
+    const head = card._intelHead || (card._intelHead = card.querySelector('.intel-card-header'));
+    const timeEl = card._intelTimeEl || (card._intelTimeEl = head.querySelector('.intel-event-time'));
+    const domEl = card._intelDomEl || (card._intelDomEl = head.querySelector('.intel-domain-badge'));
+    const srcEl = card._intelSrcEl || (card._intelSrcEl = head.querySelector('.intel-source-badge'));
     // Stable-node cache: this badge's class is swapped to
     // 'intel-domain-badge' below when urg < 8, so a fresh
     // '.intel-urgency-badge' query on the next 1s re-render would
     // return null and crash renderIntelHub. The card node (and its
     // header spans) is never rebuilt, so caching the reference is safe.
     const urgEl = card._urgEl || (card._urgEl = head.querySelector('.intel-urgency-badge'));
-    const sentEl = head.querySelector('.intel-sentiment-badge');
+    const sentEl = card._intelSentEl || (card._intelSentEl = head.querySelector('.intel-sentiment-badge'));
     const nextTime = evt.time || '';
     if (timeEl.textContent !== nextTime) timeEl.textContent = nextTime;
     const nextDom = (evt.domain || 'macro').toUpperCase();
@@ -3622,10 +3656,10 @@ function updateUiClockDisplay() {
     const nextSentCls = 'intel-sentiment-badge num ' + sentCls;
     if (sentEl.className !== nextSentCls) sentEl.className = nextSentCls;
     if (sentEl.textContent !== sentTxt) sentEl.textContent = sentTxt;
-    const headEl = card.querySelector('.intel-card-headline');
+    const headEl = card._intelHeadlineEl || (card._intelHeadlineEl = card.querySelector('.intel-card-headline'));
     const nextHead = evt.headline || '';
     if (headEl.textContent !== nextHead) headEl.textContent = nextHead;
-    const sumEl = card.querySelector('.intel-card-summary');
+    const sumEl = card._intelSummaryEl || (card._intelSummaryEl = card.querySelector('.intel-card-summary'));
     const nextSum = cleanIntelSummary(evt.summary || '');
     if (sumEl.textContent !== nextSum) sumEl.textContent = nextSum;
     const tickers = Array.isArray(evt.tickers) ? evt.tickers : [];
@@ -3721,13 +3755,17 @@ function updateUiClockDisplay() {
     }
 
     const epEl = document.getElementById('omniEndpointVal');
-    if (epEl) epEl.textContent = omni.endpoint || 'http://localhost:20128/v1';
+    if (epEl) {
+      const nextEp = omni.endpoint || 'http://localhost:20128/v1';
+      if (epEl.textContent !== nextEp) epEl.textContent = nextEp;
+    }
 
     const tokensEl = document.getElementById('omniTokensVal');
     if (tokensEl) {
       const used = (omni.tokens_used || 0).toLocaleString();
       const saved = (omni.tokens_saved || 0).toLocaleString();
-      tokensEl.textContent = `${used} used / ${saved} saved`;
+      const nextTokens = `${used} used / ${saved} saved`;
+      if (tokensEl.textContent !== nextTokens) tokensEl.textContent = nextTokens;
     }
 
     const tokensSub = document.getElementById('omniTokensSub');
@@ -3739,14 +3777,15 @@ function updateUiClockDisplay() {
       // Item 12 / A4-3: token "saved" is no longer a claimed figure, so the
       // dedup line reports the counted hits instead of a fabricated percent.
       const hits = omni.dedup_hits;
-      tokensSub.textContent = (typeof hits === 'number' && hits > 0)
+      let nextSub = (typeof hits === 'number' && hits > 0)
         ? `${hits.toLocaleString()} dupes skipped (SHA-256)`
         : `${pct}% SHA-256 Dedup Saved`;
       // The Remaining Quota cell was removed (2026-11-13); the digest
       // throttle note (item 12 / A4-4) moves here so it stays visible.
       if (omni.quota_throttled === true) {
-        tokensSub.textContent += ' — Digest throttled';
+        nextSub += ' — Digest throttled';
       }
+      if (tokensSub.textContent !== nextSub) tokensSub.textContent = nextSub;
       // AI panels (I3): the user-facing throttle signal is a plain
       // line under the Market Direction card, shown only while throttled.
       const throttleLine = document.getElementById('macroThrottleLine');
@@ -3758,7 +3797,8 @@ function updateUiClockDisplay() {
 
     const reqEl = document.getElementById('omniReqCounters');
     if (reqEl) {
-      reqEl.textContent = `Reqs: ${omni.total_requests || 0} | OK: ${omni.successful_requests || 0} | Fail: ${omni.failed_requests || 0}`;
+      const nextReq = `Reqs: ${omni.total_requests || 0} | OK: ${omni.successful_requests || 0} | Fail: ${omni.failed_requests || 0}`;
+      if (reqEl.textContent !== nextReq) reqEl.textContent = nextReq;
     }
 
     // 2. Macro Regime Card
@@ -3768,40 +3808,64 @@ function updateUiClockDisplay() {
       let cls = 'neutral';
       if (reg.includes('SURGE')) cls = 'surge';
       else if (reg.includes('PANIC') || reg.includes('CHOP')) cls = 'standby';
-      regBadge.className = `intel-status-pill ss-badge ${cls}`;
-      regBadge.textContent = reg;
+      const nextRegCls = `intel-status-pill ss-badge ${cls}`;
+      if (regBadge.className !== nextRegCls) regBadge.className = nextRegCls;
+      if (regBadge.textContent !== reg) regBadge.textContent = reg;
     }
 
     const biasEl = document.getElementById('macroHubBias');
-    if (biasEl) biasEl.textContent = macro.directional_bias || 'BIDIRECTIONAL';
+    if (biasEl) {
+      const nextBias = macro.directional_bias || 'BIDIRECTIONAL';
+      if (biasEl.textContent !== nextBias) biasEl.textContent = nextBias;
+    }
 
     const biasSub = document.getElementById('macroHubBiasSub');
     if (biasSub) {
       const b = macro.directional_bias || 'BIDIRECTIONAL';
-      if (b === 'LONG_ONLY') biasSub.textContent = 'Strict Veto Active: All Short Trades Blocked';
-      else if (b === 'SHORT_ONLY') biasSub.textContent = 'Strict Veto Active: All Long Trades Blocked';
-      else if (b === 'HOLD_CASH') biasSub.textContent = 'Severe Risk-Off: All Opening Orders Blocked';
-      else biasSub.textContent = 'All 5 Arena Strategies Permitted';
+      let nextBiasSub;
+      if (b === 'LONG_ONLY') nextBiasSub = 'Strict Veto Active: All Short Trades Blocked';
+      else if (b === 'SHORT_ONLY') nextBiasSub = 'Strict Veto Active: All Long Trades Blocked';
+      else if (b === 'HOLD_CASH') nextBiasSub = 'Severe Risk-Off: All Opening Orders Blocked';
+      else nextBiasSub = 'All 5 Arena Strategies Permitted';
+      if (biasSub.textContent !== nextBiasSub) biasSub.textContent = nextBiasSub;
     }
 
     const multEl = document.getElementById('macroHubRiskMult');
-    if (multEl) multEl.textContent = `${Number(macro.risk_multiplier || 1.0).toFixed(2)}x`;
+    if (multEl) {
+      const nextMult = `${Number(macro.risk_multiplier || 1.0).toFixed(2)}x`;
+      if (multEl.textContent !== nextMult) multEl.textContent = nextMult;
+    }
 
     const confEl = document.getElementById('macroHubConfidence');
-    if (confEl) confEl.textContent = `${Math.round(Number(macro.confidence || 0.8) * 100)}%`;
+    if (confEl) {
+      const nextConf = `${Math.round(Number(macro.confidence || 0.8) * 100)}%`;
+      if (confEl.textContent !== nextConf) confEl.textContent = nextConf;
+    }
 
     const lastEval = document.getElementById('macroHubLastEval');
-    if (lastEval) lastEval.textContent = `Last Eval: ${macro.last_synthesis_time || 'Continuous'}`;
+    if (lastEval) {
+      const nextEval = `Last Eval: ${macro.last_synthesis_time || 'Continuous'}`;
+      if (lastEval.textContent !== nextEval) lastEval.textContent = nextEval;
+    }
 
     const vetoEl = document.getElementById('macroHubVetoCount');
-    if (vetoEl) vetoEl.textContent = String(macro.veto_count_today || 0);
+    if (vetoEl) {
+      const nextVeto = String(macro.veto_count_today || 0);
+      if (vetoEl.textContent !== nextVeto) vetoEl.textContent = nextVeto;
+    }
 
     const headEl = document.getElementById('macroHubHeadline');
-    if (headEl) headEl.textContent = macro.active_headline || 'Market in balanced equilibrium.';
+    if (headEl) {
+      const nextHead = macro.active_headline || 'Market in balanced equilibrium.';
+      if (headEl.textContent !== nextHead) headEl.textContent = nextHead;
+    }
 
     // 3. Curated Event Cards
     const countLbl = document.getElementById('intelEventCountLabel');
-    if (countLbl) countLbl.textContent = `${events.length} Curated Events`;
+    if (countLbl) {
+      const nextCount = `${events.length} Curated Events`;
+      if (countLbl.textContent !== nextCount) countLbl.textContent = nextCount;
+    }
 
     const listContainer = document.getElementById('intelEventsList');
     if (listContainer) {
