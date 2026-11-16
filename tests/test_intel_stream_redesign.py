@@ -271,3 +271,25 @@ def test_article_loading_shows_indeterminate_progress_bar():
     assert 'role="progressbar"' in load_body
     css = _css()
     assert ".intel-article-progress" in css
+
+
+def test_article_renders_with_fade_in():
+    # Article fade-in (user request 2026-11-16): the lazy article
+    # must not pop in instantly when it replaces the loading text.
+    css = _css()
+    assert "@keyframes intel-article-fade-in" in css
+    para = _css_block(css, ".intel-article-para")
+    assert "intel-article-fade-in" in para
+    assert "0.4s" in para
+    # The honest error in the same slot fades in the same way.
+    error = _css_block(css, ".intel-article-error")
+    assert "intel-article-fade-in" in error
+    # Reduced motion disables the fade, next to the loading-pulse
+    # override.
+    m = re.search(
+        r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\n\}",
+        css,
+        flags=re.S,
+    )
+    assert m, "no reduced-motion block in app.css"
+    assert "intel-article-para" in m.group(1)

@@ -3807,6 +3807,8 @@ tbody td {
 }
 .intel-article-para {
   margin: 0 0 10px;
+  animation: intel-article-fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: opacity, transform;
 }
 .intel-article-para:last-child {
   margin-bottom: 0;
@@ -3814,6 +3816,21 @@ tbody td {
 .intel-article-loading {
   color: #67E8F9;
   animation: intel-article-pulse 1.2s ease-in-out infinite;
+}
+/* Article fade-in (user request 2026-11-16): the lazy article
+   replaced the loading text instantly. Same house fade as the
+   bento tab crossfade (opacity + translateY, cubic-bezier
+   (0.16, 1, 0.3, 1)), at 0.4s so a long article does not feel
+   sluggish. It runs on insertion -- no JS class management. */
+@keyframes intel-article-fade-in {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 /* Article loading bar (user request 2026-11-16): the lazy article
    load is one LLM call with no trustworthy percent, so the bar is
@@ -3830,6 +3847,7 @@ tbody td {
 }
 .intel-article-error {
   color: var(--ss-down);
+  animation: intel-article-fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 /* Ticker chips: bordered art boxes (not literal "[]" characters), one
    fixed colour per ticker; unknown tickers get a stable hash colour. */
@@ -4178,6 +4196,10 @@ body:not(.arena-ready) .lg-glass {
     transition: none !important;
   }
   .intel-article-loading {
+    animation: none !important;
+  }
+  .intel-article-para,
+  .intel-article-error {
     animation: none !important;
   }
 }
