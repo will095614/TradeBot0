@@ -42,6 +42,11 @@ class Portfolio:
         self.gross_loss: Decimal = Decimal("0.00")
         self.win_count: int = 0
         self.loss_count: int = 0
+        # Audit 2.9: breakeven closes (realized_pnl == 0) are
+        # closed trades too -- they enter closed_trades_count
+        # but neither win_count nor loss_count, so the win rate
+        # (wins / decided trades) is unchanged.
+        self.breakeven_count: int = 0
         # Audit 3.7: lifetime fill count. trade_history is truncated to
         # the last 50 fills at save time, but the leaderboard's
         # total_trades must still describe the whole session, so the
@@ -100,7 +105,7 @@ class Portfolio:
 
     @property
     def closed_trades_count(self) -> int:
-        return self.win_count + self.loss_count
+        return self.win_count + self.loss_count + self.breakeven_count
 
     @property
     def profit_factor(self) -> float:
@@ -131,6 +136,7 @@ class Portfolio:
         self.gross_loss = Decimal("0.00")
         self.win_count = 0
         self.loss_count = 0
+        self.breakeven_count = 0
         self.total_fills = 0
 
         self.current_market_price = Decimal("0.00")
@@ -270,6 +276,8 @@ class Portfolio:
                 elif pnl < Decimal("0"):
                     self.loss_count += 1
                     self.gross_loss += abs(pnl)
+                else:
+                    self.breakeven_count += 1
 
                 cost_basis = (fill.qty * self.avg_entry_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 margin_release = (cost_basis / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
@@ -325,6 +333,8 @@ class Portfolio:
                 elif pnl < Decimal("0"):
                     self.loss_count += 1
                     self.gross_loss += abs(pnl)
+                else:
+                    self.breakeven_count += 1
 
                 cost_basis = (fill.qty * self.avg_entry_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 margin_release = (cost_basis / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)

@@ -90,7 +90,7 @@ class LiveArenaEngine:
     - Streams real-time live spot quotes from Coinbase / Binance / Kraken public REST APIs every 1.5s.
     - Bootstraps with the most recent 120 minutes of 1-minute live ETH/USD bars so indicators and
       active strategy positions are immediately hot on startup.
-    - Operates 6 distinct real-time strategies simultaneously on every live tick.
+    - Operates 5 distinct real-time strategies simultaneously on every live tick.
     """
 
     # Generation fence (item 9): reset_engine() builds a brand-new engine, so
@@ -716,7 +716,7 @@ class LiveArenaEngine:
                 except Exception as e:
                     logger.debug("SQLite candle batch save skipped: %s", e)
 
-            # Ensure all 6 distinct strategies are primed with historical simulation
+            # Ensure all 5 distinct strategies are primed with historical simulation
             if recent_bars:
                 last_b = recent_bars[-1]
                 self.log_event(
@@ -2521,6 +2521,7 @@ class LiveArenaEngine:
                         "gross_loss": str(p.gross_loss),
                         "win_count": p.win_count,
                         "loss_count": p.loss_count,
+                        "breakeven_count": p.breakeven_count,
                         "peak_equity": str(p.peak_equity),
                         "max_drawdown_pct": str(p.max_drawdown_pct),
                         "is_circuit_breaker_tripped": p.is_circuit_breaker_tripped,
@@ -2528,7 +2529,7 @@ class LiveArenaEngine:
                         # fills only -- a recent sample, not the complete
                         # record. The lifetime totals travel with it so no
                         # consumer mistakes the sample for the whole
-                        # session: the win/loss/gross counters above are
+                        # session: the win/loss/breakeven/gross counters above are
                         # the complete record, trade_history_total is the
                         # full fill count, total_fills is its counter.
                         "trade_history_total": len(p.trade_history),
@@ -2689,6 +2690,7 @@ class LiveArenaEngine:
                         p.gross_loss = Decimal(str(cd.get("gross_loss", "0")))
                         p.win_count = int(cd.get("win_count", 0))
                         p.loss_count = int(cd.get("loss_count", 0))
+                        p.breakeven_count = int(cd.get("breakeven_count", 0))
                         p.total_fills = int(cd.get("total_fills", 0))
                         p.peak_equity = Decimal(str(cd.get("peak_equity", p.cash)))
                         p.max_drawdown_pct = Decimal(str(cd.get("max_drawdown_pct", "0.00")))
