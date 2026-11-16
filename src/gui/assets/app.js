@@ -3478,7 +3478,10 @@ function updateUiClockDisplay() {
     if (intelArticlePending[eventId]) return;
     const body = intelArticleBodyEl(eventId);
     if (body) {
-      body.innerHTML = '<div class="intel-article-loading">Loading article\u2026</div>';
+      body.innerHTML = '<div class="intel-article-loading">Loading article\u2026</div>'
+        + '<div class="intel-article-progress" role="progressbar" aria-label="Loading article">'
+        + '<div class="digest-refresh-progress-track"><div class="digest-refresh-progress-fill indeterminate"></div></div>'
+        + '</div>';
       body.classList.add('is-loading');
     }
     if (!window.pywebview || !window.pywebview.api || typeof window.pywebview.api.get_event_article !== 'function') {

@@ -612,3 +612,22 @@ def test_window_startup_foreground_configuration():
     assert "_activate_foreground_startup" in dash_src
 
 
+
+
+def test_dynamic_island_grows_to_fill_dock():
+    # Island widening (user decision 2026-11-16): the island grows
+    # to fill the dock middle instead of leaving a wide empty gap
+    # between it and the controls pod at 2K width.
+    from pathlib import Path
+    css = (Path(__file__).resolve().parent.parent
+           / "src" / "gui" / "assets" / "app.css").read_text(encoding="utf-8")
+    island = css.split(".lg-dock-pod--island {", 1)[1].split("}", 1)[0]
+    assert "flex: 1 1 auto" in island
+    assert "flex: 0 0 auto" not in island
+    metrics = css.split(".island-micro-metrics {", 1)[1].split("}", 1)[0]
+    assert "margin-left: auto" in metrics
+    # The @media (max-width: 2150px) rule outranks the base rule at the
+    # user's 2K width, so its right padding must match (20px), or the
+    # island keeps a dead strip inside its right end.
+    assert "padding: 0 20px 0 16px !important" in css
+    assert "0 44px 0 16px" not in css

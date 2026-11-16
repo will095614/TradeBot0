@@ -256,3 +256,18 @@ def test_summary_prefix_matches_backend():
     assert front == mb.group(0), (
         "frontend prefix %r != backend prefix %r" % (front, mb.group(0))
     )
+
+
+def test_article_loading_shows_indeterminate_progress_bar():
+    # Article loading (user request 2026-11-16): the lazy load shows
+    # an indeterminate sliding bar under "Loading article...", the
+    # same honest pattern as the digest refresh -- one LLM call, no
+    # trustworthy percent, so never a fabricated %.
+    js = _js()
+    load_body = _fn_body(js, "requestIntelArticle")
+    assert "Loading article" in load_body
+    assert "intel-article-progress" in load_body
+    assert "indeterminate" in load_body
+    assert 'role="progressbar"' in load_body
+    css = _css()
+    assert ".intel-article-progress" in css
