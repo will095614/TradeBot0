@@ -46,9 +46,12 @@ SYNC_STAGE_PERCENT = {
 # Intel Hub stream redesign, Phase A: per-event full article.
 # The harvest pipeline stores only a 35-70 word summary plus a truncated
 # raw snippet (RSS 450 chars / StockTwits 1200 chars), so there is no
-# source full text to excerpt. The article is an LLM-organized piece
-# derived from the event's own headline/summary/raw title, generated
-# lazily on first expand and cached on the curated event.
+# source full text to excerpt. Audit 2.10: the snippet rides the curated
+# event ("raw_snippet") into the article prompt, so the ~1000-word target
+# is grounded in the event's own words instead of only the summary. The
+# article is generated lazily on first expand and cached on the curated
+# event. The snippet is stripped from the 1 Hz telemetry
+# (_TELEMETRY_ARTICLE_KEYS) -- it is prompt material only.
 ARTICLE_TARGET_WORDS = 1000
 # Below this length an LLM reply is not an article (and never the
 # one-line summary passed off as one); it counts as a failed generation.
@@ -87,16 +90,19 @@ def build_event_article_prompts(evt: Dict[str, Any]) -> Tuple[str, str]:
         "規則：\n"
         "- 文章全文必須以繁體中文撰寫，約 1000 字，共 6 段。\n"
         "- 6 段依序為：事件經過、背景脈絡、市場含義、風險因素、後續觀察、總結。\n"
-        "- 只能使用素材中已有的資訊（標題、摘要、原文標題、來源）；不得編造素材中沒有的具體數字、日期、引言或來源。\n"
+        "- 只能使用素材中已有的資訊（標題、摘要、原文標題、原文片段、來源）；不得編造素材中沒有的具體數字、日期、引言或來源。\n"
         "- 不得把摘要本身當作文章回傳；文章必須是展開整理的完整內容。\n"
         "- 若素材不足以支撐 1000 字，寧可寫得精簡誠實，也不要編造細節充數。\n"
         "- 只輸出 JSON 物件，不要輸出其他文字或說明。"
     )
+    snippet = (evt.get("raw_snippet") or "").strip()
+    snippet_line = f"原文片段：{snippet}\n" if snippet else ""
     user_prompt = (
         f"情報來源：{evt.get('source', '')}\n"
         f"原文標題：{evt.get('raw_title', '')}\n"
         f"標題：{evt.get('headline', '')}\n"
         f"摘要：{evt.get('summary', '')}\n"
+        f"{snippet_line}"
         "請依上述素材整理一篇繁體中文文章，約 1000 字、共 6 段"
         "（事件經過、背景脈絡、市場含義、風險因素、後續觀察、總結）。"
     )
@@ -467,14 +473,17 @@ class MacroCommander:
     # get_event_article(). Measured before this fix: 25 expanded events
     # took the snapshot from 14,817 to 153,342 chars (+135 KiB) of text
     # the snapshot deep-copied and serialized every second.
-    _TELEMETRY_ARTICLE_KEYS = ("article", "article_error")
+    # Audit 2.10: "raw_snippet" rides here too -- up to 1200 chars
+    # per event x 60 events must never ride the 1 Hz telemetry
+    # (finding 2.1).
+    _TELEMETRY_ARTICLE_KEYS = ("article", "article_error", "raw_snippet")
     # Locks are per-event and only needed while a call is in flight; a
     # long-lived process must not accumulate one forever per event id.
     _ARTICLE_LOCK_PRUNE_THRESHOLD = 128
 
     @classmethod
     def _telemetry_event(cls, evt: Dict[str, Any]) -> Dict[str, Any]:
-        """A snapshot-safe copy of one curated event (no article body)."""
+        """A snapshot-safe copy of one curated event (no article body, no raw snippet)."""
         return {k: v for k, v in evt.items() if k not in cls._TELEMETRY_ARTICLE_KEYS}
 
     def _telemetry_events(self, limit: int) -> List[Dict[str, Any]]:
@@ -826,6 +835,7 @@ class MacroCommander:
                         "headline": zh_head,
                         "summary": zh_sum,
                         "raw_title": e.raw_title,
+                        "raw_snippet": getattr(e, "raw_content", "") or "",
                         "tier": e.tier,
                         "thread_id": e.thread_id,
                         "consensus": e.consensus,

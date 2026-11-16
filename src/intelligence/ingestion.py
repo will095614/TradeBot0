@@ -78,6 +78,11 @@ class StructuredEvent:
     tier: int = 2  # source tier (0-3); feeds the C1 weighted sentiment formula
     thread_id: Optional[str] = None  # forum thread key, e.g. "stocktwits:ETH.X"
     consensus: Optional[Dict[str, float]] = None  # forum reply split {bullish, bearish, neutral}
+    # Audit 2.10: the truncated raw snippet (RSS 450 chars /
+    # StockTwits 1200 chars) rides through structuring so the
+    # article prompt is grounded in the event's own words.
+    # Not in to_dict: it is prompt material only, never telemetry.
+    raw_content: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -674,6 +679,7 @@ class IntelligenceHarvester:
                         summary=summary,
                         raw_title=raw.title,
                         headline_zh=headline_zh,
+                        raw_content=raw.raw_content,
                         tier=raw.tier,
                         thread_id=raw.thread_id,
                         consensus=consensus,
@@ -764,6 +770,7 @@ class IntelligenceHarvester:
                     summary=summary_zh,
                     raw_title=raw.title,
                     headline_zh=headline_zh,
+                    raw_content=raw.raw_content,
                     tier=raw.tier,
                     thread_id=raw.thread_id,
                     consensus=consensus,
