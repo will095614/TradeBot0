@@ -6,11 +6,37 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from typing import Any, Dict, Optional
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+def _looks_like_format_rejection(err_body: Any) -> bool:
+    """True when an error body blames response_format / JSON mode.
+
+    Used to decide whether a 400/422 is worth retrying without the
+    ``response_format`` field. Providers phrase this differently
+    ("response_format is not supported", "json_object mode requires",
+    "response format"), so match on the field and mode names rather
+    than one vendor's exact message. A generic 400 does not match.
+    """
+    try:
+        if isinstance(err_body, dict):
+            text = json.dumps(err_body, ensure_ascii=False)
+        else:
+            text = str(err_body or "")
+    except Exception:
+        text = str(err_body or "")
+    lowered = text.lower()
+    return (
+        "response_format" in lowered
+        or "response format" in lowered
+        or "json_object" in lowered
+        or "json mode" in lowered
+    )
+
 
 _RETRY_STATUSES = {429, 502, 503}
 # Cooldown after an observed 429: the digest treats the gateway as over
@@ -327,9 +353,24 @@ class OmniRouteClient:
 
         self._sem = asyncio.Semaphore(self.max_concurrent)
         self._sem_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._session = session
+        # Session lifecycle (V2.8.0 repair): one ClientSession PER EVENT
+        # LOOP. Lazy article expansion runs asyncio.run on a pywebview
+        # worker thread -- a fresh loop per call -- and the old single
+        # shared session was closed by whichever call started the next
+        # loop, while another call was still using it (reproduced: the
+        # second thread closed the first thread's in-flight session).
+        # Per-loop ownership means a call can only ever close its own
+        # session; close_loop_session() closes it from inside that same
+        # loop before the loop ends, so nothing is left for the GC.
+        self._session = session              # shared/injected, or latest
         self._session_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._sessions: Dict[int, Any] = {}
+        self._sessions_lock = threading.Lock()
         self._owns_session = session is None
+        # JSON-mode negotiation (V2.8.0 repair): a provider that rejects
+        # response_format with 400 is retried once without it, and the
+        # model is remembered so later calls skip the field entirely.
+        self._json_mode_unsupported: set = set()
 
         # Telemetry & Status
         self.is_gateway_online: bool = False
@@ -542,24 +583,56 @@ class OmniRouteClient:
         return self._sem
 
     async def get_session(self) -> aiohttp.ClientSession:
-        if not self._owns_session and self._session is not None and not self._session.closed:
+        """Return the aiohttp session owned by the CALLING event loop.
+
+        A session injected through the constructor (or assigned directly,
+        as tests do) has no owning loop and is shared: it is returned
+        as-is and never closed by per-loop cleanup. Otherwise every loop
+        gets its own session, created on first use. Closing one loop's
+        session can therefore never interrupt a request running on a
+        different loop or thread.
+        """
+        if self._session is not None and not self._session.closed and self._session_loop is None:
             return self._session
         current_loop = asyncio.get_running_loop()
-        if (
-            self._session is None
-            or self._session.closed
-            or (self._session_loop is not None and self._session_loop is not current_loop)
-        ):
-            if self._session and not self._session.closed and self._owns_session:
-                try:
-                    await self._session.close()
-                except Exception as e:
-                    logger.debug("Failed to close previous session: %s", e)
+        key = id(current_loop)
+        sess = self._sessions.get(key)
+        if sess is None or sess.closed:
             timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            sess = aiohttp.ClientSession(timeout=timeout)
+            with self._sessions_lock:
+                self._sessions[key] = sess
+            self._session = sess            # latest, for observability
             self._session_loop = current_loop
             self._owns_session = True
-        return self._session
+        return sess
+
+    async def close_loop_session(self) -> None:
+        """Close and forget the session owned by the current event loop.
+
+        Safe from any loop: it removes only that loop's entry, so it can
+        never close a session another thread is still using. Called from
+        the private asyncio.run() used by article generation and the
+        digest refresh, before that loop ends, so no loop-bound session
+        is left unclosed.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        key = id(loop)
+        with self._sessions_lock:
+            sess = self._sessions.pop(key, None)
+        if sess is None:
+            return
+        try:
+            if not sess.closed:
+                await sess.close()
+        except Exception as e:
+            logger.debug("Failed to close loop session: %s", e)
+        if self._session is sess:
+            self._session = None
+            self._session_loop = None
 
     async def check_health(self) -> bool:
         """
@@ -617,12 +690,13 @@ class OmniRouteClient:
             "model": model,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
         }
+        if str(model) not in self._json_mode_unsupported:
+            payload["response_format"] = {"type": "json_object"}
         # Item 10 A3: never send a placeholder key. With no key configured
         # the request goes out without an Authorization header at all.
         headers = {"Content-Type": "application/json"}
@@ -649,11 +723,6 @@ class OmniRouteClient:
                             # never touch it. A body that cannot be read
                             # classifies from the status code alone.
                             err_body = await self._read_error_body(resp)
-                            self.note_failure(classify_llm_error(
-                                status, err_body,
-                                headers=dict(resp.headers),
-                                retry_after=retry_after,
-                            ))
                         if status == 429:
                             # Observed rate-limit signal (F4): start the
                             # cooldown even if the retry later succeeds.
@@ -695,6 +764,34 @@ class OmniRouteClient:
                                     self.successful_requests += 1
                                     return repaired
                             return None
+
+                        # JSON-mode negotiation (V2.8.0 repair): some
+                        # providers reject response_format outright with
+                        # 400/422 instead of ignoring it. Retry once
+                        # without the field (this attempt is not counted
+                        # as a provider failure) and remember the model,
+                        # so a rejected format never loses the signal.
+                        if (
+                            status in (400, 422)
+                            and "response_format" in payload
+                            and attempt < self.max_retries
+                            and _looks_like_format_rejection(err_body)
+                        ):
+                            payload.pop("response_format", None)
+                            self._json_mode_unsupported.add(str(model))
+                            self.retried_requests += 1
+                            logger.info(
+                                "Provider rejected response_format (HTTP %d); retrying without JSON mode",
+                                status,
+                            )
+                            continue
+
+                        if status != 200:
+                            self.note_failure(classify_llm_error(
+                                status, err_body,
+                                headers=dict(resp.headers),
+                                retry_after=retry_after,
+                            ))
 
                         if status in _RETRY_STATUSES and attempt < self.max_retries:
                             self.retried_requests += 1
@@ -786,15 +883,35 @@ class OmniRouteClient:
             logger.debug("OmniRoute repair retry failed: %s", e)
             return None
 
+    def _all_sessions(self) -> list:
+        """Every owned session, newest-last / shared first, de-duplicated."""
+        with self._sessions_lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        if self._session is not None and all(self._session is not s for s in sessions):
+            sessions.append(self._session)
+        return sessions
+
     async def close(self) -> None:
-        """Properly closes underlying aiohttp session to prevent resource leaks."""
-        if self._session and not self._session.closed and self._owns_session:
-            await self._session.close()
-            self._session = None
+        """Closes every owned aiohttp session to prevent resource leaks."""
+        for sess in self._all_sessions():
+            if sess is not None and not sess.closed and self._owns_session:
+                try:
+                    await sess.close()
+                except Exception as e:
+                    logger.debug("Failed to close session: %s", e)
+        self._session = None
+        self._session_loop = None
 
     def close_sync(self) -> None:
-        """Synchronously closes underlying session or schedules close on loop."""
-        if self._session and not self._session.closed and self._owns_session:
+        """Synchronously closes owned sessions or schedules their close."""
+        sessions = self._all_sessions()
+        if not self._owns_session:
+            self._session = None
+            return
+        for sess in sessions:
+            if sess is None or sess.closed:
+                continue
             try:
                 loop = None
                 try:
@@ -802,12 +919,13 @@ class OmniRouteClient:
                 except RuntimeError:
                     pass
                 if loop and loop.is_running():
-                    loop.create_task(self._session.close())
-                elif self._session_loop is None or not self._session_loop.is_closed():
-                    asyncio.run(self._session.close())
+                    loop.create_task(sess.close())
+                else:
+                    asyncio.run(sess.close())
             except Exception as e:
                 logger.debug("Failed to close session synchronously: %s", e)
-            self._session = None
+        self._session = None
+        self._session_loop = None
 
     def __del__(self) -> None:
         try:

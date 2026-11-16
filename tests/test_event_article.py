@@ -89,10 +89,13 @@ def test_first_expand_generates_once_and_caches():
     evt = commander.curated_events[0]
     assert evt["article"] == ARTICLE_TEXT
     assert evt["article_state"] == "ready"
-    # The article rides the telemetry payload the frontend polls.
+    # V2.8.0: the body stays OFF the 1 Hz telemetry payload (25 expanded
+    # events took it from ~15 KB to ~153 KB); the on-demand endpoint is
+    # the only path that returns it. Lightweight state still rides along.
     tel_evt = commander.get_intel_hub_telemetry()["events"][0]
-    assert tel_evt["article"] == ARTICLE_TEXT
+    assert "article" not in tel_evt
     assert tel_evt["article_state"] == "ready"
+    assert commander.get_event_article(evt_id)["article"] == ARTICLE_TEXT
 
 
 def test_second_expand_returns_cache_without_llm():

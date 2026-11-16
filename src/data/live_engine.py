@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Any, Optional
 import logging
@@ -159,6 +160,10 @@ class LiveArenaEngine:
         # recomputed it from cs[:15] every tick, so it slid with the
         # rolling 200-bar buffer (~3h of drift).
         self._orb_range_frozen: bool = False
+        # V2.8.0: the UTC trading day the current range belongs to. When
+        # the day rolls over the range is rebuilt from the new day's
+        # first 15 closed bars instead of staying frozen at app start.
+        self._orb_session_day = None
 
         # 1-minute OHLC candles (bootstrap bars + live ticks aggregated) for charting & live RSI/ATR
         self.candles: List[Dict[str, float]] = []
@@ -689,18 +694,12 @@ class LiveArenaEngine:
                 self._update_candle(float(bar.timestamp), bar.close, bar.high, bar.low, bar.open)
                 self._record_series_point(bar.close, bar.timestamp)
 
-            # Audit 3.4: anchor the opening range to the FIRST 15 bars
-            # of the session (the warmup tape) and freeze it once 15 bars
-            # exist. While fewer than 15 bars exist the range is still
-            # forming and uses the bars so far.
-            if len(recent_bars) >= 15:
-                first_15 = recent_bars[:15]
-                self.live_orb_high = max(b.high for b in first_15)
-                self.live_orb_low = min(b.low for b in first_15)
-                self._orb_range_frozen = True
-            elif recent_bars:
-                self.live_orb_high = max(b.high for b in recent_bars)
-                self.live_orb_low = min(b.low for b in recent_bars)
+            # Audit 3.4 / V2.8.0: anchor the opening range to the FIRST
+            # 15 bars of the current UTC trading day (the warmup tape on
+            # the first day) and freeze it once 15 bars exist. The range
+            # is rebuilt when the UTC day rolls over, so a multi-day run
+            # never trades a range anchored at app start.
+            self._recompute_orb_range(self.candles)
 
             # Rolling session typical-price mean (NOT volume-weighted VWAP:
             # the live loop recomputes the same unweighted mean every cadence,
@@ -865,7 +864,7 @@ class LiveArenaEngine:
             if loop and loop.is_running():
                 loop.create_task(self.macro_commander.refresh_digest_async())
             else:
-                asyncio.run(self.macro_commander.refresh_digest_async())
+                self.macro_commander.run_digest_sync()
         except Exception as e:
             logger.warning("Intel digest refresh error: %s", e)
         finally:
@@ -1694,6 +1693,35 @@ class LiveArenaEngine:
                 except Exception as e:
                     logger.debug("SQLite candle save skipped: %s", e)
 
+    def _recompute_orb_range(self, cs: List[Dict[str, float]]) -> None:
+        """(Re)build the ORB range for the CURRENT UTC trading day.
+
+        The range is the high/low of that day's first 15 closed 1-minute
+        bars. Once 15 bars exist it is frozen for the rest of the day: a
+        rolling 200-bar buffer must not slide it. When the UTC day
+        changes, the session resets and the range forms again from the
+        new day's bars -- in live trading as well as in backtest.
+        """
+        if not cs:
+            return
+        day = datetime.fromtimestamp(float(cs[-1]["t"]), timezone.utc).date()
+        if self._orb_session_day != day:
+            self._orb_session_day = day
+            self._orb_range_frozen = False
+        if self._orb_range_frozen:
+            return
+        day_bars = [
+            b for b in cs
+            if datetime.fromtimestamp(float(b["t"]), timezone.utc).date() == day
+        ]
+        if not day_bars:
+            return
+        first_15 = day_bars[:15]
+        self.live_orb_high = Decimal(str(round(max(x["h"] for x in first_15), 2)))
+        self.live_orb_low = Decimal(str(round(min(x["l"] for x in first_15), 2)))
+        if len(day_bars) >= 15:
+            self._orb_range_frozen = True
+
     def _recompute_candle_indicators(self, period: int = 14) -> None:
         """Wilder RSI(14) and ATR(14) on 1-minute candles, so live indicators keep moving."""
         cs = self.candles
@@ -1728,20 +1756,7 @@ class LiveArenaEngine:
         self.live_atr = max(Decimal("1.50"), Decimal(str(round(atr, 2))))
         self.broker.current_atr = self.live_atr
 
-        # Audit 3.4: only (re)build the range while it is not frozen.
-        # Once the session's first 15 bars are in, the range never moves
-        # again -- recomputing from cs[:15] here let it slide with the
-        # rolling buffer. While fewer than 15 bars exist (offline start)
-        # the range keeps forming from the bars so far.
-        if not self._orb_range_frozen:
-            if len(cs) >= 15:
-                first_15 = cs[:15]
-                self.live_orb_high = Decimal(str(round(max(x["h"] for x in first_15), 2)))
-                self.live_orb_low = Decimal(str(round(min(x["l"] for x in first_15), 2)))
-                self._orb_range_frozen = True
-            elif cs:
-                self.live_orb_high = Decimal(str(round(max(x["h"] for x in cs), 2)))
-                self.live_orb_low = Decimal(str(round(min(x["l"] for x in cs), 2)))
+        self._recompute_orb_range(cs)
 
         if cs:
             # Session typical-price mean over the last <=200 1m candles.

@@ -380,6 +380,27 @@ class MacroCommander:
             self._set_sync_stage("waiting", "No new events yet")
         return self.current_state
 
+    def run_digest_sync(self) -> "MacroRegimeState":
+        """Run refresh_digest_async on a private loop, then clean up.
+
+        The LLM client creates a session per event loop; this wrapper
+        closes that loop's session before the loop ends, so a refresh
+        never leaves an Unclosed client session behind. Callers that
+        already have a running loop use refresh_digest_async directly.
+        """
+        async def _wrapped() -> "MacroRegimeState":
+            try:
+                return await self.refresh_digest_async()
+            finally:
+                closer = getattr(self.client, "close_loop_session", None)
+                if callable(closer):
+                    try:
+                        await closer()
+                    except Exception as ex:
+                        logger.debug("Digest loop-session cleanup failed: %s", ex)
+
+        return asyncio.run(_wrapped())
+
     def get_intel_hub_telemetry(self) -> Dict[str, Any]:
         """
         Returns complete intelligence diagnostic telemetry for the Macro Intel Hub panel.
@@ -433,21 +454,70 @@ class MacroCommander:
                 "failed_requests": int(getattr(self.client, "failed_requests", 0)),
                 "concurrency_limit": int(getattr(self.client, "max_concurrent", 25)),
             },
-            "macro_state": self.current_state.to_dict(),
-            "events": self.curated_events[:25],
+            "macro_state": self._telemetry_macro_state(),
+            "events": self._telemetry_events(25),
             # First-sync progress (workstream 3): the current pipeline
             # stage + milestone percent. A copy, so a reader can never
             # rewrite the live status dict.
             "sync": dict(self.sync_status),
         }
 
+    # The generated article body is deliberately NOT part of the 1 Hz
+    # telemetry payload: the UI caches it and fetches on demand via
+    # get_event_article(). Measured before this fix: 25 expanded events
+    # took the snapshot from 14,817 to 153,342 chars (+135 KiB) of text
+    # the snapshot deep-copied and serialized every second.
+    _TELEMETRY_ARTICLE_KEYS = ("article", "article_error")
+    # Locks are per-event and only needed while a call is in flight; a
+    # long-lived process must not accumulate one forever per event id.
+    _ARTICLE_LOCK_PRUNE_THRESHOLD = 128
+
+    @classmethod
+    def _telemetry_event(cls, evt: Dict[str, Any]) -> Dict[str, Any]:
+        """A snapshot-safe copy of one curated event (no article body)."""
+        return {k: v for k, v in evt.items() if k not in cls._TELEMETRY_ARTICLE_KEYS}
+
+    def _telemetry_events(self, limit: int) -> List[Dict[str, Any]]:
+        return [self._telemetry_event(e) for e in self.curated_events[:limit]]
+
+    def _telemetry_macro_state(self) -> Dict[str, Any]:
+        """Current regime state, with any latest_event article stripped."""
+        state = self.current_state.to_dict()
+        latest = state.get("latest_event")
+        if isinstance(latest, dict):
+            state["latest_event"] = self._telemetry_event(latest)
+        return state
+
+    def _prune_article_locks(self) -> None:
+        """Drop locks for events no longer in the curated list.
+
+        Only unlocked locks are removed: a lock still held (or waited on)
+        belongs to an in-flight expansion and must stay until it is done.
+        Ids requested by get_event_article are always in curated_events,
+        so a live request can never lose its lock to this prune.
+        """
+        if len(self._article_locks) <= self._ARTICLE_LOCK_PRUNE_THRESHOLD:
+            return
+        live_ids = {e.get("id") for e in self.curated_events}
+        with self._article_locks_guard:
+            stale = [
+                event_id
+                for event_id, lock in self._article_locks.items()
+                if event_id not in live_ids and not lock.locked()
+            ]
+            for event_id in stale:
+                self._article_locks.pop(event_id, None)
+
     def _get_article_lock(self, event_id: str) -> threading.Lock:
         """One lock per event id, created on demand under a guard lock.
 
         Concurrent expand calls for the SAME event wait on the same
         lock and then read the cache, so the LLM is called at most once
-        per event. Different events generate independently.
+        per event. Different events generate independently. The map is
+        pruned once it grows past the threshold, so it stays bounded by
+        the curated list plus in-flight expansions.
         """
+        self._prune_article_locks()
         with self._article_locks_guard:
             lock = self._article_locks.get(event_id)
             if lock is None:
@@ -526,6 +596,24 @@ class MacroCommander:
             return None, "LLM returned an article too short to be an article"
         return article, None
 
+    async def _run_article_with_cleanup(self, evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """Generate one article, then close THIS loop's LLM session.
+
+        Every asyncio.run() creates a loop; a session created on it must
+        be closed on it before the loop ends, or it is left unclosed.
+        The cleanup touches only the current loop's session, so it can
+        never close a session another thread is still using.
+        """
+        try:
+            return await self._generate_article_async(evt)
+        finally:
+            closer = getattr(self.client, "close_loop_session", None)
+            if callable(closer):
+                try:
+                    await closer()
+                except Exception as ex:
+                    logger.debug("Article loop-session cleanup failed: %s", ex)
+
     def _generate_article_sync(self, evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         """Runs _generate_article_async from sync code (bridge thread).
 
@@ -536,18 +624,17 @@ class MacroCommander:
         instead of raising "asyncio.run() cannot be called from a
         running event loop".
         """
-        coro = self._generate_article_async(evt)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
         if loop is None:
-            return asyncio.run(coro)
+            return asyncio.run(self._run_article_with_cleanup(evt))
         result: Dict[str, Any] = {}
 
         def _runner() -> None:
             try:
-                result["value"] = asyncio.run(coro)
+                result["value"] = asyncio.run(self._run_article_with_cleanup(evt))
             except BaseException as ex:
                 result["error"] = ex
 

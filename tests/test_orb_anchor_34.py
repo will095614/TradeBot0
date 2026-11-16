@@ -7,7 +7,6 @@ backtest ORB was a rolling-channel breakout, a different strategy from live
 ORB. After the fix both paths anchor to the first 15 bars of the session
 tape and freeze the range once 15 bars exist.
 """
-import time
 from decimal import Decimal
 
 import pytest
@@ -22,7 +21,11 @@ def _warmup_bars():
 
     Fixture data, never production data.
     """
-    now = time.time()
+    # Fixed UTC day (02:00Z): a wall-clock "now" near midnight would
+    # straddle two trading days and make the first-15 anchor depend on
+    # the time the suite happens to run. V2.8.0 made the range
+    # day-scoped, so the fixture pins one day.
+    now = 1_767_225_600.0 + 2 * 3600  # 2026-01-01T02:00:00Z
     bars = []
     for i in range(120):
         if i < 15:

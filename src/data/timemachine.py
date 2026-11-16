@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
 import math
@@ -108,11 +109,13 @@ class TimeMachineArena:
         prev_bar: Optional[CandleBar] = None
         cum_vol = Decimal("0")
         cum_pv = Decimal("0")
-        # Audit 3.4: the opening range is anchored to the FIRST 15 bars
-        # of the session tape and frozen for the whole run -- the old
-        # rolling 14-bar window made backtest ORB a rolling-channel
-        # breakout, a different strategy from live ORB.
-        orb_anchor = bars[:15]
+        # Audit 3.4 / V2.8.0: the opening range is anchored to the FIRST
+        # 15 closed bars of each UTC trading day and frozen for the rest
+        # of that day. The old single bars[:15] anchor froze the range at
+        # the start of the whole dataset, so a multi-day backtest traded
+        # day 1's range forever. A rolling 14-bar window (the older bug)
+        # made backtest ORB a rolling-channel breakout instead.
+        orb_bars_by_day: Dict[Any, List[CandleBar]] = {}
         closes: List[float] = []
         # Rolling true ranges for the measured backtest ATR (F3).
         true_ranges: List[Decimal] = []
@@ -133,16 +136,19 @@ class TimeMachineArena:
             # ORB range is built from CLOSED bars only: including the current
             # bar makes its own high the range ceiling, so a breakout can
             # almost never trigger (ORB was dead in backtest). While the
-            # first 15 bars are still forming the range uses the closed
-            # bars so far; from bar 15 on it is the frozen bars[:15].
-            if i >= 15:
-                orb_high = max(b.high for b in orb_anchor)
-                orb_low = min(b.low for b in orb_anchor)
-            elif i > 0:
-                orb_high = max(b.high for b in bars[:i])
-                orb_low = min(b.low for b in bars[:i])
+            # day's first 15 bars are still forming the range uses that
+            # day's closed bars so far; from bar 15 on it is the frozen
+            # first 15 of the day. The UTC day key rebuilds the range when
+            # the replayed tape crosses midnight.
+            orb_day = datetime.fromtimestamp(float(bar.timestamp), timezone.utc).date()
+            orb_day_bars = orb_bars_by_day.setdefault(orb_day, [])
+            if orb_day_bars:
+                orb_high = max(b.high for b in orb_day_bars)
+                orb_low = min(b.low for b in orb_day_bars)
             else:
                 orb_high, orb_low = bar.high, bar.low
+            if len(orb_day_bars) < 15:
+                orb_day_bars.append(bar)
             orb_mid = (orb_high + orb_low) / Decimal("2")
 
             # P0-B / F3: the backtest ATR is measured from the bars being
