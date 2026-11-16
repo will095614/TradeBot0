@@ -209,3 +209,31 @@ def test_compact_mode_fits_intro_line_and_status_lines_hold_width():
     line = css.split(".intel-status-line {", 1)[1].split("}", 1)[0]
     assert "width: 100%" in line
     assert "text-align: right" in line
+
+
+def test_deck_empty_slots_collapse_and_level_bottoms():
+    # Deck tightening (user decision 2026-11-16, sim-approved):
+    # the reserved-but-empty slots collapse to zero height instead
+    # of holding dead space, so the deck drops from 221px to ~169px.
+    # Both cards still share one height (deck grid stretch), so their
+    # bottoms stay level.
+    css = _css()
+    status = css.split(".intel-status-line {", 1)[1].split("}", 1)[0]
+    assert "display: none" in status
+    status_vis = css.split(".intel-status-line.visible {", 1)[1].split("}", 1)[0]
+    assert "display: block" in status_vis
+    throttle = css.split(".intel-throttle-line {", 1)[1].split("}", 1)[0]
+    assert "display: none" in throttle
+    throttle_vis = css.split(".intel-throttle-line.visible {", 1)[1].split("}", 1)[0]
+    assert "display: block" in throttle_vis
+    prog = css.split(".digest-refresh-progress {", 1)[1].split("}", 1)[0]
+    assert "display: none" in prog
+    assert ".digest-refresh-progress.active" in css
+    # The deck grid still stretches both cards to one shared height.
+    deck = css.split(".intel-top-deck {", 1)[1].split("}", 1)[0]
+    assert "align-items: stretch" in deck
+    # The progress bar is shown by class now, not inline style.
+    js = _js()
+    assert "digestProg.classList.add('active')" in js
+    assert "digestProg.classList.remove('active')" in js
+    assert "digestProg.style.visibility" not in js

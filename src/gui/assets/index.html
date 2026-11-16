@@ -578,11 +578,11 @@
             </div>
           </div>
           <div class="intel-panel-body">
-            <!-- Status lines: a fixed two-line slot, always reserved
-                 (visibility + opacity, never display: none). The
-                 fallback line appears when the local backup analysis
-                 is active; the diagnosis line is filled by the
-                 gateway-diagnosis workstream. -->
+            <!-- Status lines: collapsed to zero height while both
+                 lines are empty (user decision 2026-11-16,
+                 sim-approved). The fallback line appears when the
+                 local backup analysis is active; the diagnosis line
+                 is filled by the gateway-diagnosis workstream. -->
             <div class="intel-status-lines">
               <div class="intel-status-line" id="intelFallbackLine">Using local backup analysis</div>
               <div class="intel-status-line intel-diagnosis-line" id="intelDiagnosisLine"></div>
@@ -632,10 +632,11 @@
                 <span>Refresh News Analysis</span>
               </button>
             </div>
-            <!-- Refresh progress: fixed 8px slot, always reserved
-                 (visibility + opacity, never display: none). The fill
-                 is indeterminate (sliding) -- a digest refresh has no
-                 trustworthy percent, so none is fabricated. -->
+            <!-- Refresh progress: collapsed to zero height while
+                 idle (user decision 2026-11-16, sim-approved).
+                 The fill is indeterminate (sliding) -- a digest
+                 refresh has no trustworthy percent, so none is
+                 fabricated. -->
             <div id="digestRefreshProgress" class="digest-refresh-progress" role="progressbar" aria-label="Refreshing news analysis">
               <div class="digest-refresh-progress-track"><div class="digest-refresh-progress-fill indeterminate"></div></div>
             </div>

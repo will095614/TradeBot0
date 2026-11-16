@@ -3322,8 +3322,7 @@ function updateUiClockDisplay() {
     // button settles below.
     const digestProg = document.getElementById('digestRefreshProgress');
     if (digestProg) {
-      digestProg.style.visibility = 'visible';
-      digestProg.style.opacity = '1';
+      digestProg.classList.add('active');
     }
 
     if (typeof showChartToast === 'function') {
@@ -3356,8 +3355,7 @@ function updateUiClockDisplay() {
         `;
         }
         if (digestProg) {
-          digestProg.style.visibility = 'hidden';
-          digestProg.style.opacity = '0';
+          digestProg.classList.remove('active');
         }
       }, 1000);
     }
@@ -3647,8 +3645,8 @@ function updateUiClockDisplay() {
       // the pill -- quota exhausted (all providers), connection
       // problem, or restarting. Only the two user-facing states plus
       // the restarting line; anything else leaves the line empty.
-      // The box is fixed (width 100%, reserved slot), so showing the
-      // line never moves anything.
+      // The slot collapses while empty (user decision 2026-11-16,
+      // sim-approved), so showing the line grows the deck.
       const diagLine = document.getElementById('intelDiagnosisLine');
       if (diagLine) {
         const diag = omni.diagnosis || 'ok';

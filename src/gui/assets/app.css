@@ -3549,9 +3549,11 @@ tbody td {
   border-color: rgba(16, 245, 160, 0.42);
 }
 
-/* AI panels (I1): status lines under the pill -- a fixed two-line
-   slot, always reserved (visibility + opacity, never display: none),
-   so showing a line never moves anything. */
+/* AI panels (I1): status lines under the pill -- collapsed to
+   zero height while neither line is visible (user decision
+   2026-11-16, sim-approved: the deck was 221px with a dead 28px
+   band). Showing a line grows the deck by that line's height and
+   shifts the stream below down. Fade-in is kept (opacity). */
 .intel-status-lines {
   display: flex;
   flex-direction: column;
@@ -3565,19 +3567,20 @@ tbody td {
   line-height: 1.4;
   text-align: right;
   color: var(--ss-text-muted);
+  display: none;
   visibility: hidden;
   opacity: 0;
   transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
 }
 .intel-status-line.visible {
+  display: block;
   visibility: visible;
   opacity: 1;
 }
 /* Gateway diagnosis workstream: the diagnosis line is filled with
    the plain-language state ('quota exhausted' / 'connection problem' /
-   'restarting'). It must never wrap: the line is a fixed reserved slot
-   and a wrap would grow the box and shift the cards below it. Long
-   text is ellipsised instead. */
+   'restarting'). It must never wrap: a wrap would grow the deck.
+   Long text is ellipsised instead. */
 .intel-diagnosis-line {
   color: var(--ss-text-muted);
   white-space: nowrap;
@@ -3596,30 +3599,41 @@ tbody td {
 }
 
 /* AI panels (I3): plain throttle line under the Market Direction
-   card -- a fixed one-line slot, always reserved. */
+   card -- collapsed to zero height while not throttling (user
+   decision 2026-11-16, sim-approved). Showing it grows the deck. */
 .intel-throttle-line {
   min-height: 14px;
   font-size: 10px;
   line-height: 1.4;
   color: var(--ss-text-muted);
+  display: none;
   visibility: hidden;
   opacity: 0;
   transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
 }
 .intel-throttle-line.visible {
+  display: block;
   visibility: visible;
   opacity: 1;
 }
 
-/* AI panels (I6): refresh progress -- the same fixed 8px slot as the
-   install/save progress bars (visibility + opacity, never
-   display: none). The fill is always indeterminate (sliding): a
-   digest refresh has no trustworthy percent, so none is fabricated. */
+/* AI panels (I6): refresh progress -- collapsed to zero height
+   while idle (user decision 2026-11-16, sim-approved). The
+   install/save progress bars keep their reserved slots (different
+   component). The fill is always indeterminate (sliding): a digest
+   refresh has no trustworthy percent, so none is fabricated. Shown
+   by the .active class (app.js toggles it), not by inline style. */
 .digest-refresh-progress {
+  display: none;
   min-height: 8px;
   visibility: hidden;
   opacity: 0;
   transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+}
+.digest-refresh-progress.active {
+  display: block;
+  visibility: visible;
+  opacity: 1;
 }
 .digest-refresh-progress-track {
   height: 6px;
