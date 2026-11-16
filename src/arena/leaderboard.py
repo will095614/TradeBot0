@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Dict, Optional
 import math
+import time
 from src.arena.portfolio import Portfolio
 from src.arena.order import OrderSide
 
@@ -41,6 +42,11 @@ class Leaderboard:
     Evaluates competitors using risk-adjusted metrics (Sharpe, Sortino, Profit Factor, Drawdown)
     and computes a unified Evolutionary Fitness Score for genetic selection.
     """
+    # Audit 2.8: the fill-driven cache key (below) is right for
+    # performance, but without a TTL the served metrics freeze at the
+    # last fill while the equity history keeps moving. A read older
+    # than the TTL recomputes, so the lag is bounded at 60s.
+    METRICS_CACHE_TTL_SEC = 60.0
     @staticmethod
     def _estimate_periods_per_year(equity_history: List[tuple[float, Decimal]]) -> float:
         # Annualize at the 15-minute-bar convention (see the named
@@ -83,7 +89,10 @@ class Leaderboard:
         )
         cached = getattr(portfolio, "_metrics_cache", None)
         if cached is not None and cached[0] == cache_key:
-            return cached[1]
+            cached_time = getattr(portfolio, "_metrics_cache_time", 0.0)
+            if time.monotonic() - cached_time < cls.METRICS_CACHE_TTL_SEC:
+                return cached[1]
+            # TTL expired: fall through and recompute below.
 
         returns: List[float] = []
         for i in range(1, len(history)):
@@ -129,6 +138,7 @@ class Leaderboard:
 
         result = (sharpe, sortino)
         portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
+        portfolio._metrics_cache_time = time.monotonic()  # type: ignore[attr-defined]
         return result
 
     @staticmethod
