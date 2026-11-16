@@ -293,3 +293,40 @@ def test_article_renders_with_fade_in():
     )
     assert m, "no reduced-motion block in app.css"
     assert "intel-article-para" in m.group(1)
+
+
+def test_article_render_is_not_rewritten_every_tick():
+    # Article jitter (user report 2026-11-16): the 1s re-render called
+    # renderIntelArticle for every open card, which re-set innerHTML
+    # every second. Invisible until V2.8.5 gave the paragraphs a
+    # fade-in, which then replayed forever. The render must skip when
+    # this exact cached result is already displayed.
+    js = _js()
+    body = _fn_body(js, "renderIntelArticle")
+    assert "_renderedResult" in body
+    assert "if (body._renderedResult === result) return;" in body
+
+
+def test_articles_preload_while_collapsed():
+    # Preload (user request 2026-11-16): articles start loading while
+    # the cards are still collapsed, so opening one is instant.
+    js = _js()
+    assert "function preloadIntelArticles" in js
+    assert "function pumpIntelArticlePreload" in js
+    # Triggered from the list-update branch of renderIntelHub, in
+    # display order.
+    hub = _fn_body(js, "renderIntelHub")
+    assert "preloadIntelArticles(sorted.map(intelEventKey))" in hub
+    # Sequential: one in flight at a time, chained on the pending
+    # promise of the article just started.
+    pump = _fn_body(js, "pumpIntelArticlePreload")
+    assert "intelArticlePreloadRunning" in pump
+    assert "intelArticlePending[id]" in pump
+    # Cached / in-flight / gone events are skipped, never re-queued.
+    preload = _fn_body(js, "preloadIntelArticles")
+    assert "intelArticleCache[id]" in preload
+    assert "intelArticlePending[id]" in preload
+    assert "intelArticlePreloadQueue.indexOf(id) === -1" in preload
+    # Preload never expands a card.
+    assert "intelExpandedIds" not in preload
+    assert "intelExpandedIds" not in pump

@@ -3452,6 +3452,14 @@ function updateUiClockDisplay() {
   function renderIntelArticle(eventId, result) {
     const body = intelArticleBodyEl(eventId);
     if (!body) return;
+    // The 1s re-render calls this for every open card (updateIntelEventCard
+    // -> requestIntelArticle cache hit). Re-setting innerHTML here re-created
+    // the <p> elements every second -- invisible until V2.8.5 gave them a
+    // fade-in, which then replayed forever and the finished article visibly
+    // jittered. Skip when this exact cached result is already displayed
+    // (same object reference; the cache never replaces a result for an id).
+    if (body._renderedResult === result) return;
+    body._renderedResult = result;
     if (result.state === 'ready') {
       const paras = String(result.article || '').split(/\n\s*\n/);
       const blocks = paras.length > 1 ? paras : String(result.article || '').split('\n');
@@ -3508,6 +3516,53 @@ function updateUiClockDisplay() {
       intelArticleCache[eventId] = result;
       renderIntelArticle(eventId, result);
     });
+  }
+
+  // Background article preload (user request 2026-11-16): an article used
+  // to start loading only on first expand. While the cards sit collapsed,
+  // preload them in list order, one at a time, through the same
+  // requestIntelArticle path -- its cache/pending dedup means an expand
+  // mid-preload never duplicates the call, and the rendered article is
+  // already in the (hidden) body when the card opens. Sequential on
+  // purpose: each article is one ~1000-word LLM call; a burst would
+  // hammer the gateway. Only runs while the Hub view is active (called
+  // from renderIntelHub's list-update branch). Preload never expands a card.
+  const intelArticlePreloadQueue = [];
+  let intelArticlePreloadRunning = false;
+
+  function preloadIntelArticles(eventIds) {
+    eventIds.forEach(function (id) {
+      if (intelArticleCache[id] || intelArticlePending[id]) return;
+      if (intelArticlePreloadQueue.indexOf(id) === -1) intelArticlePreloadQueue.push(id);
+    });
+    pumpIntelArticlePreload();
+  }
+
+  function pumpIntelArticlePreload() {
+    if (intelArticlePreloadRunning) return;
+    let id;
+    while ((id = intelArticlePreloadQueue.shift()) !== undefined) {
+      // The event may have left the list, or an expand may have already
+      // started / cached it, while it waited in the queue.
+      if (intelArticleCache[id] || intelArticlePending[id] || !intelEventNodes[id]) continue;
+      break;
+    }
+    if (id === undefined) return;
+    intelArticlePreloadRunning = true;
+    requestIntelArticle(id);
+    const p = intelArticlePending[id];
+    if (p && typeof p.then === 'function') {
+      const done = function () {
+        intelArticlePreloadRunning = false;
+        pumpIntelArticlePreload();
+      };
+      p.then(done, done);
+    } else {
+      // No pending promise: the bridge is missing (failed fast and cached
+      // the failure) or the article was already cached.
+      intelArticlePreloadRunning = false;
+      pumpIntelArticlePreload();
+    }
   }
 
   function buildIntelEventCard(evt) {
@@ -3827,6 +3882,10 @@ function updateUiClockDisplay() {
           });
           listContainer._intelOrder = nextOrder;
         }
+        // Preload articles for the collapsed cards (see preloadIntelArticles):
+        // the list order is the display order, so the cards the user is
+        // most likely to open first are preloaded first.
+        preloadIntelArticles(sorted.map(intelEventKey));
       }
     }
   }
