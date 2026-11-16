@@ -2202,7 +2202,7 @@ class LiveArenaEngine:
         "comp_cons": "#38BDF8",   # Electric Sky Cyan (Conservative Scalper)
         "comp_trail": "#00E676",  # Neon Emerald Green (Trailing Guard)
         "comp_orb": "#A855F7",    # Electric Violet (ORB Breakout)
-        "comp_vwap": "#14F195",   # Mint Teal (Session Mean)
+        "comp_vwap": "#FFD60A",   # Vivid Gold (Session Mean)
     }
     STRATEGY_SHORT: Dict[str, str] = {
         "comp_agg": "AGG",

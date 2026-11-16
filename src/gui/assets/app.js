@@ -2553,7 +2553,7 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
   if (vwapVal >= minP && vwapVal <= maxP) {
     const vy = toY(vwapVal);
     ctx.save();
-    ctx.strokeStyle = 'rgba(20, 241, 149, 0.65)';
+    ctx.strokeStyle = 'rgba(255, 214, 10, 0.65)';
     ctx.lineWidth = 1.25;
     ctx.beginPath();
     ctx.moveTo(padLeft, vy);
@@ -2567,8 +2567,8 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
       stratTag: 'VWAP',
       subTag: '',
       label: `$${vwapVal.toFixed(0)}`,
-      color: '#14F195',
-      stratColor: '#14F195',
+      color: '#FFD60A',
+      stratColor: '#FFD60A',
       type: 'vwap'
     });
   }

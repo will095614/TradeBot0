@@ -163,7 +163,7 @@ def test_strategy_palette_and_bracket_state_complete():
     assert colors["comp_cons"] == "#38BDF8"
     assert colors["comp_trail"] == "#00E676"
     assert colors["comp_orb"] == "#A855F7"
-    assert colors["comp_vwap"] == "#14F195"
+    assert colors["comp_vwap"] == "#FFD60A"
 
     # 2. Drive with ticks to prime all positions
     _drive(engine, ["3500.00", "3502.00"])
