@@ -330,3 +330,36 @@ def test_articles_preload_while_collapsed():
     # Preload never expands a card.
     assert "intelExpandedIds" not in preload
     assert "intelExpandedIds" not in pump
+
+
+def test_expand_during_preload_is_safe():
+    # Expand-vs-preload race (user requirement 2026-11-16): expanding a
+    # card while its article is preloading must not start a second bridge
+    # call and must not clobber the in-flight load's loading state.
+    js = _js()
+    body = _fn_body(js, "requestIntelArticle")
+    pending_idx = body.index("if (intelArticlePending[eventId]) return;")
+    loading_idx = body.index("intel-article-loading")
+    bridge_idx = body.index("get_event_article(eventId)")
+    assert pending_idx != -1 and loading_idx != -1 and bridge_idx != -1
+    assert pending_idx < loading_idx, (
+        "pending check must precede the loading-state write, or an expand "
+        "mid-preload would clobber the in-flight load"
+    )
+    assert pending_idx < bridge_idx, (
+        "pending check must precede the bridge call, or an expand "
+        "mid-preload would fire a second load"
+    )
+    # The expand path goes through that dedup point; it never calls the
+    # bridge itself.
+    toggle = _fn_body(js, "toggleIntelEventCard")
+    assert "requestIntelArticle(eventId)" in toggle
+    assert "get_event_article" not in toggle
+    # The preload pump re-checks pending at dequeue time, so a load the
+    # user started by expanding is never duplicated by the pump.
+    pump = _fn_body(js, "pumpIntelArticlePreload")
+    assert "intelArticlePending[id]" in pump
+    # A load that resolves after its card left the list (digest refresh)
+    # must not crash: renderIntelArticle bails when the body is gone.
+    render = _fn_body(js, "renderIntelArticle")
+    assert "if (!body) return;" in render
