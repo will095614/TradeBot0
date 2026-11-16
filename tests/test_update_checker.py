@@ -41,8 +41,8 @@ def _mock_response(payload, status_ok=True):
     ("1.2", "1.2.0", 0),
     ("1.2", "1.2.1", -1),
     ("2.0.0", "1.9.9", 1),
-    ("V2.8.4", "V2.8.5", -1),
-    ("V2.8.4", "V2.8.4", 0),
+    ("V2.8.5", "V2.8.6", -1),
+    ("V2.8.5", "V2.8.5", 0),
     # Audit 3.14: date versions are the superseded scheme and always
     # compare older than a semver, in either direction.
     ("V2.6.0", "2026.11.20", 1),
@@ -58,7 +58,7 @@ def test_compare_versions(a, b, expected):
 
 def test_version_single_source():
     assert APP_NAME == "TradeBot0"
-    assert APP_VERSION == "V2.8.4"
+    assert APP_VERSION == "V2.8.5"
 
 
 def test_iss_version_matches_version_py():
@@ -112,7 +112,7 @@ def test_update_available_with_manifest(monkeypatch):
 
 def test_date_manifest_is_not_newer_than_v_release():
     # Audit 3.14: "2026.11.20" is the superseded date scheme, so it
-    # must not offer an update to an app running V2.8.4.
+    # must not offer an update to an app running V2.8.5.
     payload = {"version": "2026.11.20", "download_url": "https://example.invalid/TradeBot0Setup.exe"}
     with patch("src.update_checker.requests.get", return_value=_mock_response(payload)):
         result = check_for_updates(manifest_url="https://example.invalid/manifest.json")
