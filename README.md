@@ -2,6 +2,8 @@
 
 五個策略各拿 $100,000 虛擬資金，在即時 BTC/USD 行情下競賽淨值，定期用基因演算法演化參數；OmniRoute AI 情報（必要元件）提供新聞 ingestion 與 Market Direction 否決；桌面終端以 pywebview 呈現。
 
+下載：[TradeBot0Setup.exe（V1.0.0）](https://github.com/will095614/TradeBot0/releases/latest/download/TradeBot0Setup.exe)（GitHub Release，單一載點）。
+
 > 模擬盤，不是實盤。不接真實交易所帳戶、不下真單。
 
 ## 快速開始
@@ -75,7 +77,7 @@ TradeBot0 的 AI 功能全部走 OmniRoute（本機 gateway，預設 `http://127
 
 ## 版本
 
-版本號 `VX.Y.Z`：X＝大改動／breaking、Y＝功能群組、Z＝修復／優化群組；同一子系統只算一版。`src/version.py` 是唯一來源，`TradeBot0.iss` 的 MyAppVersion 須同步。目前最新已打包版：**V2.8.7**。
+版本號 `VX.Y.Z`：X＝大改動／breaking、Y＝功能群組、Z＝修復／優化群組；同一子系統只算一版。`src/version.py` 是唯一來源，`TradeBot0.iss` 的 MyAppVersion 須同步。目前最新版：**V1.0.0**（GitHub 公開第一版，2026-11-18；程式碼與 V2.8.7 相同，僅重置編號）。
 
 ## 系統需求
 

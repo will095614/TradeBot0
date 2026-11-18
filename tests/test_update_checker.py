@@ -58,7 +58,7 @@ def test_compare_versions(a, b, expected):
 
 def test_version_single_source():
     assert APP_NAME == "TradeBot0"
-    assert APP_VERSION == "V2.8.7"
+    assert APP_VERSION == "V1.0.0"
 
 
 def test_iss_version_matches_version_py():
@@ -132,7 +132,10 @@ def test_up_to_date_same_version():
 
 
 def test_up_to_date_older_manifest():
-    payload = {"version": "V2.5.3"}
+    # V1.0.0 is a numbering reset (2026-11-18, first public release):
+    # old 2.x versions compare numerically newer than 1.0.0, so the
+    # older-manifest fixture uses V0.9.0 instead of V2.5.3.
+    payload = {"version": "V0.9.0"}
     with patch("src.update_checker.requests.get", return_value=_mock_response(payload)):
         result = check_for_updates(manifest_url="https://example.invalid/manifest.json")
     assert result["status"] == "up_to_date"
