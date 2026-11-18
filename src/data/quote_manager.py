@@ -33,12 +33,14 @@ class QuoteManager:
         session: Optional[requests.Session] = None,
         on_ws_quote: Optional[Callable[[Any], None]] = None,
         ws_stale_threshold_sec: float = 3.0,
+        symbol: str = "ETH/USD",
     ) -> None:
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": "TradeBot0-LiveArena/2.0"})
         self.ws_feed = StreamingCryptoFeed(
             on_quote_callback=self._on_internal_ws_quote,
             stale_threshold_sec=ws_stale_threshold_sec,
+            symbol=symbol,
         )
         self._external_ws_callback = on_ws_quote
         self.latest_quote: Optional[Any] = None

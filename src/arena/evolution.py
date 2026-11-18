@@ -1,7 +1,7 @@
 from __future__ import annotations
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 import json
 import logging
 import os
@@ -10,7 +10,10 @@ import sys
 import time
 
 from src.arena.leaderboard import CompetitorStats, Leaderboard
-from src.competitors.base import BaseCompetitor, CompetitorGenome
+from src.competitors.base import CompetitorGenome
+
+if TYPE_CHECKING:
+    from src.competitors.base import BaseCompetitor
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +37,9 @@ class GeneticEvolver:
     _last_records: Optional[Tuple[int, List[Dict[str, Any]]]] = None
 
     @classmethod
-    def _generation_seed(cls, next_gen: int) -> int:
-        """Deterministic per-generation evolution seed (fixed salt + generation)."""
-        return cls.SEED_SALT + int(next_gen) * 97
+    def _generation_seed(cls, next_gen: int, seed_entropy: int = 0) -> int:
+        """Per-generation evolution seed (fixed salt + generation + optional market entropy)."""
+        return cls.SEED_SALT + int(next_gen) * 97 + int(seed_entropy)
 
     @staticmethod
     def _clamp_decimal(val: Decimal, low: str, high: str, quant: str = "0.001") -> Decimal:
@@ -72,9 +75,10 @@ class GeneticEvolver:
         parent1: CompetitorGenome,
         parent2: CompetitorGenome,
         next_gen: int,
-        seed_offset: int = 0
+        seed_offset: int = 0,
+        seed_entropy: int = 0,
     ) -> CompetitorGenome:
-        rng = random.Random(cls._generation_seed(next_gen) + seed_offset)
+        rng = random.Random(cls._generation_seed(next_gen, seed_entropy) + seed_offset)
 
         def blend(d1: Decimal, d2: Decimal, jitter_pct: float = 0.12) -> Decimal:
             weight = Decimal(str(round(rng.uniform(0.35, 0.65), 2)))
@@ -247,13 +251,16 @@ class GeneticEvolver:
             reverse=True,
         )
 
+    UNCAPPED_RUNNER_IDS = ("comp_agg", "comp_trail")
+
     @classmethod
     def evolve_generation(
         cls,
         competitors: List[BaseCompetitor],
         rankings: List[CompetitorStats],
         preserve_portfolio: bool = True,
-        save_history: bool = True
+        save_history: bool = True,
+        seed_entropy: int = 0,
     ) -> List[str]:
         """
         Evolves the competitor pool in-place for the next generation based on Arena rankings.
@@ -261,9 +268,30 @@ class GeneticEvolver:
         parent_order; the incoming rankings keep their display (equity) order.
         Returns human-readable evolution log entries.
         """
+        logs, _ = cls.evolve_generation_with_records(
+            competitors,
+            rankings,
+            preserve_portfolio=preserve_portfolio,
+            save_history=save_history,
+            seed_entropy=seed_entropy,
+        )
+        return logs
+
+    @classmethod
+    def evolve_generation_with_records(
+        cls,
+        competitors: List[BaseCompetitor],
+        rankings: List[CompetitorStats],
+        preserve_portfolio: bool = True,
+        save_history: bool = True,
+        seed_entropy: int = 0,
+    ) -> Tuple[List[str], Optional[Tuple[int, List[Dict[str, Any]]]]]:
+        """Evolves the competitor pool and returns ``(logs, (next_gen, records))``
+        directly so callers never have to rely solely on class state ``_last_records``.
+        """
         comp_map: Dict[str, BaseCompetitor] = {c.portfolio_id: c for c in competitors}
         if len(rankings) < 2:
-            return []
+            return [], None
 
         # Audit 3.9: parents are picked by fitness, not by the equity
         # order of the display rankings. parent_order returns a new list;
@@ -276,7 +304,7 @@ class GeneticEvolver:
 
         current_gen = max(c.genome.generation for c in competitors)
         next_gen = current_gen + 1
-        gen_seed = cls._generation_seed(next_gen)
+        gen_seed = cls._generation_seed(next_gen, seed_entropy=seed_entropy)
 
         logs: List[str] = []
         evolution_records: List[Dict[str, Any]] = []
@@ -288,22 +316,7 @@ class GeneticEvolver:
 
             if idx == 0:
                 # Elite #1: Champion genome preserved with generation bump
-                new_g = CompetitorGenome(
-                    position_ratio=old_g.position_ratio,
-                    risk_per_trade_pct=old_g.risk_per_trade_pct,
-                    stop_loss_pct=old_g.stop_loss_pct,
-                    take_profit_pct=old_g.take_profit_pct,
-                    atr_risk_pct=old_g.atr_risk_pct,
-                    atr_stop_mult=old_g.atr_stop_mult,
-                    atr_target_mult=old_g.atr_target_mult,
-                    trailing_trigger_pct=old_g.trailing_trigger_pct,
-                    trailing_distance_pct=old_g.trailing_distance_pct,
-                    cooldown_bars=old_g.cooldown_bars,
-                    generation=next_gen,
-                    leverage_enabled=old_g.leverage_enabled,
-                    leverage=old_g.leverage,
-                    news_sensitivity=old_g.news_sensitivity
-                )
+                new_g = replace(old_g, generation=next_gen)
                 action = "ELITE_CHAMPION_PRESERVED"
                 logs.append(
                     f"[G{next_gen} ELITE #1] {comp.portfolio_id} retained winning genome "
@@ -311,8 +324,7 @@ class GeneticEvolver:
                 )
             elif idx == 1:
                 # Elite #2: Runner-up genome kept, with real adaptive fine-tuning:
-                # 1-2 genes nudged by +/-5% (this used to be a plain copy despite
-                # the comment). Ratio rules are repaired like crossover does.
+                # 1-2 genes nudged by +/-5%. Ratio rules are repaired like crossover does.
                 new_g, tuned_genes = cls._fine_tune_runner_up(old_g, next_gen, gen_seed + 1000003)
                 action = "ELITE_RUNNER_UP_PRESERVED"
                 logs.append(
@@ -326,26 +338,17 @@ class GeneticEvolver:
                     champ_comp.genome,
                     runner_comp.genome,
                     next_gen=next_gen,
-                    seed_offset=idx * 31
+                    seed_offset=idx * 31,
+                    seed_entropy=seed_entropy,
                 )
-                # Preserve archetype specialization (e.g. Aggressive keeps take_profit_pct=None)
-                if comp.portfolio_id == "comp_agg":
-                    new_g = CompetitorGenome(
-                        position_ratio=cls._clamp_decimal(new_g.position_ratio * Decimal("1.15"), "0.45", "0.75", "0.01"),
-                        risk_per_trade_pct=new_g.risk_per_trade_pct,
-                        stop_loss_pct=new_g.stop_loss_pct,
-                        take_profit_pct=None,
-                        atr_risk_pct=new_g.atr_risk_pct,
-                        atr_stop_mult=new_g.atr_stop_mult,
-                        atr_target_mult=new_g.atr_target_mult,
-                        trailing_trigger_pct=new_g.trailing_trigger_pct,
-                        trailing_distance_pct=new_g.trailing_distance_pct,
-                        cooldown_bars=new_g.cooldown_bars,
-                        generation=next_gen,
-                        leverage_enabled=new_g.leverage_enabled,
-                        leverage=new_g.leverage,
-                        news_sensitivity=new_g.news_sensitivity
+                # Preserve uncapped runner specialization for Aggressive & Trailing Guard
+                if comp.portfolio_id in cls.UNCAPPED_RUNNER_IDS:
+                    pos_ratio = (
+                        cls._clamp_decimal(new_g.position_ratio * Decimal("1.15"), "0.45", "0.75", "0.01")
+                        if comp.portfolio_id == "comp_agg"
+                        else new_g.position_ratio
                     )
+                    new_g = replace(new_g, position_ratio=pos_ratio, take_profit_pct=None)
                 action = "CROSSOVER_MUTATED"
                 logs.append(
                     f"[G{next_gen} MUTATED] {comp.portfolio_id} evolved from #{champion_stats.rank}x#{runner_up_stats.rank}: "
@@ -372,8 +375,9 @@ class GeneticEvolver:
 
         if save_history:
             cls.save_history(next_gen, evolution_records, evolution_seed=gen_seed)
-        cls._last_records = (next_gen, evolution_records)
-        return logs
+        result_tuple = (next_gen, evolution_records)
+        cls._last_records = result_tuple
+        return logs, result_tuple
 
     @classmethod
     def save_history(cls, generation: int, records: List[Dict[str, Any]], evolution_seed: Optional[int] = None, storage: Optional[Any] = None) -> None:

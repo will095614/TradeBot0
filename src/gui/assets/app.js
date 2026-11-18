@@ -44,7 +44,7 @@ const MAX_VISIBLE_TOASTS = 6;
 const TOAST_DURATION_MS = 6000;
 
 const initialSplashSteps = [
-  { threshold: 15, text: "Initializing 6 Strategy Ledgers ($100,000 U x 6)..." },
+  { threshold: 15, text: "Initializing 5 Strategy Ledgers ($100,000 U x 5)..." },
   { threshold: 35, text: "Connecting to Real-Time Multi-Exchange Orderflow..." },
   { threshold: 55, text: "Replaying 120m Intraday Historical Simulation..." },
   { threshold: 75, text: "Translating & Synthesizing Global Macro Intelligence Digest (\u7e41\u9ad4\u4e2d\u6587)..." },
@@ -53,7 +53,7 @@ const initialSplashSteps = [
 ];
 
 const resetSplashSteps = [
-  { threshold: 15, text: "Resetting 6 Strategy Portfolios ($100,000 U x 6)..." },
+  { threshold: 15, text: "Resetting 5 Strategy Portfolios ($100,000 U x 5)..." },
   { threshold: 35, text: "Purging Order Tape & Active Bracket Orders..." },
   { threshold: 55, text: "Replaying 120m Intraday Historical Simulation..." },
   { threshold: 75, text: "Translating & Synthesizing Macro News Digest (\u7e41\u9ad4\u4e2d\u6587)..." },
@@ -425,7 +425,7 @@ function addChartBeacon(s) {
     'comp_cons': 'CONS',
     'comp_trail': 'TRAIL',
     'comp_orb': 'ORB',
-    'comp_vwap': 'VWAP'
+    'comp_vwap': 'MEAN'
   };
   chartBeacons.push({
     id: s.id,
@@ -585,7 +585,7 @@ function createPositionToastElement(strat) {
     'comp_cons': 'Conservative Scalper',
     'comp_trail': 'Trailing Guard',
     'comp_orb': 'ORB Breakout (15m)',
-    'comp_vwap': 'Institutional VWAP'
+    'comp_vwap': 'Session Mean'
   };
   const stratName = tagMap[strat.id] || strat.name || 'Quant Strategy';
   const sColor = strat.color || '#F59E0B';
@@ -729,7 +729,7 @@ function createPositionClosedToastElement(strat, fill, prevPos) {
     'comp_cons': 'Conservative Scalper',
     'comp_trail': 'Trailing Guard',
     'comp_orb': 'ORB Breakout (15m)',
-    'comp_vwap': 'Institutional VWAP'
+    'comp_vwap': 'Session Mean'
   };
   const stratName = tagMap[strat.id] || strat.name || 'Quant Strategy';
   const trigger = (fill && fill.trigger) ? fill.trigger : 'Strategy Exit';
@@ -1222,7 +1222,8 @@ function renderAll(state) {
   // Verify right-side tables are mounted and populated with data
   const lbBody = document.getElementById('leaderboardBody');
   const stratGrid = document.getElementById('tabCardsView');
-  if (lbBody && lbBody.children.length >= 6 && stratGrid && stratGrid.children.length >= 6) {
+  const expectedStrats = (Array.isArray(state.strategies) && state.strategies.length > 0) ? state.strategies.length : 5;
+  if (lbBody && lbBody.children.length >= expectedStrats && stratGrid && stratGrid.children.length >= expectedStrats) {
     hasFirstTableRendered = true;
   }
 }
@@ -1330,7 +1331,7 @@ function renderMacroRibbon(state) {
           if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
           if (catalystImpact.className !== 'catalyst-impact-pill loss') catalystImpact.className = 'catalyst-impact-pill loss';
         } else {
-          const nextCatText = '\u7b56\u7565\u653e\u884c: 6\u5927\u7b56\u7565\u96d9\u5411\u5168\u958b \u00b7 \u57fa\u6e96\u904b\u4f5c';
+          const nextCatText = '\u7b56\u7565\u653e\u884c: 5\u5927\u7b56\u7565\u96d9\u5411\u5168\u958b \u00b7 \u57fa\u6e96\u904b\u4f5c';
           if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
           if (catalystImpact.className !== 'catalyst-impact-pill info') catalystImpact.className = 'catalyst-impact-pill info';
         }
@@ -1456,8 +1457,11 @@ function renderHeader(state) {
 
   const srcEl = document.getElementById('omniSourceBadge');
   if (srcEl) {
-    srcEl.textContent = 'Pure Math Core';
-    srcEl.style.background = 'rgba(0, 242, 254, 0.14)';
+    const mcState = state.macro_commander || {};
+    const omniState = (state.intel_hub && state.intel_hub.omniroute) || {};
+    const isAiOnline = (omniState.status === 'ONLINE') || (mcState.status === 'ONLINE');
+    srcEl.textContent = isAiOnline ? 'OmniRoute AI' : 'Pure Math Core';
+    srcEl.style.background = isAiOnline ? 'rgba(56, 189, 248, 0.16)' : 'rgba(0, 242, 254, 0.14)';
     srcEl.style.color = 'var(--ss-text-strong)';
   }
   const qEl = document.getElementById('omniQuotaBadge');
@@ -1471,9 +1475,9 @@ function renderHeader(state) {
 function showEngineInfo() {
   alert(
     '[TradeBot0 High-Performance Quant Core]\n\n' +
-    '* Architecture: Pure Math Deterministic Core (0 External AI Sockets)\n' +
+    '* Architecture: Deterministic Quant Engine + OmniRoute Macro Intelligence\n' +
     '* Strategy Evolution: Tournament Selection + Uniform Crossover\n' +
-    '* Risk Mitigation: Monte Carlo EV Gate (10,000 Synthetic Paths)\n' +
+    '* Risk Mitigation: Monte Carlo EV Gate (1,000 Antithetic Student-t / Bootstrap Paths)\n' +
     '* Market Data Feed: Multi-Exchange Sub-Second Live Websocket/REST Stream\n' +
     '* Network Loss: Trading pauses and waits to reconnect (no stale quotes, no synthetic bars)\n' +
     '* Latency: Sub-millisecond in-memory execution'
@@ -1580,7 +1584,7 @@ function renderStrategies(state) {
       'comp_agg': 'Aggressive',
       'comp_cons': 'Conservative',
       'comp_orb': 'ORB Breakout',
-      'comp_vwap': 'Inst. VWAP',
+      'comp_vwap': 'Session Mean',
       'comp_trail': 'Trailing Guard'
     };
     const displayName = cardShortNames[s.id] || s.name;
@@ -1833,7 +1837,7 @@ function renderLeaderboard(state) {
     'comp_cons': 'CONS',
     'comp_trail': 'TRAIL',
     'comp_orb': 'ORB',
-    'comp_vwap': 'VWAP'
+    'comp_vwap': 'MEAN'
   };
 
   strategies.forEach(s => {
@@ -1953,10 +1957,13 @@ function renderFills(state) {
     'Opening Range Breakout': 'ORB',
     'ORB (15m)': 'ORB',
     'ORB': 'ORB',
-    'Institutional VWAP Pullback': 'VWAP',
-    'Institutional VWAP': 'VWAP',
-    'Institutional': 'VWAP',
-    'VWAP': 'VWAP'
+    'Session Mean Pullback': 'MEAN',
+    'Session Mean': 'MEAN',
+    'MEAN': 'MEAN',
+    'Institutional VWAP Pullback': 'MEAN',
+    'Institutional VWAP': 'MEAN',
+    'Institutional': 'MEAN',
+    'VWAP': 'MEAN'
   };
 
   tbody.innerHTML = liveFills.map((f, idx) => {
@@ -2358,7 +2365,7 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     'comp_cons': 'CONS',
     'comp_trail': 'TRAIL',
     'comp_orb': 'ORB',
-    'comp_vwap': 'VWAP'
+    'comp_vwap': 'MEAN'
   };
 
   let activeHeadX = padLeft + candlePlotW;
@@ -2571,10 +2578,10 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     }
   });
 
-  // 3b. Institutional Indicators (VWAP & ORB Range Reference Lines)
+  // 3b. Reference Mean & ORB Range Reference Lines
   const ind = state.indicators || {};
-  const vwapVal = Number(ind.vwap || 0);
-  if (vwapVal >= minP && vwapVal <= maxP) {
+  const vwapVal = Number(ind.typical_mean != null ? ind.typical_mean : (ind.vwap || 0));
+  if (vwapVal > 0 && vwapVal >= minP && vwapVal <= maxP) {
     const vy = toY(vwapVal);
     ctx.save();
     ctx.strokeStyle = 'rgba(255, 214, 10, 0.65)';
@@ -2588,7 +2595,7 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     rightBadges.push({
       rawY: vy,
       price: vwapVal,
-      stratTag: 'VWAP',
+      stratTag: 'MEAN',
       subTag: '',
       label: `$${vwapVal.toFixed(0)}`,
       color: '#FFD60A',
@@ -3252,7 +3259,7 @@ function updateUiClockDisplay() {
       } else if (isOffline) {
         subEl.textContent = 'Exchange Feed Offline · Reconnecting...';
       } else {
-        subEl.textContent = 'Realtime Stream · $600,000 Arena Pool';
+        subEl.textContent = 'Realtime Stream · $500,000 Arena Pool';
       }
     }
   }
@@ -3500,9 +3507,12 @@ function updateUiClockDisplay() {
         .join('');
       body.classList.remove('is-loading');
     } else {
-      // Honest failure: show the backend reason. The one-line summary
-      // is never passed off as the article.
-      body.innerHTML = '<div class="intel-article-error">Article unavailable: ' + escapeHtml(result.reason || 'Unknown error') + '</div>';
+      // Honest failure: show the backend reason with an explicit retry action.
+      body.innerHTML = '<div class="intel-article-error"><span>Article unavailable: '
+        + escapeHtml(result.reason || 'Unknown error')
+        + '</span><button type="button" class="intel-retry-btn" data-retry-event-id="'
+        + escapeHtml(eventId)
+        + '">Retry</button></div>';
       body.classList.remove('is-loading');
     }
   }
@@ -3762,9 +3772,11 @@ function updateUiClockDisplay() {
 
     const tokensEl = document.getElementById('omniTokensVal');
     if (tokensEl) {
-      const used = (omni.tokens_used || 0).toLocaleString();
-      const saved = (omni.tokens_saved || 0).toLocaleString();
-      const nextTokens = `${used} used / ${saved} saved`;
+      const usedNum = Number(omni.tokens_used || 0);
+      const savedNum = Number(omni.tokens_saved || 0);
+      const nextTokens = savedNum > 0
+        ? `${usedNum.toLocaleString()} used / ${savedNum.toLocaleString()} saved`
+        : `${usedNum.toLocaleString()} tokens used`;
       if (tokensEl.textContent !== nextTokens) tokensEl.textContent = nextTokens;
     }
 
@@ -3838,7 +3850,8 @@ function updateUiClockDisplay() {
 
     const confEl = document.getElementById('macroHubConfidence');
     if (confEl) {
-      const nextConf = `${Math.round(Number(macro.confidence || 0.8) * 100)}%`;
+      const confVal = macro.confidence != null ? Number(macro.confidence) : 0.8;
+      const nextConf = `${Math.round((Number.isFinite(confVal) ? confVal : 0.8) * 100)}%`;
       if (confEl.textContent !== nextConf) confEl.textContent = nextConf;
     }
 
@@ -3981,6 +3994,16 @@ function updateUiClockDisplay() {
       // Stream redesign (Phase B): clicking anywhere on an event row
       // expands / collapses it; the "<" chevron is only the visual cue.
       iList.addEventListener('click', (e) => {
+        const retryBtn = e.target.closest('.intel-retry-btn');
+        if (retryBtn) {
+          e.stopPropagation();
+          const retryId = retryBtn.getAttribute('data-retry-event-id') || '';
+          if (retryId) {
+            delete intelArticleCache[retryId];
+            requestIntelArticle(retryId);
+          }
+          return;
+        }
         const card = e.target.closest('.intel-event-card');
         if (card) toggleIntelEventCard(card);
       });

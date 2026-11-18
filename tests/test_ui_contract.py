@@ -49,13 +49,6 @@ from pathlib import Path
 KNOWN_UNDEFINED_CLASSES = frozenset()
 
 KNOWN_DEAD_BRIDGE_METHODS = {
-    # JS never calls it, and the close path + bridge.shutdown() call
-    # engine.save_session_state() directly -- the feature works, only
-    # this bridge wrapper is dead.
-    "save_session_state": (
-        "JS never calls it; shutdown/close path calls "
-        "engine.save_session_state() directly, so the feature is unaffected"
-    ),
     # Update-check scaffolding (another executor's in-progress work):
     # the bridge method exists and delegates to src.update_checker, but
     # the startup path (_maybe_check_for_updates) calls the imported

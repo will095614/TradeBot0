@@ -46,8 +46,7 @@ class RiskGuard:
             return False, f"Portfolio {portfolio.portfolio_id} circuit breaker is tripped."
 
         if portfolio.max_drawdown_pct >= MAX_DRAWDOWN_LIMIT_PCT:
-            portfolio.is_circuit_breaker_tripped = True
-            return False, f"Max drawdown exceeded ({portfolio.max_drawdown_pct}% >= {MAX_DRAWDOWN_LIMIT_PCT}%). Tripping breaker."
+            return False, f"Max drawdown exceeded ({portfolio.max_drawdown_pct}% >= {MAX_DRAWDOWN_LIMIT_PCT}%). Circuit breaker condition."
 
         # Factor in slippage for market orders
         if ticket.order_type == OrderType.MARKET:

@@ -39,8 +39,13 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
-# TradeBot0 runtime logs (audit 3.10)
+# TradeBot0 runtime logs & local databases (audit 3.10 / V2.0.0 hygiene)
 data/logs/
+logs/
+installer-output/
+data/*.db
+data/*.db-*
+graphify-out/cache/
 
 # Runtime system config (audit 3.18): per-machine state, never versioned
 data/system_config.json

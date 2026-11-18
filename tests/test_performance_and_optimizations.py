@@ -508,16 +508,14 @@ def test_session_state_save_and_restore_and_shutdown_bridge():
     assert c2.portfolio.avg_entry_price == Decimal("2325.50")
     assert c2.portfolio.realized_pnl == Decimal("1250.00")
 
-    # Test dashboard bridge save, cancel, and shutdown methods. The bridge
+    # Test engine session save plus dashboard bridge cancel and shutdown methods. The bridge
     # uses the dashboard's own engine (the current generation); pointing it
     # at engine1 would trip the item-9 generation fence, since engine2 is
     # newer -- a superseded engine must not overwrite the new generation.
     dash = ArenaDashboard(initial_cash=Decimal("100000.00"))
     bridge = _ArenaBridgeApi(dash)
 
-    res_save = bridge.save_session_state()
-    assert res_save["status"] == "ok"
-    assert res_save["saved"] is True
+    assert dash.engine.save_session_state() is True
 
     dash.closing_prompt_active = True
     res_cancel = bridge.cancel_shutdown_prompt()

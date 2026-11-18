@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import logging
 import threading
 import time
@@ -819,7 +820,8 @@ class MacroCommander:
             for e in recent_events:
                 zh_head, zh_sum = IntelligenceHarvester.ensure_traditional_chinese(e)
                 dedup_key = e.raw_title or zh_head
-                evt_id = f"evt_{int(now)}_{abs(hash(dedup_key)) % 10000}"
+                digest_hex = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:8]
+                evt_id = f"evt_{int(now)}_{digest_hex}"
                 already_exists = any(
                     (e.raw_title and x.get("raw_title") == e.raw_title) or x.get("headline") == zh_head
                     for x in self.curated_events
@@ -827,6 +829,8 @@ class MacroCommander:
                 if not already_exists:
                     self.curated_events.insert(0, {
                         "id": evt_id,
+                        "event_ts": int(now),
+                        "date_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
                         "time": time.strftime("%H:%M:%S"),
                         "source": e.source,
                         "domain": e.domain,
@@ -866,7 +870,7 @@ class MacroCommander:
             self.current_state.weighted_coverage = w_n
 
             system_prompt = (
-                "You are the Supreme Macro Commander governing a 6-strategy crypto trading arena.\n"
+                "You are the Supreme Macro Commander governing a 5-strategy ETH/USD crypto trading arena.\n"
                 "Your mission: synthesize real-time news/events and output an authoritative macro regime.\n"
                 "You have STRICT VETO POWER. If conditions strongly favor one direction (e.g. US election pro-crypto surge),\n"
                 "command LONG_ONLY so all counter-trend short trades are immediately vetoed.\n"

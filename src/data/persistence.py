@@ -98,12 +98,12 @@ class ArenaStorage:
             if conn is not None:
                 try:
                     conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Best-effort WAL checkpoint failed on connection reset: %s", e)
                 try:
                     conn.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("SQLite close failed during connection reset: %s", e)
 
     def close(self) -> None:
         """Release the persistent connection; the storage stays usable

@@ -164,22 +164,17 @@ class BrokerSim:
 
         ref_price = ticket.price if ticket.price is not None else self.current_price
         max_cap = self.competitor_caps.get(ticket.portfolio_id, Decimal("0.50"))
-        valid, reason = RiskGuard.validate_order(
-            ticket, portfolio, max_cap, ref_price, self.slippage_pct
-        )
-        if not valid:
-            self.rejection_audit.append((ticket.portfolio_id, reason))
-            if len(self.rejection_audit) > 500:
-                del self.rejection_audit[:-500]
-            return None
 
-        # Determine execution price:
+        # Determine execution price before pre-trade RiskGuard validation so
+        # RiskGuard and Portfolio.apply_fill validate on the exact same basis.
         # LIMIT orders fill at their limit price without adverse taker slippage;
-        # MARKET / STOP_MARKET orders fill with realistic depth & volatility slippage around reference price.
+        # MARKET / STOP_MARKET orders fill with realistic depth & volatility slippage.
         if ticket.order_type == OrderType.LIMIT and ticket.price is not None:
             fill_price = ticket.price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-        elif self.slippage_pct <= Decimal("0"):
+            val_slippage = Decimal("0")
+        elif self.slippage_pct <= Decimal("0") or ref_price <= Decimal("0"):
             fill_price = ref_price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            val_slippage = Decimal("0")
         else:
             fill_price = self.compute_execution_slippage(
                 side=ticket.side,
@@ -188,20 +183,16 @@ class BrokerSim:
                 mid_price=ref_price,
                 atr=self.current_atr,
             )
-            # Ensure dynamic depth/volatility slippage on opening orders never exceeds available cash margin
-            is_closing = (
-                (portfolio.position_side == PositionSide.LONG and ticket.side == OrderSide.SELL)
-                or (portfolio.position_side == PositionSide.SHORT and ticket.side == OrderSide.BUY)
-            )
-            if not is_closing and portfolio.position_qty >= Decimal("0"):
-                eff_lev = portfolio.leverage if portfolio.leverage_enabled and portfolio.leverage > Decimal("0") else Decimal("1.0")
-                trade_val = (ticket.qty * fill_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-                req_margin = (trade_val / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-                est_fee = (trade_val * portfolio.fee_rate).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-                if (req_margin + est_fee) > portfolio.cash:
-                    # Fallback to base slippage price validated by RiskGuard
-                    mult = (Decimal("1") + self.slippage_pct) if ticket.side == OrderSide.BUY else (Decimal("1") - self.slippage_pct)
-                    fill_price = (ref_price * mult).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            val_slippage = abs(fill_price - ref_price) / ref_price
+
+        valid, reason = RiskGuard.validate_order(
+            ticket, portfolio, max_cap, ref_price, val_slippage
+        )
+        if not valid:
+            self.rejection_audit.append((ticket.portfolio_id, reason))
+            if len(self.rejection_audit) > 500:
+                del self.rejection_audit[:-500]
+            return None
 
         fee = (ticket.qty * fill_price * portfolio.fee_rate).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
 

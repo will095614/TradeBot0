@@ -256,10 +256,6 @@ class _ArenaBridgeApi:
             return True
         return False
 
-    def save_session_state(self) -> Dict[str, Any]:
-        saved = self._dashboard.engine.save_session_state()
-        return {"status": "ok", "saved": saved}
-
     def cancel_shutdown_prompt(self) -> Dict[str, Any]:
         self._dashboard.closing_prompt_active = False
         return {"status": "cancelled"}
@@ -695,11 +691,13 @@ class ArenaDashboard:
         old_auto_redeploy = self.engine.auto_redeploy_when_flat
         old_paused = self.engine.paused
         old_gen = {c.portfolio_id: c.genome.generation for c in self.engine.competitors}
+        old_genomes = {c.portfolio_id: c.genome for c in self.engine.competitors}
         old_fills = list(self.engine.fill_records)
         old_events = list(self.engine.evolution_events)
         old_last_evolve_ts = self.engine.last_evolve_ts
         old_live_start_ts = self.engine.live_start_ts
         old_closed_since_evolve = self.engine._closed_trades_since_evolve
+        old_seq_offset = int(getattr(self.engine, "_live_fill_seq_offset", 0) or 0)
         try:
             self.engine.storage.clear_session_snapshot()
         except Exception as e:
@@ -715,10 +713,18 @@ class ArenaDashboard:
         self.engine.cadence_sec = old_cadence
         self.engine.auto_redeploy_when_flat = old_auto_redeploy
         for c in self.engine.competitors:
-            gen = old_gen.get(c.portfolio_id)
-            if gen is not None and gen != c.genome.generation:
-                c.genome = _dc_replace(c.genome, generation=gen)
+            prev_genome = old_genomes.get(c.portfolio_id)
+            if prev_genome is not None:
+                c.reset_for_new_generation(prev_genome, preserve_portfolio=False)
+                c.portfolio.leverage = prev_genome.leverage if prev_genome.leverage_enabled else Decimal("1.0")
+                c.portfolio.leverage_enabled = prev_genome.leverage_enabled
+                self.engine.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
+            else:
+                gen = old_gen.get(c.portfolio_id)
+                if gen is not None and gen != c.genome.generation:
+                    c.genome = _dc_replace(c.genome, generation=gen)
         self.engine.fill_records = old_fills
+        self.engine._live_fill_seq_offset = old_seq_offset
         self.engine.evolution_events = old_events
         self.engine.last_evolve_ts = old_last_evolve_ts
         self.engine.live_start_ts = old_live_start_ts

@@ -551,8 +551,8 @@ class OmniRouteClient:
         """
         try:
             return await resp.json()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("OmniRoute error response is not JSON: %s", e)
         try:
             text = await resp.text()
             return text[:4000] if isinstance(text, str) else None

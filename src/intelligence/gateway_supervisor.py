@@ -399,8 +399,8 @@ class GatewaySupervisor:
                 logger.debug("taskkill for install process failed: %s", e)
         try:
             proc.wait(timeout=10)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Cancelled install process wait timed out: %s", e)
 
     def _cleanup_cancelled_install(self, base: Path) -> None:
         """Removes partial install artifacts after a cancel so a later

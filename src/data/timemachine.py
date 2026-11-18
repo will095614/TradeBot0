@@ -398,7 +398,7 @@ class MonteCarloOddsEvaluator:
         take_profit: Optional[Decimal | float] = None,
         atr: Optional[Decimal | float] = None,
         recent_candles: Optional[List[Dict[str, Any]]] = None,
-        n_sims: int = 500,
+        n_sims: int = 1000,
         n_steps: int = 120,
         min_ev_threshold: float = -0.05,
     ) -> MonteCarloBracketOdds:
@@ -451,38 +451,62 @@ class MonteCarloOddsEvaluator:
 
         breakeven_win_rate = 1.0 / (1.0 + r_mult)
 
-        # Estimate empirical volatility & drift from recent candle returns or ATR
+        # Estimate empirical volatility, drift & return history from recent candles or ATR
         sigma = 0.0015
         drift = 0.0
+        empirical_rets: List[float] = []
         if recent_candles and len(recent_candles) >= 5:
             closes = [float(c["c"]) for c in recent_candles if "c" in c]
             if len(closes) >= 5:
-                rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
-                if len(rets) >= 4:
-                    std_val = float(np.std(rets)) if np is not None else 0.0015
+                empirical_rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
+                if len(empirical_rets) >= 4:
+                    std_val = float(np.std(empirical_rets)) if np is not None else 0.0015
                     sigma = max(0.0006, min(0.008, std_val))
-                    mean_val = float(np.mean(rets)) if np is not None else 0.0
+                    mean_val = float(np.mean(empirical_rets)) if np is not None else 0.0
                     drift = max(-0.001, min(0.001, mean_val * 0.5))
         elif atr is not None and float(atr) > 0:
             sigma = max(0.0006, min(0.008, (float(atr) / entry_f) * 0.85))
 
-        # Vectorized path simulation via NumPy
+        # Risk-neutral Ito convexity adjustment keeps E[S_t] = S_0 * exp(drift*t)
+        # symmetric between LONG and SHORT brackets under log-return compounding.
+        eff_drift = drift - 0.5 * (sigma ** 2)
+
+        # Vectorized path simulation via NumPy (fat-tailed bootstrap + antithetic variance reduction)
         if np is not None and self._rng is not None:
-            shocks = self._rng.normal(loc=drift, scale=sigma, size=(n_sims, n_steps))
+            if len(empirical_rets) >= 20:
+                ret_arr = np.asarray(empirical_rets, dtype=float)
+                shocks = self._rng.choice(ret_arr, size=(n_sims, n_steps), replace=True)
+                shocks = shocks - float(np.mean(ret_arr)) + eff_drift
+            else:
+                # Heavy-tailed Student-t(df=6) shocks variance-matched to sigma
+                # Paired with antithetic variates [-z, +z] to eliminate small-sample drift noise.
+                df = 6.0
+                scale_t = sigma * math.sqrt((df - 2.0) / df)
+                half = max(1, n_sims // 2)
+                raw = self._rng.standard_t(df=df, size=(half, n_steps)) * scale_t
+                shocks = eff_drift + np.concatenate([raw, -raw], axis=0)
+                if len(shocks) < n_sims:
+                    extra = eff_drift + self._rng.standard_t(df=df, size=(1, n_steps)) * scale_t
+                    shocks = np.concatenate([shocks, extra], axis=0)
             paths = entry_f * np.exp(np.cumsum(shocks, axis=1))
+            # Intra-step wick excursion envelope models high/low touches between closes
+            wick_env = 0.25 * sigma
+            step_highs = paths * (1.0 + wick_env)
+            step_lows = paths * max(0.0, 1.0 - wick_env)
 
             if is_short:
-                stop_hit = paths >= sl_f
-                target_hit = paths <= tp_f
+                stop_hit = step_highs >= sl_f
+                target_hit = step_lows <= tp_f
             else:
-                stop_hit = paths <= sl_f
-                target_hit = paths >= tp_f
+                stop_hit = step_lows <= sl_f
+                target_hit = step_highs >= tp_f
 
             first_stop = np.where(stop_hit.any(axis=1), np.argmax(stop_hit, axis=1), 999999)
             first_target = np.where(target_hit.any(axis=1), np.argmax(target_hit, axis=1), 999999)
 
-            stop_first = first_stop < first_target
-            target_first = first_target < first_stop
+            # Conservative tie-breaker matching BrokerSim.on_tick: stop wins equal-step touches
+            stop_first = (first_stop <= first_target) & (first_stop < 999999)
+            target_first = (first_target < first_stop) & (first_target < 999999)
             neither = (~stop_first) & (~target_first)
 
             payoffs = np.zeros(n_sims, dtype=float)

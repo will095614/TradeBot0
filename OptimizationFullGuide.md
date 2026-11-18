@@ -1,23 +1,23 @@
 # TradeBot0 — Full System Optimization & Engineering Implementation Guide
 
-> **Document Version:** 1.0.0  
-> **Target System:** TradeBot0 Quantitative Multi-Strategy Arena  
+> **Document Version:** 2.0.0  
+> **Target System:** TradeBot0 Quantitative Multi-Strategy Arena (ETH/USD)  
 > **Scope:** Architecture, Real-Time Data, Execution Models, Algorithmic Evolution, Persistence, and Frontend Decoupling  
-> **Status:** Specification & Implementation Roadmap  
+> **Status:** Implemented in V2.0.0 (5 Competitors / $500k Pool / Modular Engine)  
 
 ---
 
 ## 1. Executive Summary & Architectural Vision
 
-TradeBot0 has evolved into a high-performance, real-time quantitative trading battlefield featuring six parallel competitors, autonomous genetic parameter evolution, Monte Carlo EV gating, real-world LLM-driven macro intelligence ingestion, and an AIMRAN liquid-glass spatial visualization shell.
+TradeBot0 has evolved into a high-performance, real-time quantitative trading battlefield featuring five parallel competitors (`$100,000` each / `$500,000` arena pool), autonomous genetic parameter evolution, Student-t / bootstrap Monte Carlo EV gating, real-world LLM-driven macro intelligence ingestion, and a liquid-glass spatial visualization shell.
 
-This document serves as the comprehensive engineering guide for the next iteration of architectural enhancements across the entire stack:
+This document served as the engineering roadmap for architectural enhancements implemented across `V1.0.0`–`V2.0.0`:
 1. **Low-Latency Streaming Data (P1):** Replacing REST polling with native WebSocket feeds and self-healing circuit breakers.
 2. **Deterministic State Persistence (P1):** Embedding zero-dependency SQLite in Write-Ahead Logging (WAL) mode for instant cold-start hydration.
-3. **Execution Realism (P2):** Injecting dynamic orderbook liquidity depth and volatility-adjusted slippage models.
+3. **Execution Realism (P2):** Injecting dynamic orderbook liquidity depth and volatility-adjusted slippage models (aligned with pure `RiskGuard` validation).
 4. **Multi-Timeframe (MTF) Confluence (P2):** Filtering micro-timeframe 1m noise using 15m/1h macro trend regimes.
 5. **Multi-Objective Risk-Adjusted Evolution (P2):** Transitioning the genetic algorithm from pure ROI fitness to composite Sharpe-Sortino-MaxDD Pareto efficiency.
-6. **Engine Modularization & State Delta Streaming (P3):** Decoupling `LiveArenaEngine` into dedicated domain layers and implementing diff-based IPC payloads.
+6. **Engine Modularization & State Delta Streaming (P3):** Decomposing `LiveArenaEngine` into dedicated mixin collaborators (`quote_feeds.py`, `indicator_engine.py`, `live_strategy_runner.py`, `session_codec.py`) and implementing diff-based IPC payloads.
 
 ```mermaid
 flowchart TD
@@ -25,27 +25,27 @@ flowchart TD
         WS["Binance / Coinbase WebSocket (wss://)"] --> QuoteManager["Quote & Feed Manager"]
         REST["REST API Fallback (Binance/Kraken)"] -.->|Circuit Breaker| QuoteManager
         QuoteManager --> DB[("SQLite WAL Local Engine (arena_history.db)")]
-        QuoteManager --> MicroBar["Micro-Bar Cadence Dispatcher (5s)"]
+        QuoteManager --> MicroBar["Micro-Bar Cadence Dispatcher (1.0s)"]
     end
 
     subgraph Quant Engine ["Layer 2: Multi-Timeframe Strategy Arena"]
         MicroBar --> MTF["MTF Aggregator (1m / 5m / 15m / 1h)"]
-        MTF --> Indicators["Streaming Indicators (RSI, ATR, VWAP, ORB)"]
-        Indicators --> EVGate["Monte Carlo EV Gate (10,000 Synthetic Trials)"]
+        MTF --> Indicators["Streaming Indicators (RSI, ATR, MEAN, ORB)"]
+        Indicators --> EVGate["Monte Carlo EV Gate (1,000 Antithetic Student-t / Bootstrap Paths)"]
         Indicators --> MacroVeto["Macro Commander Directive (Strict Veto)"]
-        EVGate & MacroVeto --> Competitors["6 Parallel Autonomous Competitors"]
+        EVGate & MacroVeto --> Competitors["5 Parallel Autonomous Competitors"]
     end
 
     subgraph Execution & Ledger ["Layer 3: Realistic Execution Broker"]
         Competitors --> Broker["BrokerSim (Dynamic Depth & Slippage)"]
-        Broker --> Portfolios["6 Strategy Ledgers ($100,000 Baseline Each)"]
-        Portfolios --> Evolution["Risk-Adjusted Genetic Evolver (NSGA-II / Pareto)"]
+        Broker --> Portfolios["5 Strategy Ledgers ($100,000 Baseline Each)"]
+        Portfolios --> Evolution["Risk-Adjusted Genetic Evolver (Pareto + Entropy)"]
         Evolution -->|Mutate & Crossover| Competitors
     end
 
     subgraph UI & IPC ["Layer 4: Spatial Liquid Glass Shell"]
         Portfolios & Broker & MTF --> StateManager["State Delta ViewModel Publisher"]
-        StateManager -->|Local JSON-RPC| Frontend["Desktop Webview Shell (AIMRAN Liquid Glass)"]
+        StateManager -->|Local JSON-RPC| Frontend["Desktop Webview Shell"]
     end
 ```
 
@@ -484,21 +484,25 @@ def calculate_composite_fitness(cls, ranking) -> Decimal:
 ## 7. Phase 6 (P3): Engine Modularization & State Delta Streaming
 
 ### 7.1 Problem Statement
-`live_engine.py` currently spans over 1,680 lines, handling feed orchestration, indicator generation, order execution, genetic mutation, and view-model composition. Additionally, the desktop webview polls the entire 40KB state object every second.
+`live_engine.py` previously grew to 2,783 lines handling feed orchestration, indicator generation, order execution, genetic mutation, and session codec serialization in one class, while the desktop webview polled the full 40KB state object every second.
 
-### 7.2 Decoupled Target Architecture
+### 7.2 Decoupled Target Architecture (Implemented in V2.0.0)
 
 ```
 src/
 ├── data/
-│   ├── live_engine.py         # Thin central orchestrator (<500 lines)
+│   ├── live_engine.py         # Core orchestrator (1,192 lines inheriting 4 domain mixins)
+│   ├── quote_feeds.py         # Multi-exchange REST cascade & symbol pair normalizer
+│   ├── indicator_engine.py    # 1m/5m/15m/1h indicators, MTF & Chop Gate seeding
+│   ├── live_strategy_runner.py# 5-strategy evaluation, 4-layer gate & telemetry
+│   ├── session_codec.py       # Snapshot serialization, autosave & restore
 │   ├── quote_manager.py       # WS/REST streaming, cooldowns, circuit breakers
 │   ├── persistence.py         # SQLite WAL persistence engine (ArenaStorage)
 │   └── mtf_engine.py          # 1m, 5m, 15m, 1h bar aggregation
 ├── arena/
-│   ├── broker_sim.py          # Depth & slippage execution broker
+│   ├── broker_sim.py          # Dynamic depth & ATR slippage execution broker
 │   ├── evolution.py           # Multi-objective genetic evolver
-│   └── portfolio.py           # Margin, positions, accounting
+│   └── portfolio.py           # Margin, positions, Decimal accounting
 └── gui/
     └── view_model.py          # State extraction & diff-based JSON serialization
 ```
@@ -507,7 +511,7 @@ src/
 In `src/gui/view_model.py`:
 - Track the hash of historical candles. If no new candle has closed, omit `candles` from the tick payload.
 - Track the top sequence of `fills`. If no new fill occurred, transmit an empty fills delta.
-- **Result:** Decreases IPC payload size from 40KB to ~1.8KB for 95% of ticks, conserving CPU time and eliminating JSON garbage-collection overhead.
+- **Result:** Decreases IPC payload size dramatically for steady ticks, conserving CPU time and eliminating JSON garbage-collection overhead.
 
 ---
 
@@ -517,11 +521,11 @@ Every phase must maintain 100% adherence to all project constraints:
 
 | Requirement | Guardrail / Verification Strategy |
 | :--- | :--- |
-| **Zero CJK in Frontend Assets** | Enforced by `tests/test_performance_and_optimizations.py::test_zero_cjk_in_frontend_assets`. All static assets (`app.css`, `app.js`, `index.html`) must contain only English characters. Dynamic news translations are injected at runtime. |
+| **Zero CJK in Frontend Assets** | Enforced by `tests/test_performance_and_optimizations.py::test_zero_cjk_in_frontend_assets`. All static assets (`app.css`, `app.js`, `index.html`) must contain zero literal CJK characters. Dynamic news translations are injected at runtime. |
 | **PyInstaller Single Standalone EXE** | Verified via `build_exe.ps1`. The resulting `dist/TradeBot0_Arena.exe` must start cleanly with `--self-test` returning exit code 0. |
 | **Offline Feed Safety** | Enforced by `test_offline_feed_safety_blocks_mock_fills`. Offline states must never simulate fake price moves or trigger mock fills. |
-| **Knowledge Graph Sync** | Graphify must be updated via `graphify update .` after every code revision. |
-| **Unit & Integration Tests** | Full pytest suite (`pytest -v`) must maintain 100% pass rate (73/73 tests). |
+| **Knowledge Graph Sync** | Graphify must be updated via `.\.venv\Scripts\python.exe -m graphify update .` after code revisions. |
+| **Unit & Integration Tests** | Full pytest suite (`.\.venv\Scripts\python.exe -m pytest -v tests`) must maintain 100% pass rate with regression coverage across V2.0.0 fixes. |
 
 ---
 
@@ -529,9 +533,9 @@ Every phase must maintain 100% adherence to all project constraints:
 
 - [x] **Milestone 1:** Implement `src/data/ws_feed.py` and integrate WebSocket streaming into `LiveArenaEngine` with automatic REST fallback.
 - [x] **Milestone 2:** Implement `src/data/persistence.py` with native SQLite WAL, adding instant cold-start candle hydration.
-- [x] **Milestone 3:** Add depth and volatility slippage calculation to `BrokerSim`.
+- [x] **Milestone 3:** Add depth and volatility slippage calculation to `BrokerSim` (unified with pure `RiskGuard` validation in V2.0.0).
 - [x] **Milestone 4:** Implement 1h macro trend filter in `LiveArenaEngine` for multi-timeframe confluence.
-- [x] **Milestone 5:** Upgrade `GeneticEvolver` to multi-objective composite risk-adjusted fitness.
-- [x] **Milestone 6:** Extract `view_model.py` and enable incremental state-delta streaming.
-- [x] **Milestone 7:** Execute full test suite (`pytest -v`), sync knowledge graph (`graphify update .`), and compile standalone binary via `build_exe.ps1`.
+- [x] **Milestone 5:** Upgrade `GeneticEvolver` to multi-objective composite risk-adjusted fitness (including V2.0.0 `comp_trail` uncapped runner guard & market-entropy seeding).
+- [x] **Milestone 6:** Extract `view_model.py`, enable incremental state-delta streaming, and decompose `LiveArenaEngine` into 4 domain mixins (`quote_feeds`, `indicator_engine`, `live_strategy_runner`, `session_codec`).
+- [x] **Milestone 7:** Execute full test suite, sync knowledge graph (`graphify update .`), and release **V2.0.0** locally.
 

@@ -250,7 +250,7 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
 
     live_seq_by_order_id: Dict[str, int] = {}
     live_seq_by_id: Dict[int, int] = {}
-    live_counter = 0
+    live_counter = int(getattr(engine, "_live_fill_seq_offset", 0) or 0)
     for f in engine.fill_records:
         if _is_fill_live(f):
             live_counter += 1

@@ -32,9 +32,15 @@ class StreamingCryptoFeed:
         on_quote_callback: Callable[[Any], None],
         ws_url: Optional[str] = None,
         stale_threshold_sec: float = 3.0,
+        symbol: str = "ETH/USD",
     ) -> None:
+        from src.data.quote_feeds import parse_symbol_pairs
+
+        stream_name = parse_symbol_pairs(symbol)["ws_stream"]
+        self.symbol = symbol
         self.on_quote = on_quote_callback
-        self.ws_url = ws_url or self.BINANCE_WS_URL
+        self.ws_url = ws_url or f"wss://stream.binance.com:9443/ws/{stream_name}"
+        self.alt_ws_url = f"wss://stream.binance.com:443/ws/{stream_name}"
         self.stale_threshold_sec = float(stale_threshold_sec)
         self.running: bool = False
         self.connected: bool = False
@@ -101,7 +107,7 @@ class StreamingCryptoFeed:
 
     async def _connect_and_stream(self) -> None:
         backoff = 1.0
-        urls = [self.ws_url, self.BINANCE_ALT_WS_URL]
+        urls = [self.ws_url, getattr(self, "alt_ws_url", self.BINANCE_ALT_WS_URL)]
         url_idx = 0
         while self.running:
             target_url = urls[url_idx % len(urls)]

@@ -81,8 +81,11 @@ def main() -> None:
         import json
         from src.data.live_engine import LiveArenaEngine
         app = ArenaDashboard(initial_cash=Decimal("100000.00"))
-        json.dumps(app.engine.get_ui_state(), allow_nan=False)
-        print("SELF_TEST_OK")
+        try:
+            json.dumps(app.engine.get_ui_state(), allow_nan=False)
+            print("SELF_TEST_OK")
+        finally:
+            app.engine.stop()
         return
 
     if "--cli" in sys.argv:
@@ -123,8 +126,8 @@ def main() -> None:
             logger.info("Exiting TradeBot0 process cleanly...")
             try:
                 app.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Clean shutdown encountered error: %s", e)
             import gc
             import os
             import logging
