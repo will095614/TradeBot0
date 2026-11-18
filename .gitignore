@@ -44,3 +44,7 @@ data/logs/
 
 # Runtime system config (audit 3.18): per-machine state, never versioned
 data/system_config.json
+
+# Local secrets (never versioned; keys live in ~/.omniroute/.env, never in the repo)
+.env
+.env.*
