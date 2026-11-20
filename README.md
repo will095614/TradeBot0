@@ -2,11 +2,26 @@
 
 > 專案介紹簡報：[TradeBot0_Introduction.pdf](TradeBot0_Introduction.pdf)（V2.0.0 架構與功能介紹，點開可在 GitHub 線上瀏覽）
 
-TradeBot0 是一套在本機運行的 ETH/USD 多策略模擬交易軟體。系統平行運行 5 個量化策略，各配置 $100,000 虛擬資金（合計 $500,000 虛擬初始資金），依據即時市場報價進行虛擬撮合，並根據夏普值、索提諾值及回撤指標以基因演算法定期調整策略參數。系統整合本機 OmniRoute 服務進行新聞情緒分析與宏觀方向過濾，前端介面由 pywebview 桌面視窗呈現。
-
-安裝程式下載：[TradeBot0Setup.exe（V2.0.0）](https://github.com/will095614/TradeBot0/releases/latest/download/TradeBot0Setup.exe)（GitHub Release 單一載點）。
+TradeBot0 是一套在本機運行的 ETH/USD 多策略模擬交易軟體。系統同時運行 5 個量化策略，各配置 $100,000 虛擬資金（合計 $500,000），依據即時市場報價進行虛擬撮合，並定期自動調整策略參數。內建的 AI 會閱讀新聞、判斷市場方向，幫你過濾掉逆勢的交易訊號。
 
 > 本軟體為模擬測試工具，不連接真實交易所帳戶，亦不執行任何真實資金交易。
+
+---
+
+## 專案介紹
+
+![01 — 封面](docs/intro/slide-01.jpg)
+![02 — 目錄](docs/intro/slide-02.jpg)
+![03 — 簡介](docs/intro/slide-03.jpg)
+![04 — Command Deck 介面](docs/intro/slide-04.jpg)
+![05 — 五大策略](docs/intro/slide-05.jpg)
+![06 — 風險與情報](docs/intro/slide-06.jpg)
+![07 — 四層進場過濾](docs/intro/slide-07.jpg)
+![08 — 資金與風控層級](docs/intro/slide-08.jpg)
+![09 — Intel Hub 情報中心](docs/intro/slide-09.jpg)
+![10 — Macro AI 與設定](docs/intro/slide-10.jpg)
+![11 — 自我演化](docs/intro/slide-11.jpg)
+![12 — 總結](docs/intro/slide-12.jpg)
 
 ---
 
@@ -18,7 +33,7 @@ TradeBot0 是一套在本機運行的 ETH/USD 多策略模擬交易軟體。系�
 2. 因安裝檔未包含商業數位簽章，Windows SmartScreen 可能顯示提示視窗，點擊「其他資訊」並選擇「仍要執行」即可繼續。
 3. 首次啟動將顯示設定精靈：
    - 設定本機管理密碼。
-   - 輸入支援的大語言模型 API Key（支援 NVIDIA NIM、Google Gemini、Groq、OpenRouter）。精靈將自動在本地環境安裝並啟動 OmniRoute 服務。
+   - 輸入 AI 服務的 API Key（支援 NVIDIA NIM、Google Gemini、Groq、OpenRouter）。精靈會自動安裝並啟動所需的 AI 服務。
 
 ### 2. 原始碼執行（開發者）
 
@@ -38,21 +53,20 @@ powershell -ExecutionPolicy Bypass -File build_exe.ps1
 
 ---
 
-## 系統依賴與 OmniRoute 服務
+## AI 情報功能
 
-OmniRoute 為 TradeBot0 提供人工智慧語言模型介接的核心依賴元件，預設運行於本機 `http://127.0.0.1:20128`。
+TradeBot0 內建的 AI 會幫你閱讀市場新聞、判斷市場方向。
 
 ### 功能職責
 
-- **新聞資料彙整（Data Ingestion）**：抓取多來源市場新聞，經由 SHA-256 去重後產出中文摘要。
-- **宏觀方向決策（Macro Commander）**：分析市場事件情緒，產出市場方向指標（`LONG_ONLY`、`SHORT_ONLY`、`HOLD_CASH`）與倉位縮放係數（`risk_multiplier`），對不符方向之策略開倉訊號執行過濾。
-- **情報中心（Intel Hub）**：提供即時情報流，於使用者點擊時即時調用模型產出事件深度分析。
+- **新聞摘要**：從多個公開來源收集市場新聞，整理成中文摘要。
+- **市場方向判斷**：分析新聞與市場事件，判斷現在適合做多、做空還是觀望；方向不合的開倉訊號會直接被擋下來，也會依市況調整倉位大小。
+- **情報中心**：即時情報流，點開一則情報就能看到 AI 寫的深度分析。
 
-### 運行機制與離線行為
+### 沒有 API Key 也能用
 
-- **自動管理**：程式內建的 `GatewaySupervisor` 會自動啟動並監控 OmniRoute 行程；相關執行檔案位於本機 `%LOCALAPPDATA%\TradeBot0\runtime`。
-- **金鑰儲存**：API Key 儲存於本機使用者目錄 `~/.omniroute/.env`，不會寫入原始碼庫。
-- **離線狀態**：若未設定 API Key 或 OmniRoute 服務未啟動，系統將切換為純指標運作模式，情報面板維持待機（`STANDBY`），交易訊號改由純技術指標與本機風控邏輯判定。
+- **金鑰只存在你的電腦上**：你輸入的 API Key 只保存在本機，不會上傳，也不會寫進專案檔案。
+- **AI 待機時照常交易**：沒有設定 API Key 時，AI 情報功能會待機，交易改由技術指標與風控邏輯照常進行。
 
 ---
 
@@ -60,15 +74,15 @@ OmniRoute 為 TradeBot0 提供人工智慧語言模型介接的核心依賴元�
 
 系統平行運作 5 個獨立策略帳戶，初始資金各為 $100,000 虛擬美元：
 
-| 策略名稱 | 代碼 | 槓桿倍數 | 交易邏輯與風控參數 |
-| :--- | :--- | :---: | :--- |
-| Aggressive Momentum | `comp_agg` | 3x | 順勢追價策略。單筆配置 70% 倉位，3.5% 固定停損，無固定止盈，採動態追蹤停損。 |
-| Conservative Scalper | `comp_cons` | 1x（現貨） | RSI 均值回歸短線策略。單筆配置 25% 倉位，1.0% 固定停損，1.8% 固定止盈。 |
-| Trailing Profit Guard | `comp_trail` | 2x | 趨勢追蹤策略。單筆配置 40% 倉位，1.5% 固定停損；獲利達 +1.0% 啟動保本，後續依價格極值階梯式移動停利。 |
-| ORB Breakout | `comp_orb` | 2.5x | 15 分鐘開盤區間突破策略。以區間中點為停損，目標獲利率 2.0R，每日 UTC 00:00 重置區間。 |
-| Session Mean Pullback | `comp_vwap` | 1x（現貨） | 區間典型價均值拉回策略。以典型均價（Typical Mean）為基準，目標獲利率 2.2R。 |
+| 策略名稱 | 槓桿倍數 | 交易邏輯與風控參數 |
+| :--- | :---: | :--- |
+| Aggressive Momentum | 3x | 順勢追價策略。單筆配置 70% 倉位，3.5% 固定停損，無固定止盈，採動態追蹤停損。 |
+| Conservative Scalper | 1x（現貨） | RSI 均值回歸短線策略。單筆配置 25% 倉位，1.0% 固定停損，1.8% 固定止盈。 |
+| Trailing Profit Guard | 2x | 趨勢追蹤策略。單筆配置 40% 倉位，1.5% 固定停損；獲利達 +1.0% 啟動保本，後續依價格極值階梯式移動停利。 |
+| ORB Breakout | 2.5x | 15 分鐘開盤區間突破策略。以區間中點為停損，目標獲利率 2.0R，每日 UTC 00:00 重置區間。 |
+| Session Mean Pullback | 1x（現貨） | 區間典型價均值拉回策略。以典型均價為基準，目標獲利率 2.2R。 |
 
-排行榜評分依據包含策略帳戶總淨值（`total_equity = cash + margin_locked + unrealized_pnl`）與夏普值、索提諾值及最大回撤等風險調整後指標。
+排行榜以帳戶總淨值排名（淨值 = 現金 + 保證金 + 未實現損益）；夏普值、索提諾值與最大回撤則用於演化調整參數時的評分。
 
 ---
 
@@ -78,21 +92,20 @@ OmniRoute 為 TradeBot0 提供人工智慧語言模型介接的核心依賴元�
 
 交易訊號在送交撮合引擎前，依序通過以下過濾：
 
-1. **波動效率過濾（Chop Gate）**：計算 15 分鐘線的效率比（`ER(20) < 0.25`），當市場處於低效率盤整時，禁止建立新倉位（平倉單不受此限）。
-2. **多時間框架趨勢確認（MTF Confluence）**：比對 1 小時線 EMA 均線排列，確保短線訊號順應中長線趨勢。
-3. **宏觀方向過濾（Macro Commander）**：由語言模型評估宏觀資訊，當策略訊號與模型判定方向衝突時直接否決。
-4. **蒙地卡羅勝率驗證（Monte Carlo EV Gate）**：利用歷史報酬重抽樣與 Student-t 分布（自由度 6）進行對偶路徑模擬，結合當前 K 線影線範圍評估預期值（EV）與觸及停損/止盈之機率。
+1. **盤整過濾**：看 15 分鐘線的走勢效率，市場盤整時不開新倉（平倉不受影響）。
+2. **趨勢確認**：比對 1 小時線均線排列，確保短線訊號順應中長線趨勢。
+3. **宏觀方向過濾**：由 AI 評估宏觀資訊，策略訊號與 AI 判定的方向衝突時直接否決。
+4. **勝率驗證**：用歷史報酬模擬大量可能的走勢，評估這筆交易划不划算、以及碰到停損或止盈的機率。
 
 ### 2. 參數演化機制
 
 - **觸發條件**：系統每運行 6 小時或累積 30 筆平倉紀錄後執行一次參數演化（設有 30 分鐘冷卻時間）。
-- **淘汰與變異**：依據複合風險調整後適應度排序，保留前 2 名策略之參數；對後 3 名策略進行參數交叉與變異微調。`comp_agg` 與 `comp_trail` 保留無固定止盈之參數結構。
+- **淘汰與變異**：依綜合表現排序，保留前 2 名策略的參數；對後 3 名策略進行參數交叉與變異微調。其中積極動量與移動停利策略維持不設固定止盈的特性。
 
 ### 3. 撮合與行情保護
 
-- **滑價模型**：`BrokerSim` 撮合模組結合市場深度與 ATR 指標計算動態滑價，模擬真實成交衝擊。
-- **連線中斷防護**：當市場報價連線中斷時，系統停止新增開倉委託，介面顯示連線狀態警告，避免依據過期價格撮合。
-- **非同步持久化**：K 線儲存、訂單紀錄與演化歷程之 SQLite 資料庫寫入獨立於主交易迴圈之外，避免磁碟 I/O 阻塞報價更新。
+- **滑價模擬**：撮合時依市場深度與波動計算滑價，模擬真實成交的衝擊。
+- **連線中斷防護**：市場報價連線中斷時，系統停止新增開倉委託，介面會顯示連線狀態警告，不會用過期的價格下單。
 
 ---
 
@@ -103,20 +116,19 @@ OmniRoute 為 TradeBot0 提供人工智慧語言模型介接的核心依賴元�
 - `src/competitors/`：5 個量化策略實作與策略參數結構 `CompetitorGenome`。
 - `src/data/`：行情與資料處理模組，包含主調度引擎 `live_engine.py`、報價來源 `quote_feeds.py`、技術指標運算 `indicator_engine.py`、策略執行器 `live_strategy_runner.py`、會話存檔 `session_codec.py`、WebSocket 行情串流 `ws_feed.py` 與歷史回測 `timemachine.py`。
 - `src/intelligence/`：外部資訊整合模組，包含 OmniRoute 本機客戶端 `OmniRouteClient`、新聞採集 `IntelligenceHarvester`、宏觀方向決策 `MacroCommander` 與背景行程監控 `GatewaySupervisor`。
-- `src/gui/`：使用者介面，包含 pywebview 視窗控制器 `dashboard.py`、視圖資料轉換 `view_model.py` 及前端靜態資源 `assets/`（`index.html`、`app.css`、`app.js`）。
+- `src/gui/`：使用者介面，包含桌面視窗控制器 `dashboard.py`、視圖資料 `view_model.py` 及前端頁面 `assets/`（`index.html`、`app.css`、`app.js`）。
 - `tests/`：單元測試、回歸測試、合約測試與效能驗證套件。
 
 ---
 
 ## 系統需求與環境
 
-- **作業系統**：Windows 10 / Windows 11（64 位元，需具備 Microsoft Edge WebView2 Runtime）。
+- **作業系統**：Windows 10 / Windows 11（64 位元）。
 - **Python 環境**（原始碼執行）：Python 3.10+，相關相依套件請參閱 `requirements.txt`。
-- **本機服務**：Node.js 與 OmniRoute runtime（安裝程式之設定精靈會自動在本機安裝，無須手動配置）。
+- **AI 服務元件**：首次啟動時，設定精靈會自動安裝所需的 AI 服務元件，無須手動設定。
 
 ---
 
-## 相關文件與版本
+## 下載
 
-- **最新版本**：**V2.0.0**（版本定義於 `src/version.py`，與 `TradeBot0.iss` 保持一致）。
-- **除錯紀錄與技術規範**：請參閱 [BUGS_AND_OPTIMIZATIONS.md](BUGS_AND_OPTIMIZATIONS.md) 與 [OptimizationFullGuide.md](OptimizationFullGuide.md)。
+[TradeBot0Setup.exe（V2.0.0）](https://github.com/will095614/TradeBot0/releases/latest/download/TradeBot0Setup.exe)（GitHub Release 單一載點）。
