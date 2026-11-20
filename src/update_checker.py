@@ -162,6 +162,14 @@ def check_for_updates(
     try:
         response = requests.get(url, timeout=timeout)
         response.raise_for_status()
+        # Reject HTTPS -> HTTP downgrade redirects (final URL and any redirect hops).
+        hops = list(getattr(response, "history", None) or ()) + [response]
+        for hop in hops:
+            hop_url = getattr(hop, "url", None)
+            if isinstance(hop_url, str) and hop_url.strip():
+                hop_parsed = urlparse(hop_url.strip())
+                if hop_parsed.scheme.lower() != "https" or not hop_parsed.netloc:
+                    raise ValueError(f"update check redirected to non-HTTPS URL: {hop_url!r}")
         manifest = response.json()
         if not isinstance(manifest, dict):
             raise ValueError("update manifest is not a JSON object")

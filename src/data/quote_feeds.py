@@ -118,11 +118,18 @@ class QuoteFeedsMixin:
             is_offline=False,
         )
 
+    def _session_get(self, url: str, timeout: float):
+        lock = getattr(self, "_session_lock", None)
+        if lock is not None:
+            with lock:
+                return self.session.get(url, timeout=timeout)
+        return self.session.get(url, timeout=timeout)
+
     def _fetch_binance_quote(self) -> Optional[LiveQuote]:
         pairs = self._quote_pairs()
         r_bin = None
         try:
-            r_bin = self.session.get(
+            r_bin = self._session_get(
                 f"https://api.binance.com/api/v3/ticker/24hr?symbol={pairs['binance']}",
                 timeout=1.2,
             )
@@ -152,7 +159,7 @@ class QuoteFeedsMixin:
         pairs = self._quote_pairs()
         r_krk = None
         try:
-            r_krk = self.session.get(
+            r_krk = self._session_get(
                 f"https://api.kraken.com/0/public/Ticker?pair={pairs['kraken']}",
                 timeout=1.5,
             )
@@ -193,7 +200,7 @@ class QuoteFeedsMixin:
         r_tick = None
         r_stats = None
         try:
-            r_tick = self.session.get(
+            r_tick = self._session_get(
                 f"https://api.exchange.coinbase.com/products/{pairs['coinbase']}/ticker",
                 timeout=1.2,
             )
@@ -206,7 +213,7 @@ class QuoteFeedsMixin:
                 low_24: Any = price
                 chg_pct: Any = Decimal("0.00")
                 try:
-                    r_stats = self.session.get(
+                    r_stats = self._session_get(
                         f"https://api.exchange.coinbase.com/products/{pairs['coinbase']}/stats",
                         timeout=1.2,
                     )
@@ -245,12 +252,15 @@ class QuoteFeedsMixin:
         Fetches real-time live spot quote across WebSocket -> Binance -> Kraken -> Coinbase.
         When every live source fails, returns an honest offline sentinel.
         """
+        stop_ev = getattr(self, "_stop_event", None)
+        if stop_ev is not None and stop_ev.is_set():
+            return self._offline_quote()
         now = time.time()
         if self.ws_feed.connected and (now - self.ws_feed.last_msg_ts) < 3.0:
             ws_q = getattr(self.ws_feed, "latest_ws_quote", None)
             if ws_q is not None and not ws_q.is_offline and ws_q.price > Decimal("0"):
                 return ws_q
-            if self.latest_quote is not None and not self.latest_quote.is_offline and self.latest_quote.price > Decimal("0"):
+            if self._is_quote_fresh(self.latest_quote, now):
                 return self.latest_quote
 
         providers = ["binance", "kraken", "coinbase"]
@@ -258,7 +268,12 @@ class QuoteFeedsMixin:
             providers.remove(self.preferred_quote_provider)
             providers.insert(0, self.preferred_quote_provider)
 
-        active_providers = [p for p in providers if self._quote_provider_cooldown.get(p, 0.0) <= now]
+        lock = getattr(self, "_session_lock", None)
+        if lock is not None:
+            with lock:
+                active_providers = [p for p in providers if self._quote_provider_cooldown.get(p, 0.0) <= now]
+        else:
+            active_providers = [p for p in providers if self._quote_provider_cooldown.get(p, 0.0) <= now]
         if not active_providers:
             return self._offline_quote()
 
@@ -269,15 +284,27 @@ class QuoteFeedsMixin:
         }
 
         for name in active_providers:
+            if stop_ev is not None and stop_ev.is_set():
+                return self._offline_quote()
             fetcher = fetchers.get(name)
             if not fetcher:
                 continue
             quote = fetcher()
             if quote is not None:
-                self.preferred_quote_provider = name
-                self._quote_provider_cooldown.pop(name, None)
+                if lock is not None:
+                    with lock:
+                        self.preferred_quote_provider = name
+                        self._quote_provider_cooldown.pop(name, None)
+                else:
+                    self.preferred_quote_provider = name
+                    self._quote_provider_cooldown.pop(name, None)
                 return quote
-            self._quote_provider_cooldown[name] = now + 15.0
+            fail_until = time.time() + 15.0
+            if lock is not None:
+                with lock:
+                    self._quote_provider_cooldown[name] = fail_until
+            else:
+                self._quote_provider_cooldown[name] = fail_until
 
         return self._offline_quote()
 

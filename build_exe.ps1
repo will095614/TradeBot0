@@ -15,16 +15,26 @@ if (Test-Path "dist\TradeBot0_Arena.exe") {
 }
 
 Write-Host "[*] Packaging Single Standalone TradeBot0_Arena.exe via PyInstaller (--onefile)..." -ForegroundColor Cyan
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name "TradeBot0_Arena" `
-    --add-data "src/gui/assets;src/gui/assets" `
-    --add-binary "src/compat/win7/api-ms-win-core-path-l1-1-0.dll;." `
-    --collect-all webview `
-    --collect-all clr_loader `
-    --collect-all pythonnet `
-    --collect-all websockets `
-    --hidden-import clr `
-    --exclude-module dearpygui `
-    main.py
+$pyiArgs = @(
+    "-m", "PyInstaller",
+    "--noconfirm", "--onefile", "--windowed", "--name", "TradeBot0_Arena",
+    "--add-data", "src/gui/assets;src/gui/assets"
+)
+if (Test-Path "src/compat/win7/api-ms-win-core-path-l1-1-0.dll") {
+    $pyiArgs += @("--add-binary", "src/compat/win7/api-ms-win-core-path-l1-1-0.dll;.")
+} else {
+    Write-Host "[!] Optional Win7 compat DLL not found; building without src/compat/win7/api-ms-win-core-path-l1-1-0.dll" -ForegroundColor Yellow
+}
+$pyiArgs += @(
+    "--collect-all", "webview",
+    "--collect-all", "clr_loader",
+    "--collect-all", "pythonnet",
+    "--collect-all", "websockets",
+    "--hidden-import", "clr",
+    "--exclude-module", "dearpygui",
+    "main.py"
+)
+& .\.venv\Scripts\python.exe @pyiArgs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
 Write-Host "[*] Verifying packaged single standalone executable with --self-test..." -ForegroundColor Cyan

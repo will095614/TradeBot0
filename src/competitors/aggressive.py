@@ -48,12 +48,16 @@ class AggressiveCompetitor(BaseCompetitor):
             return None
 
         if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
-            stop_price = (market_price * (Decimal("1") - self.genome.stop_loss_pct)).quantize(Decimal("0.01"))
+            stop_price = max(Decimal("0.01"), (market_price * (Decimal("1") - self.genome.stop_loss_pct)).quantize(Decimal("0.01")))
+            if stop_price >= market_price:
+                return None
             target_price = (
                 (market_price * (Decimal("1") + self.genome.take_profit_pct)).quantize(Decimal("0.01"))
                 if self.genome.take_profit_pct is not None
                 else None
             )
+            if target_price is not None and target_price <= market_price:
+                return None
             qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
@@ -72,11 +76,15 @@ class AggressiveCompetitor(BaseCompetitor):
 
         elif signal == "BUY" and side == OrderSide.SELL and self.portfolio.position_qty == Decimal("0"):
             stop_price = (market_price * (Decimal("1") + self.genome.stop_loss_pct)).quantize(Decimal("0.01"))
+            if stop_price <= market_price:
+                return None
             target_price = (
-                (market_price * (Decimal("1") - self.genome.take_profit_pct)).quantize(Decimal("0.01"))
+                max(Decimal("0.01"), (market_price * (Decimal("1") - self.genome.take_profit_pct)).quantize(Decimal("0.01")))
                 if self.genome.take_profit_pct is not None
                 else None
             )
+            if target_price is not None and target_price >= market_price:
+                return None
             qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None

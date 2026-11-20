@@ -128,7 +128,12 @@ class ForumCollector:
                 "Forum hourly summary cap reached (%d), skipping", self.max_summaries_per_hour
             )
             return []
+        prev_ts = self._last_collect_ts
         self._last_collect_ts = now
-        events: List[RawEvent] = []
-        events.extend(await asyncio.to_thread(self._collect_stocktwits))
-        return events
+        try:
+            events: List[RawEvent] = []
+            events.extend(await asyncio.to_thread(self._collect_stocktwits))
+            return events
+        except BaseException:
+            self._last_collect_ts = prev_ts
+            raise

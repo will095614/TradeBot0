@@ -736,78 +736,104 @@
 
       <div class="setup-wizard-body">
         <div class="setup-wizard-column">
-        <div class="setup-keys-intro">One key is all you need.</div>
-        <!-- Google Gemini -->
-        <div class="setup-provider-card">
-          <div class="setup-provider-meta">
-            <span class="setup-provider-name">Google Gemini API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask Gemini to read the news and judge the market.</span></button></span>
-            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://aistudio.google.com/apikey'); return false;">Get a key</a></span>
+          <div class="setup-keys-intro">One key is all you need.</div>
+          <!-- Google Gemini -->
+          <div class="setup-provider-card">
+            <div class="setup-provider-meta">
+              <span class="setup-provider-name">Google Gemini API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask Gemini to read the news and judge the market.</span></button></span>
+              <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://aistudio.google.com/apikey'); return false;">Get a key</a></span>
+            </div>
+            <div class="setup-input-group">
+              <input type="password" id="keyGemini" class="setup-key-input num" placeholder="AIzaSy..." autocomplete="off" spellcheck="false" />
+              <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyGemini', this)" title="Show / Hide Key">
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
+              </button>
+              <button type="button" class="btn lg-btn setup-test-btn" id="btnTestGemini" onclick="testProviderKey('gemini')">
+                <span>Test</span>
+              </button>
+            </div>
+            <div class="setup-provider-status" id="statusGemini">
+              <span class="setup-status-pill neutral">Not added</span>
+            </div>
           </div>
-          <div class="setup-input-group">
-            <input type="password" id="keyGemini" class="setup-key-input num" placeholder="AIzaSy..." autocomplete="off" spellcheck="false" />
-            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyGemini', this)" title="Show / Hide Key">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
-            </button>
-            <button type="button" class="btn lg-btn setup-test-btn" id="btnTestGemini" onclick="testProviderKey('gemini')">
-              <span>Test</span>
-            </button>
-          </div>
-          <div class="setup-provider-status" id="statusGemini">
-            <span class="setup-status-pill neutral">Not added</span>
-          </div>
-        </div>
-        </div>
-        <div class="setup-wizard-column">
 
-        <!-- Admin Password -->
-        <div class="setup-provider-card">
-          <div class="setup-provider-meta">
-            <span class="setup-provider-name">Password</span>
-            <span class="setup-provider-hint">Password for signing in to the OmniRoute dashboard (min 8 characters)</span>
+          <!-- Admin Password -->
+          <div class="setup-provider-card">
+            <div class="setup-provider-meta">
+              <span class="setup-provider-name">Password</span>
+              <span class="setup-provider-hint">Password for signing in to the OmniRoute dashboard (min 8 characters)</span>
+            </div>
+            <div class="setup-input-group">
+              <input type="password" id="keyAdminPassword" class="setup-key-input num" placeholder="New admin password" autocomplete="new-password" spellcheck="false" />
+              <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyAdminPassword', this)" title="Show / Hide Password">
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
+              </button>
+            </div>
+            <div class="setup-input-group">
+              <input type="password" id="keyAdminPasswordConfirm" class="setup-key-input num" placeholder="Confirm admin password" autocomplete="new-password" spellcheck="false" />
+              <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyAdminPasswordConfirm', this)" title="Show / Hide Password">
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
+              </button>
+            </div>
+            <div class="setup-provider-status" id="statusAdminPassword">
+              <span class="setup-status-pill neutral">Not Set</span>
+            </div>
           </div>
-          <div class="setup-input-group">
-            <input type="password" id="keyAdminPassword" class="setup-key-input num" placeholder="New admin password" autocomplete="new-password" spellcheck="false" />
-            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyAdminPassword', this)" title="Show / Hide Password">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
-            </button>
-          </div>
-          <div class="setup-input-group">
-            <input type="password" id="keyAdminPasswordConfirm" class="setup-key-input num" placeholder="Confirm admin password" autocomplete="new-password" spellcheck="false" />
-            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyAdminPasswordConfirm', this)" title="Show / Hide Password">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
-            </button>
-          </div>
-          <div class="setup-provider-status" id="statusAdminPassword">
-            <span class="setup-status-pill neutral">Not Set</span>
-          </div>
-        </div>
 
-        <!-- Gateway Options -->
-        <div class="setup-gateway-options">
-          <div class="setup-gateway-note">
-            Credentials synchronize directly to <code>~/.omniroute/.env</code> while preserving server security tokens.
+          <!-- Gateway Options & Environment Check -->
+          <div class="setup-gateway-options">
+            <div class="setup-env-row">
+              <div class="setup-env-item">
+                <span class="setup-env-label">Node.js</span>
+                <span class="setup-status-pill neutral" id="envNodePill">Checking...</span>
+              </div>
+              <div class="setup-env-item">
+                <span class="setup-env-label">OmniRoute</span>
+                <span class="setup-status-pill neutral" id="envOmniRoutePill">Checking...</span>
+              </div>
+            </div>
+            <div class="setup-gateway-note">
+              Credentials synchronize directly to <code>~/.omniroute/.env</code> while preserving server security tokens.
+            </div>
+            <div class="setup-gateway-note">
+              Models are auto-routed by OmniRoute (auto) across your configured providers.
+            </div>
+            <div class="setup-collapsible" id="gatewayRuntimeActionWrap">
+              <div class="setup-collapsible-inner">
+                <div class="setup-gateway-action-stack">
+                  <div class="setup-gateway-note" id="gatewayUnavailableNote"></div>
+                  <button type="button" class="btn lg-btn lg-btn--primary" id="btnInstallGatewayRuntime" onclick="installGatewayRuntime()">
+                    <span>Install Node.js &amp; OmniRoute</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="setup-gateway-note">
-            Models are auto-routed by OmniRoute (auto) across your configured providers.
+
+          <!-- Status Notification Banner (content-sized, collapses cleanly when empty) -->
+          <div class="setup-collapsible" id="setupWizardBannerWrap">
+            <div class="setup-collapsible-inner">
+              <div id="setupWizardStatusBanner" class="setup-wizard-banner"></div>
+            </div>
           </div>
-          <div class="setup-gateway-note" id="gatewayUnavailableNote"></div>
-          <button type="button" class="btn lg-btn lg-btn--primary" id="btnInstallGatewayRuntime" onclick="installGatewayRuntime()">
-            <span>Install Node.js &amp; OmniRoute</span>
-          </button>
-        </div>
 
-        <!-- Status Notification Banner -->
-        <div id="setupWizardStatusBanner" class="setup-wizard-banner"></div>
+          <!-- One-click install progress (collapses cleanly when idle) -->
+          <div class="setup-collapsible" id="setupInstallProgressWrap">
+            <div class="setup-collapsible-inner">
+              <div id="setupInstallProgress" class="setup-install-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Installation progress">
+                <div class="setup-install-progress-track"><div class="setup-install-progress-fill" id="setupInstallProgressFill"></div></div>
+              </div>
+            </div>
+          </div>
 
-        <!-- One-click install progress (shown while downloading / installing) -->
-        <div id="setupInstallProgress" class="setup-install-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Installation progress">
-          <div class="setup-install-progress-track"><div class="setup-install-progress-fill" id="setupInstallProgressFill"></div></div>
-        </div>
-
-        <!-- Save & Launch progress (shown while saving credentials / starting gateway) -->
-        <div id="setupSaveProgress" class="setup-save-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Save and launch progress">
-          <div class="setup-save-progress-track"><div class="setup-save-progress-fill" id="setupSaveProgressFill"></div></div>
-        </div>
+          <!-- Save & Launch progress (collapses cleanly when idle) -->
+          <div class="setup-collapsible" id="setupSaveProgressWrap">
+            <div class="setup-collapsible-inner">
+              <div id="setupSaveProgress" class="setup-save-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Save and launch progress">
+                <div class="setup-save-progress-track"><div class="setup-save-progress-fill" id="setupSaveProgressFill"></div></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

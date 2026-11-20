@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import sys
 import threading
@@ -77,29 +78,30 @@ def _copy_text_to_clipboard_windows(text: str) -> bool:
         return False
     try:
         import ctypes
+        from ctypes import wintypes
 
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         # 64-bit Windows: ctypes defaults every foreign return type to
         # c_int, which truncates the 64-bit HGLOBAL handle; GlobalLock
         # then fails on the truncated handle and the copy silently
         # returns False (2026-11-13: the password-copy button never
         # worked for this reason). Declare the real signatures.
         kernel32.GlobalAlloc.restype = ctypes.c_void_p
-        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
         kernel32.GlobalLock.restype = ctypes.c_void_p
         kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-        kernel32.GlobalUnlock.restype = ctypes.c_bool
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
         kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
         kernel32.GlobalFree.restype = ctypes.c_void_p
         kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
-        user32.OpenClipboard.restype = ctypes.c_bool
-        user32.OpenClipboard.argtypes = [ctypes.c_void_p]
-        user32.EmptyClipboard.restype = ctypes.c_bool
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.EmptyClipboard.restype = wintypes.BOOL
         user32.EmptyClipboard.argtypes = []
         user32.SetClipboardData.restype = ctypes.c_void_p
-        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-        user32.CloseClipboard.restype = ctypes.c_bool
+        user32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+        user32.CloseClipboard.restype = wintypes.BOOL
         user32.CloseClipboard.argtypes = []
         CF_UNICODETEXT = 13
         GMEM_MOVEABLE = 0x0002
@@ -107,25 +109,34 @@ def _copy_text_to_clipboard_windows(text: str) -> bool:
         hglobal = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
         if not hglobal:
             return False
-        locked = kernel32.GlobalLock(hglobal)
-        if not locked:
-            kernel32.GlobalFree(hglobal)
-            return False
+        owned_by_clipboard = False
         try:
-            ctypes.memmove(locked, data, len(data))
-        finally:
-            kernel32.GlobalUnlock(hglobal)
-        if not user32.OpenClipboard(None):
-            kernel32.GlobalFree(hglobal)
-            return False
-        try:
-            user32.EmptyClipboard()
-            if not user32.SetClipboardData(CF_UNICODETEXT, hglobal):
-                kernel32.GlobalFree(hglobal)
+            locked = kernel32.GlobalLock(hglobal)
+            if not locked:
                 return False
+            try:
+                ctypes.memmove(locked, data, len(data))
+            finally:
+                kernel32.GlobalUnlock(hglobal)
+            opened = False
+            for _ in range(5):
+                if user32.OpenClipboard(None):
+                    opened = True
+                    break
+                time.sleep(0.02)
+            if not opened:
+                return False
+            try:
+                user32.EmptyClipboard()
+                if not user32.SetClipboardData(CF_UNICODETEXT, hglobal):
+                    return False
+                owned_by_clipboard = True
+            finally:
+                user32.CloseClipboard()
+            return True
         finally:
-            user32.CloseClipboard()
-        return True
+            if not owned_by_clipboard:
+                kernel32.GlobalFree(hglobal)
     except Exception as e:
         logger.debug("Clipboard copy failed: %s", e)
         return False
@@ -240,7 +251,7 @@ class _ArenaBridgeApi:
         return state
 
     def refresh_intel_digest(self) -> Dict[str, Any]:
-        threading.Thread(target=self._dashboard.engine.refresh_intel_digest, daemon=True).start()
+        self._dashboard.engine.trigger_intel_refresh_async()
         return self.get_state()
 
     def get_event_article(self, event_id: str) -> Dict[str, Any]:
@@ -492,16 +503,16 @@ class _ArenaBridgeApi:
                 # leak into the new run's progress bar.
                 self._set_save_launch_stage("idle", "", None, "")
 
-                # 0. Admin password (item 10 A1): no shared default password may
-                # survive. A password must be supplied or already configured before
-                # onboarding can complete (pure-math mode is the password-free path).
+                # 0. Validate admin password (item 10 A1) without mutating .env yet,
+                # so a failed SQLite password sync cannot leave .env and storage.sqlite
+                # out of sync.
                 _cm = self._dashboard.config_manager
                 if admin_password is not None:
                     self._set_save_launch_stage("saving-password", "Saving password...", 10, "password")
-                    _pw_res = _cm.set_admin_password(admin_password)
-                    if not _pw_res.get("ok"):
-                        self._set_save_launch_stage("failed", _pw_res.get("error", "Invalid admin password."), 10, "password")
-                        return {"status": "error", "ok": False, "message": _pw_res.get("error", "Invalid admin password."), "gateway_online": False}
+                    _pw_ok, _pw_val_or_err = _cm.validate_admin_password(admin_password)
+                    if not _pw_ok:
+                        self._set_save_launch_stage("failed", _pw_val_or_err, 10, "password")
+                        return {"status": "error", "ok": False, "message": _pw_val_or_err, "gateway_online": False}
                 elif not _cm.is_admin_password_configured():
                     self._set_save_launch_stage("failed", "Please set an admin password for the local gateway console before launching the arena.", None, "password")
                     return {"status": "error", "ok": False, "message": "Please set an admin password for the local gateway console before launching the arena.", "gateway_online": False}
@@ -514,8 +525,43 @@ class _ArenaBridgeApi:
                     self._set_save_launch_stage("failed", err_msg, 25, "keys")
                     return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
 
-                # 2. Update system config
-                self._set_save_launch_stage("saving-config", "Saving setup...", 40, "config")
+                # 2. If a password was supplied, stop the watchdog & any self-spawned
+                # gateway first (to avoid SQLite lock/cache staleness or a watchdog
+                # respawn mid-update), apply the password directly into OmniRoute's
+                # storage.sqlite via CLI, and only then persist INITIAL_PASSWORD to .env.
+                if admin_password is not None:
+                    _sup = self._dashboard.gateway_supervisor
+                    try:
+                        _sup.stop_watchdog()
+                    except Exception as e:
+                        logger.debug("Watchdog pause before password sync failed: %s", e)
+                    with _sup._daemon_lock:
+                        _needs_restart = bool(
+                            (_sup.is_self_spawned and _sup.child_process is not None)
+                            or _sup._daemon_starting
+                        )
+                    if _needs_restart:
+                        self._set_save_launch_stage("restarting-gateway", "Restarting AI services...", 40, "gateway")
+                        try:
+                            _sup.shutdown()
+                        except Exception as e:
+                            logger.debug("Gateway restart after password change failed: %s", e)
+                    _pw_sync = _sup.sync_admin_password(
+                        admin_password,
+                        data_dir=_cm.omni_env_file.parent,
+                    )
+                    if isinstance(_pw_sync, dict) and _pw_sync.get("ok") is False:
+                        err_msg = str(_pw_sync.get("error") or "Failed to apply admin password to OmniRoute.")
+                        self._set_save_launch_stage("failed", err_msg, 40, "password")
+                        return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
+                    _pw_res = _cm.set_admin_password(admin_password)
+                    if not _pw_res.get("ok"):
+                        err_msg = _pw_res.get("error", "Could not write the admin password.")
+                        self._set_save_launch_stage("failed", err_msg, 45, "password")
+                        return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
+
+                # 2b. Update system config
+                self._set_save_launch_stage("saving-config", "Saving setup...", 55, "config")
                 configured = self._dashboard.config_manager.get_configured_providers()
                 cfg_saved = self._dashboard.config_manager.save_config({
                     "has_completed_onboarding": True,
@@ -525,21 +571,8 @@ class _ArenaBridgeApi:
                 })
                 if cfg_saved is False:
                     err_msg = "Failed to save system configuration."
-                    self._set_save_launch_stage("failed", err_msg, 40, "config")
+                    self._set_save_launch_stage("failed", err_msg, 55, "config")
                     return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
-
-                # 2b. If the password was just set and our own gateway is already
-                # running, restart it so the new password takes effect immediately.
-                # (A gateway the user started themselves is left alone; it picks
-                # the new password up on its next manual restart.)
-                if admin_password is not None:
-                    _sup = self._dashboard.gateway_supervisor
-                    if _sup.is_self_spawned and _sup.child_process is not None:
-                        self._set_save_launch_stage("restarting-gateway", "Restarting AI services...", 55, "gateway")
-                        try:
-                            _sup.shutdown()
-                        except Exception as e:
-                            logger.debug("Gateway restart after password change failed: %s", e)
 
                 # 3. Check gateway and spawn if requested
                 is_open = self._dashboard.gateway_supervisor.is_port_open(timeout=0.3)
@@ -637,8 +670,9 @@ class ArenaDashboard:
             _auto_redeploy = bool(_gw_cfg.get("auto_redeploy_when_flat", True))
         except Exception:
             _gw_host, _gw_port, _auto_redeploy = "127.0.0.1", 20128, True
-        self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=initial_cash, auto_redeploy_when_flat=_auto_redeploy)
-        self.gateway_supervisor = GatewaySupervisor(host=_gw_host, port=_gw_port)
+        _gw_base_url = None if os.getenv("LLM_BASE_URL") else f"http://{_gw_host}:{_gw_port}/v1"
+        self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=initial_cash, auto_redeploy_when_flat=_auto_redeploy, gateway_base_url=_gw_base_url)
+        self.gateway_supervisor = GatewaySupervisor(host=_gw_host, port=_gw_port, omni_data_dir=self.config_manager.omni_env_file.parent)
         self.window = None
         self.allow_exit = False
         self.closing_prompt_active = False
@@ -698,33 +732,43 @@ class ArenaDashboard:
 
         with self._reset_lock:
             old_engine = self.engine
-            old_interval = old_engine.auto_evolve_interval_sec
-            old_enabled = old_engine.auto_evolve_enabled
-            old_cadence = old_engine.cadence_sec
-            old_auto_redeploy = old_engine.auto_redeploy_when_flat
-            old_paused = old_engine.paused
-            old_gen = {c.portfolio_id: c.genome.generation for c in old_engine.competitors}
-            old_genomes = {c.portfolio_id: c.genome for c in old_engine.competitors}
-            old_fills = list(old_engine.fill_records)
-            old_events = list(old_engine.evolution_events)
-            old_last_evolve_ts = old_engine.last_evolve_ts
-            old_live_start_ts = old_engine.live_start_ts
-            old_closed_since_evolve = old_engine._closed_trades_since_evolve
-            old_seq_offset = int(getattr(old_engine, "_live_fill_seq_offset", 0) or 0)
-            try:
-                old_engine.storage.clear_session_snapshot()
-            except Exception as e:
-                logger.warning("Failed to clear session snapshot during reset: %s", e)
             old_engine.stop()
             if old_engine.worker_thread and old_engine.worker_thread.is_alive():
                 old_engine.worker_thread.join(timeout=3.0)
                 if old_engine.worker_thread.is_alive():
                     logger.warning("Previous engine worker thread still alive after reset timeout")
 
+            with old_engine.lock:
+                old_interval = old_engine.auto_evolve_interval_sec
+                old_enabled = old_engine.auto_evolve_enabled
+                old_cadence = old_engine.cadence_sec
+                old_auto_redeploy = old_engine.auto_redeploy_when_flat
+                old_paused = old_engine.paused
+                old_pause_start_ts = getattr(old_engine, "_pause_start_ts", None)
+                old_auto_evolve_disabled_ts = getattr(old_engine, "_auto_evolve_disabled_ts", None)
+                old_gen = {c.portfolio_id: c.genome.generation for c in old_engine.competitors}
+                old_genomes = {c.portfolio_id: c.genome for c in old_engine.competitors}
+                old_fills = list(old_engine.fill_records)
+                old_events = list(old_engine.evolution_events)
+                old_last_evolve_ts = old_engine.last_evolve_ts
+                old_live_start_ts = old_engine.live_start_ts
+                old_closed_since_evolve = old_engine._closed_trades_since_evolve
+                old_seq_offset = int(getattr(old_engine, "_live_fill_seq_offset", 0) or 0)
+            try:
+                old_engine.storage.clear_session_snapshot()
+            except Exception as e:
+                logger.warning("Failed to clear session snapshot during reset: %s", e)
+
+            _gw_base_url = (
+                None
+                if os.getenv("LLM_BASE_URL")
+                else f"http://{self.gateway_supervisor.host}:{self.gateway_supervisor.port}/v1"
+            )
             new_engine = LiveArenaEngine(
                 symbol="ETH/USD",
                 initial_cash=self.initial_cash,
                 auto_redeploy_when_flat=old_auto_redeploy,
+                gateway_base_url=_gw_base_url,
             )
             new_engine.auto_evolve_interval_sec = old_interval
             new_engine.auto_evolve_enabled = old_enabled
@@ -735,7 +779,7 @@ class ArenaDashboard:
                     c.reset_for_new_generation(prev_genome, preserve_portfolio=False)
                     c.portfolio.leverage = prev_genome.leverage if prev_genome.leverage_enabled else Decimal("1.0")
                     c.portfolio.leverage_enabled = prev_genome.leverage_enabled
-                    new_engine.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
+                    new_engine.broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
                 else:
                     gen = old_gen.get(c.portfolio_id)
                     if gen is not None and gen != c.genome.generation:
@@ -747,6 +791,11 @@ class ArenaDashboard:
             new_engine.live_start_ts = old_live_start_ts
             new_engine._closed_trades_since_evolve = old_closed_since_evolve
             new_engine.paused = old_paused
+            if old_paused and old_pause_start_ts is not None:
+                new_engine._pause_start_ts = old_pause_start_ts
+            if not old_enabled and old_auto_evolve_disabled_ts is not None:
+                new_engine._auto_evolve_disabled_ts = old_auto_evolve_disabled_ts
+            new_engine._preserved_from_reset = True
             self.engine = new_engine
             new_engine.start_live_loop(interval_sec=old_cadence)
 
@@ -961,7 +1010,9 @@ class ArenaDashboard:
                     win_thread = 0
                     try:
                         fg_hwnd = user32.GetForegroundWindow()
-                        if fg_hwnd and fg_hwnd != hwnd:
+                        target_hwnd_val = int(hwnd_int) if hwnd_int else int(getattr(hwnd, "value", hwnd) or 0)
+                        fg_hwnd_val = int(getattr(fg_hwnd, "value", fg_hwnd) or 0)
+                        if fg_hwnd and fg_hwnd_val != target_hwnd_val:
                             fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
                             win_thread = user32.GetWindowThreadProcessId(hwnd, None)
                             if fg_thread and win_thread and fg_thread != win_thread:

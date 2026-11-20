@@ -66,6 +66,11 @@ class StreamingCryptoFeed:
         if os.environ.get("ARENA_FAST_TEST") == "1":
             # Avoid opening real external sockets during hermetic unit tests
             return
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                logger.warning("Previous WebSocket thread still alive; refusing duplicate start")
+                return
         self.running = True
         self._thread = threading.Thread(
             target=self._run_loop,
@@ -93,7 +98,8 @@ class StreamingCryptoFeed:
                     logger.debug("WebSocket close failed during stop: %s", e)
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
-        self._thread = None
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = None
 
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -125,6 +131,7 @@ class StreamingCryptoFeed:
         while self.running:
             target_url = urls[url_idx % len(urls)]
             try:
+                got_msg = False
                 logger.info("Connecting to Binance WebSocket ticker stream (%s)...", target_url)
                 async with websockets.connect(
                     target_url,
@@ -136,7 +143,6 @@ class StreamingCryptoFeed:
                         break
                     self._active_ws = ws
                     self.connected = True
-                    backoff = 1.0
                     logger.info("Binance WebSocket ticker stream connected successfully.")
 
                     async for message in ws:
@@ -146,8 +152,10 @@ class StreamingCryptoFeed:
                         if isinstance(data, dict):
                             quote = self._parse_binance_ticker(data)
                             if quote is not None:
-                                self.last_msg_ts = time.time()
+                                got_msg = True
+                                backoff = 1.0
                                 self.latest_ws_quote = quote
+                                self.last_msg_ts = time.time()
                                 self.on_quote(quote)
                 # Clean stream end (server closed the socket without raising):
                 # do NOT reconnect immediately; wait out the same backoff.
@@ -160,6 +168,8 @@ class StreamingCryptoFeed:
                 # connect does (only when we actually reconnect -- after the
                 # running check above).
                 self.reconnect_count += 1
+                if not got_msg:
+                    url_idx += 1
                 logger.warning("WebSocket stream closed cleanly. Reconnecting in %.1fs...", backoff)
                 for _ in range(int(backoff * 10)):
                     if not self.running:
@@ -195,24 +205,34 @@ class StreamingCryptoFeed:
             price = Decimal(str(d["c"])).quantize(_QUANT_2)
             if not price.is_finite() or price <= _ZERO:
                 return None
-            bid = Decimal(str(d.get("b", price))).quantize(_QUANT_2)
-            ask = Decimal(str(d.get("a", price))).quantize(_QUANT_2)
-            if not bid.is_finite() or bid <= _ZERO:
+
+            def _opt_pos(raw: Any, fallback: Decimal) -> Decimal:
+                if raw is None:
+                    return fallback
+                try:
+                    v = Decimal(str(raw)).quantize(_QUANT_2)
+                    return v if (v.is_finite() and v > _ZERO) else fallback
+                except Exception:
+                    return fallback
+
+            def _opt_fin(raw: Any, fallback: Decimal) -> Decimal:
+                if raw is None:
+                    return fallback
+                try:
+                    v = Decimal(str(raw)).quantize(_QUANT_2)
+                    return v if v.is_finite() else fallback
+                except Exception:
+                    return fallback
+
+            bid = _opt_pos(d.get("b"), price)
+            ask = _opt_pos(d.get("a"), price)
+            if bid > ask:
                 bid = price
-            if not ask.is_finite() or ask <= _ZERO:
                 ask = price
-            high = Decimal(str(d.get("h", price))).quantize(_QUANT_2)
-            low = Decimal(str(d.get("l", price))).quantize(_QUANT_2)
-            vol = Decimal(str(d.get("v", "0"))).quantize(_QUANT_2)
-            chg = Decimal(str(d.get("P", "0.00"))).quantize(_QUANT_2)
-            if not high.is_finite() or high <= _ZERO:
-                high = price
-            if not low.is_finite() or low <= _ZERO:
-                low = price
-            if not vol.is_finite() or vol < _ZERO:
-                vol = _ZERO
-            if not chg.is_finite():
-                chg = _ZERO
+            high = _opt_pos(d.get("h"), price)
+            low = _opt_pos(d.get("l"), price)
+            vol = max(_ZERO, _opt_fin(d.get("v"), _ZERO))
+            chg = _opt_fin(d.get("P"), _ZERO)
 
             return LiveQuote(
                 price=price,

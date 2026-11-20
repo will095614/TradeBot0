@@ -51,6 +51,16 @@ class ORBCompetitor(BaseCompetitor):
         if self.portfolio.is_circuit_breaker_tripped or not market_price.is_finite() or market_price <= Decimal("0"):
             return None
 
+        min_stop_floor = min(
+            Decimal("10.00"),
+            max(Decimal("0.01"), (market_price * Decimal("0.004")).quantize(Decimal("0.01"))),
+        )
+        r_mult = (
+            (self.genome.take_profit_pct / self.genome.stop_loss_pct)
+            if (self.genome.take_profit_pct is not None and self.genome.stop_loss_pct > Decimal("0"))
+            else Decimal("2.0")
+        )
+
         if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
             orb_high = indicators.get("orb_high")
             orb_low = indicators.get("orb_low")
@@ -62,7 +72,7 @@ class ORBCompetitor(BaseCompetitor):
                 try:
                     orb_h = Decimal(str(orb_high))
                     orb_l = Decimal(str(orb_low))
-                    orb_valid = orb_h.is_finite() and orb_l.is_finite() and orb_h > Decimal("0") and orb_l > Decimal("0") and orb_h >= orb_l
+                    orb_valid = orb_h.is_finite() and orb_l.is_finite() and orb_h > Decimal("0") and orb_l > Decimal("0") and orb_h > orb_l
                 except Exception:
                     orb_valid = False
 
@@ -71,13 +81,17 @@ class ORBCompetitor(BaseCompetitor):
                 # Breakout condition: must pierce or trade above the range ceiling
                 if market_price < orb_h:
                     return None
-                stop_dist = max(Decimal("10.00"), market_price - orb_mid)
+                stop_dist = max(min_stop_floor, market_price - orb_mid)
             else:
-                stop_dist = max(Decimal("10.00"), market_price * self.genome.stop_loss_pct)
+                stop_dist = max(min_stop_floor, market_price * self.genome.stop_loss_pct)
 
             stop_price = max(Decimal("0.01"), (market_price - stop_dist).quantize(Decimal("0.01")))
-            target_dist = stop_dist * Decimal("2.0")  # Strict 2.0R Target
+            if stop_price >= market_price:
+                return None
+            target_dist = stop_dist * r_mult
             target_price = (market_price + target_dist).quantize(Decimal("0.01"))
+            if target_price <= market_price:
+                return None
 
             qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
@@ -106,7 +120,7 @@ class ORBCompetitor(BaseCompetitor):
                 try:
                     orb_h = Decimal(str(orb_high))
                     orb_l = Decimal(str(orb_low))
-                    orb_valid = orb_h.is_finite() and orb_l.is_finite() and orb_h > Decimal("0") and orb_l > Decimal("0") and orb_h >= orb_l
+                    orb_valid = orb_h.is_finite() and orb_l.is_finite() and orb_h > Decimal("0") and orb_l > Decimal("0") and orb_h > orb_l
                 except Exception:
                     orb_valid = False
 
@@ -115,12 +129,14 @@ class ORBCompetitor(BaseCompetitor):
                 # Breakdown condition: must pierce or trade below the range floor
                 if market_price > orb_l:
                     return None
-                stop_dist = max(Decimal("10.00"), orb_mid - market_price)
+                stop_dist = max(min_stop_floor, orb_mid - market_price)
             else:
-                stop_dist = max(Decimal("10.00"), market_price * self.genome.stop_loss_pct)
+                stop_dist = max(min_stop_floor, market_price * self.genome.stop_loss_pct)
 
             stop_price = (market_price + stop_dist).quantize(Decimal("0.01"))
-            target_dist = stop_dist * Decimal("2.0")  # Strict 2.0R Target
+            if stop_price <= market_price:
+                return None
+            target_dist = stop_dist * r_mult
             target_price = max(Decimal("0.01"), (market_price - target_dist).quantize(Decimal("0.01")))
             if target_price >= market_price:
                 return None

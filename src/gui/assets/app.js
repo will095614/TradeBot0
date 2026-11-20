@@ -24,14 +24,18 @@ let splashMinDurationMs = 2500;
 
 // Coordinated boot & setup states
 let hasBootInitiated = false;
+let hasBootResolved = false;
 let hasCompletedSetup = false;
 let hasCheckedOnboarding = false;
 let isWizardOpen = false;
+let wizardOpenGen = 0;
+let isSavingGateway = false;
 
 // Global Arena Data & Polling States
 let latestState = null;
 let isPolling = false;
 let stateApplyEpoch = 0;
+let forceNextFullDelta = false;
 let scaleMode = 'auto';    // 'auto' or 'full'
 
 // Position tracking states
@@ -188,6 +192,10 @@ function startSplashSequence(isReset = false) {
         if (el._countdownInterval) {
           clearInterval(el._countdownInterval);
           el._countdownInterval = null;
+        }
+        if (el._dismissTimeout) {
+          clearTimeout(el._dismissTimeout);
+          el._dismissTimeout = null;
         }
       });
       toastContainer.innerHTML = '';
@@ -417,6 +425,9 @@ async function initAppBoot() {
     }
   }
 
+  hasCheckedOnboarding = true;
+  hasBootResolved = true;
+
   if (needsOnboarding) {
     const overlay = document.getElementById('splashOverlay');
     if (overlay) overlay.style.display = 'none';
@@ -490,11 +501,16 @@ function triggerAnimLoop() {
 // Toast queue & parameters initialized at top of script
 const TOAST_STAGGER_MS = 380; // 380ms stagger ensures crisp sequential cascade entry and exit
 
+const MAX_TOAST_QUEUE = 24;
+
 function enqueueToast(toastItem) {
   if (!toastItem || typeof toastItem.renderElement !== 'function') return;
-  toastQueue.push(toastItem);
-    scheduleProcessToastQueue(0);
+  if (toastQueue.length >= MAX_TOAST_QUEUE) {
+    toastQueue.shift();
   }
+  toastQueue.push(toastItem);
+  scheduleProcessToastQueue(0);
+}
 
   function scheduleProcessToastQueue(delayMs = 0) {
     if (toastStaggerTimer) return;
@@ -540,6 +556,10 @@ function dismissToast(toast) {
     clearInterval(toast._countdownInterval);
     toast._countdownInterval = null;
   }
+  if (toast._dismissTimeout) {
+    clearTimeout(toast._dismissTimeout);
+    toast._dismissTimeout = null;
+  }
   toast.classList.add('toast-exit');
 
   // Smooth 450ms exit transition matching CSS
@@ -548,10 +568,10 @@ function dismissToast(toast) {
       toast.parentNode.removeChild(toast);
     }
     // As soon as a slot is freed, check the queue and slide in the next waiting toast
-      if (toastQueue.length > 0) {
-        scheduleProcessToastQueue(0);
-      }
-    }, 450);
+    if (toastQueue.length > 0) {
+      scheduleProcessToastQueue(0);
+    }
+  }, 450);
 }
 
 function attachToastInteractions(toast, container, totalDurationMs = 5500) {
@@ -573,37 +593,63 @@ function attachToastInteractions(toast, container, totalDurationMs = 5500) {
   const ringFill = toast.querySelector('.toast-ring-fill');
   const RING_CIRCUMFERENCE = 43.982;
 
-  toast._countdownInterval = setInterval(() => {
-    if (toast._isDismissing) {
-      clearInterval(toast._countdownInterval);
-      toast._countdownInterval = null;
-      return;
-    }
-    if (!toast._isPaused) {
-      const elapsed = Date.now() - toast._startTime;
-      toast._remainingMs = Math.max(0, toast._totalDurationMs - elapsed);
-      if (ringFill) {
-        const offset = RING_CIRCUMFERENCE * (1 - toast._remainingMs / toast._totalDurationMs);
-        ringFill.style.strokeDashoffset = offset.toFixed(2);
-      }
-      if (toast._remainingMs <= 0) {
+  if (ringFill) {
+    toast._countdownInterval = setInterval(() => {
+      if (toast._isDismissing) {
         clearInterval(toast._countdownInterval);
         toast._countdownInterval = null;
-        dismissToast(toast);
+        return;
       }
-    }
-  }, 50);
+      if (!toast._isPaused) {
+        const elapsed = Date.now() - toast._startTime;
+        toast._remainingMs = Math.max(0, toast._totalDurationMs - elapsed);
+        const offset = RING_CIRCUMFERENCE * (1 - toast._remainingMs / toast._totalDurationMs);
+        ringFill.style.strokeDashoffset = offset.toFixed(2);
+        if (toast._remainingMs <= 0) {
+          clearInterval(toast._countdownInterval);
+          toast._countdownInterval = null;
+          dismissToast(toast);
+        }
+      }
+    }, 50);
 
-  toast.addEventListener('mouseenter', () => {
-    if (toast._isDismissing) return;
-    toast._isPaused = true;
-  });
+    toast.addEventListener('mouseenter', () => {
+      if (toast._isDismissing) return;
+      toast._isPaused = true;
+    });
 
-  toast.addEventListener('mouseleave', () => {
-    if (toast._isDismissing) return;
-    toast._isPaused = false;
-    toast._startTime = Date.now() - (toast._totalDurationMs - toast._remainingMs);
-  });
+    toast.addEventListener('mouseleave', () => {
+      if (toast._isDismissing) return;
+      toast._isPaused = false;
+      toast._startTime = Date.now() - (toast._totalDurationMs - toast._remainingMs);
+    });
+  } else {
+    const scheduleDismiss = (ms) => {
+      if (toast._dismissTimeout) clearTimeout(toast._dismissTimeout);
+      toast._startTime = Date.now();
+      toast._dismissTimeout = setTimeout(() => {
+        toast._dismissTimeout = null;
+        dismissToast(toast);
+      }, Math.max(0, ms));
+    };
+    scheduleDismiss(totalDurationMs);
+
+    toast.addEventListener('mouseenter', () => {
+      if (toast._isDismissing) return;
+      toast._isPaused = true;
+      if (toast._dismissTimeout) {
+        clearTimeout(toast._dismissTimeout);
+        toast._dismissTimeout = null;
+      }
+      toast._remainingMs = Math.max(0, toast._remainingMs - (Date.now() - toast._startTime));
+    });
+
+    toast.addEventListener('mouseleave', () => {
+      if (toast._isDismissing) return;
+      toast._isPaused = false;
+      scheduleDismiss(toast._remainingMs);
+    });
+  }
 }
 
 // Global watchdog timer: dismisses any stale toast older than 18 seconds that is not hovered
@@ -935,6 +981,7 @@ const fmtTimeSec = (totalSec) => {
 
 async function pollBackend() {
   if (document.hidden) return;
+  if (!hasBootResolved || isResettingArena) return;
   if (isPolling) return;
   if (isWizardOpen && !hasCompletedSetup) {
     // Hold background arena activity while initial setup wizard is open
@@ -942,14 +989,16 @@ async function pollBackend() {
   }
   isPolling = true;
   const pollEpoch = ++stateApplyEpoch;
+  let useDelta = false;
   try {
     if (window.pywebview && window.pywebview.api) {
       checkOnboardingBoot();
-      const useDelta = Boolean(latestState && Array.isArray(latestState.candles) && typeof window.pywebview.api.get_state_delta === 'function');
+      useDelta = Boolean(latestState && Array.isArray(latestState.candles) && typeof window.pywebview.api.get_state_delta === 'function');
       const state = useDelta
-        ? await window.pywebview.api.get_state_delta(false)
+        ? await window.pywebview.api.get_state_delta(forceNextFullDelta)
         : await window.pywebview.api.get_state();
       if (state && pollEpoch === stateApplyEpoch) {
+        forceNextFullDelta = false;
         if (state.candles_unchanged && latestState && latestState.candles) {
           state.candles = latestState.candles;
         }
@@ -990,11 +1039,11 @@ async function pollBackend() {
         if (!hasInitializedPositions || !splashCompleted) {
           currentStrats.forEach(s => {
             knownStrategyPositions[s.id] = {
-              in_position: false,
-              entry_price: 0,
-              qty: 0,
-              trades: 0,
-              position_side: 'LONG'
+              in_position: Boolean(s.in_position),
+              entry_price: Number(s.entry_price || 0),
+              qty: Number(s.qty || 0),
+              trades: Number(s.closed_trades || 0),
+              position_side: s.position_side || 'LONG'
             };
           });
         } else {
@@ -1007,9 +1056,14 @@ async function pollBackend() {
             const wasInPos = prev ? Boolean(prev.in_position) : false;
             const curEntry = Number(s.entry_price || 0);
             const prevEntry = prev ? Number(prev.entry_price || 0) : 0;
+            const curSide = s.position_side || 'LONG';
+            const prevSide = prev ? (prev.position_side || 'LONG') : 'LONG';
 
             const isNewEntry = (isNowInPos && !wasInPos) ||
-              (isNowInPos && wasInPos && curEntry > 0 && prevEntry > 0 && Math.abs(curEntry - prevEntry) > 0.05);
+              (isNowInPos && wasInPos && (
+                (curEntry > 0 && prevEntry > 0 && Math.abs(curEntry - prevEntry) > 0.05) ||
+                (curSide !== prevSide)
+              ));
 
             const isClosed = (wasInPos && !isNowInPos);
 
@@ -1026,7 +1080,7 @@ async function pollBackend() {
               entry_price: curEntry,
               qty: Number(s.qty || 0),
               trades: Number(s.closed_trades || 0),
-              position_side: s.position_side || 'LONG'
+              position_side: curSide
             };
           });
 
@@ -1049,7 +1103,8 @@ async function pollBackend() {
               const sShort = (s.name || s.id || '').toLowerCase();
               const latestExitFill = (state.fills || []).find(f => {
                 if (!f || f.is_entry) return false;
-                const stratF = (f.strategy || '').toLowerCase();
+                const stratF = (f.strategy || '').toLowerCase().trim();
+                if (!stratF) return false;
                 return stratF.includes(s.id.replace('comp_', '')) || sShort.includes(stratF);
               });
               showPositionClosedToast(s, latestExitFill, prev);
@@ -1058,9 +1113,13 @@ async function pollBackend() {
         }
 
         renderAll(state);
+      } else if (useDelta) {
+        // Discarded delta advanced backend watermarks; request a full payload next tick.
+        forceNextFullDelta = true;
       }
     }
   } catch (err) {
+    if (useDelta) forceNextFullDelta = true;
     console.error("Bridge poll error:", err);
   } finally {
     isPolling = false;
@@ -1202,21 +1261,33 @@ async function resetArena() {
   if (!window.pywebview || !window.pywebview.api) return;
   if (isResettingArena || !splashCompleted) return;
   isResettingArena = true;
+  const myEpoch = ++stateApplyEpoch;
+  forceNextFullDelta = true;
 
-  // Reset local tracking states BEFORE starting splash sequence
+  // Reset local tracking states & chart interpolation BEFORE starting splash sequence
   latestState = null;
   knownStrategyPositions = {};
   hasInitializedPositions = false;
   chartBeacons = [];
   lastRenderedFillSig = '';
   lastTopFillSeq = 0;
+  animSpot = 0; targetSpot = 0;
+  animMinP = 0; targetMinP = 0;
+  animMaxP = 0; targetMaxP = 0;
+  animCandles = []; targetCandles = [];
+  candleSlideOffset = 0;
+  lastNewestCandleTime = 0;
+  priceHoverPos = null;
+  hoveredCandleData = null;
+  lastHoverIdx = -1;
+  lastHoverSnapY = -1;
 
   // Immediately start the reload progress overlay to hide the teardown/rebuild
   startSplashSequence(true);
 
   try {
     const state = await window.pywebview.api.reset_arena();
-    if (state) {
+    if (state && myEpoch === stateApplyEpoch) {
       latestState = state;
       renderAll(state);
     }
@@ -1268,12 +1339,17 @@ function showTVConfigInfo() {
 function renderAll(state) {
   renderHeader(state);
   renderMacroRibbon(state);
-  renderTacticalHud(state);
-  renderStrategies(state);
-  renderLeaderboard(state);
-  renderFills(state);
-  renderIntelHub(state);
-  drawPriceChart(state);
+  const inIntel = currentMainView === 'intel';
+  if (!hasFirstTableRendered || !inIntel) {
+    renderTacticalHud(state);
+    renderStrategies(state);
+    renderLeaderboard(state);
+    renderFills(state);
+    drawPriceChart(state);
+  }
+  if (!hasFirstTableRendered || inIntel) {
+    renderIntelHub(state);
+  }
 
   // Verify right-side tables are mounted and populated with data
   const lbBody = document.getElementById('leaderboardBody');
@@ -1553,9 +1629,18 @@ function renderStrategies(state) {
   const spot = quotePrice > 0 ? quotePrice : (lastCandleClose > 0 ? lastCandleClose : 0);
 
   // Build / Update each card DOM element
+  const activeStratIds = new Set();
   strategies.forEach(s => {
-    const roiClass = s.roi_pct >= 0 ? 'up' : 'down';
-    const upnlClass = s.unrealized_pnl >= 0 ? 'up' : 'down';
+    activeStratIds.add(s.id);
+    const sColor = sanitizeCssColor(s.color, '#F59E0B');
+    const roiNum = Number(s.roi_pct) || 0;
+    const upnlNum = Number(s.unrealized_pnl) || 0;
+    const qtyNum = Number(s.qty) || 0;
+    const winRateNum = Number(s.win_rate_pct) || 0;
+    const maxDdNum = Number(s.max_dd_pct) || 0;
+    const levNum = Number(s.leverage) || 2.0;
+    const roiClass = roiNum >= 0 ? 'up' : 'down';
+    const upnlClass = upnlNum >= 0 ? 'up' : 'down';
     const isBlocked = s.intent && s.intent.indexOf('EV Gate Blocked') !== -1;
     const isMacroVeto = s.intent && (s.intent.indexOf('Macro Veto:') !== -1 || s.intent.indexOf('MTF Veto:') !== -1);
 
@@ -1578,14 +1663,14 @@ function renderStrategies(state) {
       }
       const slText = s.stop_loss ? `SL ${fmtUsd(s.stop_loss, 0)}` : 'SL Dyn';
       const tpText = s.take_profit ? `TP ${fmtUsd(s.take_profit, 0)}` : 'TP Max';
-      const evBadge = (typeof s.expected_r === 'number' && Math.abs(s.expected_r) > 0.01)
+      const evBadge = (typeof s.expected_r === 'number' && Number.isFinite(s.expected_r) && Math.abs(s.expected_r) > 0.01)
         ? `<span class="ev-micro-pill num" title="Monte Carlo EV">${s.expected_r >= 0 ? '+' : ''}${s.expected_r.toFixed(1)}R</span>`
         : '';
       bracketHtml = `
           <div class="bracket-bar-wrap">
             <div class="bracket-track">
-              <div class="bracket-fill" style="width:${pct.toFixed(1)}%;background:${s.color}"></div>
-              <div class="bracket-marker" style="left:${pct.toFixed(1)}%;border-color:${s.color}"></div>
+              <div class="bracket-fill" style="width:${pct.toFixed(1)}%;background:${sColor}"></div>
+              <div class="bracket-marker" style="left:${pct.toFixed(1)}%;border-color:${sColor}"></div>
             </div>
             <div class="bracket-labels num">
               <span class="down">${slText}</span>
@@ -1608,7 +1693,7 @@ function renderStrategies(state) {
         cleanVerdict = s.intent.replace(/^EV Gate Blocked:\s*/i, '').trim();
       }
       if (!cleanVerdict) {
-        const evVal = typeof s.expected_r === 'number' ? `${s.expected_r >= 0 ? '+' : ''}${s.expected_r.toFixed(2)}R` : '-';
+        const evVal = (typeof s.expected_r === 'number' && Number.isFinite(s.expected_r)) ? `${s.expected_r >= 0 ? '+' : ''}${s.expected_r.toFixed(2)}R` : '-';
         cleanVerdict = `EV ${evVal}`;
       }
       bracketHtml = `
@@ -1627,13 +1712,13 @@ function renderStrategies(state) {
     }
 
     const levBadge = s.leverage_enabled
-      ? `<span class="lev-pill lev-active" title="Active Leverage">${s.leverage ? s.leverage.toFixed(1) : '2.0'}x</span>`
+      ? `<span class="lev-pill lev-active" title="Active Leverage">${levNum.toFixed(1)}x</span>`
       : `<span class="lev-pill lev-spot" title="Spot Only">Spot 1x</span>`;
 
     const posPill = s.in_position
       ? (s.position_side === 'SHORT'
-        ? `<span class="pos-badge in-pos-short">Short ${s.qty.toFixed(1)} ETH</span>`
-        : `<span class="pos-badge in-pos">Long ${s.qty.toFixed(1)} ETH</span>`)
+        ? `<span class="pos-badge in-pos-short">Short ${qtyNum.toFixed(1)} ETH</span>`
+        : `<span class="pos-badge in-pos">Long ${qtyNum.toFixed(1)} ETH</span>`)
       : `<span class="pos-badge flat">Idle</span>`;
 
     const cardShortNames = {
@@ -1643,20 +1728,20 @@ function renderStrategies(state) {
       'comp_vwap': 'Session Mean',
       'comp_trail': 'Trailing Guard'
     };
-    const displayName = cardShortNames[s.id] || s.name;
+    const displayName = escapeHtml(cardShortNames[s.id] || s.name || '');
 
     const pnlLabel = s.in_position ? 'Unrealized PnL' : 'Cash Balance';
     const pnlValue = s.in_position
-      ? `<span class="${upnlClass}">${fmtSignedUsd(s.unrealized_pnl)}</span>`
+      ? `<span class="${upnlClass}">${fmtSignedUsd(upnlNum)}</span>`
       : `<span>${fmtUsd(s.cash, 0)}</span>`;
 
     const cardInner = `
         <span class="lg-strat-orb" aria-hidden="true"></span>
         <div class="strat-top">
           <div class="strat-left">
-            <span class="rank-badge num" style="color:${s.color}">#${s.rank}</span>
+            <span class="rank-badge num" style="color:${sColor}">#${Number(s.rank) || 0}</span>
             <span class="strat-title" title="${escapeHtml(s.name)}">${displayName}</span>
-            <span class="strat-pill num">Gen #${s.generation} · ${s.genome}</span>
+            <span class="strat-pill num">Gen #${Number(s.generation) || 1} · ${escapeHtml(s.genome || '')}</span>
           </div>
           <div class="strat-right num">
             ${levBadge}
@@ -1671,7 +1756,7 @@ function renderStrategies(state) {
           </div>
           <div class="kpi-cell">
             <span>ROI</span>
-            <span class="${roiClass}">${fmtPct(s.roi_pct)}</span>
+            <span class="${roiClass}">${fmtPct(roiNum)}</span>
           </div>
           <div class="kpi-cell">
             <span>${pnlLabel}</span>
@@ -1679,7 +1764,7 @@ function renderStrategies(state) {
           </div>
           <div class="kpi-cell">
             <span>Win / Max DD</span>
-            <span style="color:var(--ss-text)">${s.win_rate_pct.toFixed(0)}% / ${s.max_dd_pct.toFixed(1)}%</span>
+            <span style="color:var(--ss-text)">${winRateNum.toFixed(0)}% / ${maxDdNum.toFixed(1)}%</span>
           </div>
         </div>
 
@@ -1694,7 +1779,7 @@ function renderStrategies(state) {
       stratCardDomMap.set(s.id, card);
     }
     if (card._stratColor !== s.color) {
-      card.style.setProperty('--strat-color', s.color);
+      card.style.setProperty('--strat-color', sColor);
       card._stratColor = s.color;
     }
     if (card._lastHtml !== cardInner) {
@@ -1705,6 +1790,14 @@ function renderStrategies(state) {
       grid.appendChild(card);
     }
   });
+
+  // Prune any stale strategy card nodes no longer present in the roster
+  for (const [id, node] of stratCardDomMap.entries()) {
+    if (!activeStratIds.has(id)) {
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+      stratCardDomMap.delete(id);
+    }
+  }
 
   const currentCardOrder = Array.from(grid.children).map(el => el.dataset.stratId).join(',');
   const nextCardOrder = strategies.map(s => s.id).join(',');
@@ -1889,7 +1982,11 @@ function renderLeaderboard(state) {
   if (orderChanged) {
     strategies.forEach(s => {
       const el = leaderRowDomMap.get(s.id);
-      if (el) firstTops.set(s.id, el.getBoundingClientRect().top);
+      if (el) {
+        el.style.transition = 'none';
+        el.style.transform = '';
+        firstTops.set(s.id, el.getBoundingClientRect().top);
+      }
     });
   }
 
@@ -1901,25 +1998,34 @@ function renderLeaderboard(state) {
     'comp_vwap': 'MEAN'
   };
 
+  const activeLeaderIds = new Set();
   strategies.forEach(s => {
-    const roiCls = s.roi_pct >= 0 ? 'up' : 'down';
-    const upnlCls = s.unrealized_pnl >= 0 ? 'up' : 'down';
-    const stratCode = leadShortCodes[s.id] || (s.name ? s.name.slice(0, 5) : 'STRAT');
+    activeLeaderIds.add(s.id);
+    const sColor = sanitizeCssColor(s.color, '#F59E0B');
+    const roiNum = Number(s.roi_pct) || 0;
+    const upnlNum = Number(s.unrealized_pnl) || 0;
+    const ddNum = Number(s.max_dd_pct) || 0;
+    const wrNum = Number(s.win_rate_pct) || 0;
+    const sharpeNum = Number(s.sharpe) || 0;
+    const fitnessNum = Number(s.fitness) || 0;
+    const roiCls = roiNum >= 0 ? 'up' : 'down';
+    const upnlCls = upnlNum >= 0 ? 'up' : 'down';
+    const stratCode = escapeHtml(leadShortCodes[s.id] || (s.name ? s.name.slice(0, 5) : 'STRAT'));
     const rowInner = `
-        <td style="font-weight:700;color:${s.color}">#${s.rank}</td>
+        <td style="font-weight:700;color:${sColor}">#${Number(s.rank) || 0}</td>
         <td title="${escapeHtml(s.name)}">
           <span style="display:inline-flex;align-items:center;gap:4px;">
-            <i style="width:5px;height:5px;border-radius:50%;background:${s.color};display:inline-block;flex-shrink:0;"></i>
+            <i style="width:5px;height:5px;border-radius:50%;background:${sColor};display:inline-block;flex-shrink:0;"></i>
             <span style="font-weight:700;color:var(--ss-text-strong);">${stratCode}</span>
           </span>
         </td>
         <td class="text-right" style="font-weight:700">${fmtUsd(s.equity, 0)}</td>
-        <td class="text-right ${roiCls}">${fmtPct(s.roi_pct)}</td>
-        <td class="text-right ${upnlCls}">${fmtSignedUsd(s.unrealized_pnl)}</td>
-        <td class="text-right down">${s.max_dd_pct.toFixed(1)}%</td>
-        <td class="text-right" style="color:var(--ss-text)" title="${s.closed_trades} trades">${s.win_rate_pct.toFixed(0)}%</td>
-        <td class="text-right" style="color:var(--ss-text)">${s.sharpe.toFixed(1)}</td>
-        <td class="text-right" style="font-weight:700">${s.fitness >= 0 ? '+' : ''}${s.fitness.toFixed(1)}</td>
+        <td class="text-right ${roiCls}">${fmtPct(roiNum)}</td>
+        <td class="text-right ${upnlCls}">${fmtSignedUsd(upnlNum)}</td>
+        <td class="text-right down">${ddNum.toFixed(1)}%</td>
+        <td class="text-right" style="color:var(--ss-text)" title="${Number(s.closed_trades) || 0} trades">${wrNum.toFixed(0)}%</td>
+        <td class="text-right" style="color:var(--ss-text)">${sharpeNum.toFixed(1)}</td>
+        <td class="text-right" style="font-weight:700">${fitnessNum >= 0 ? '+' : ''}${fitnessNum.toFixed(1)}</td>
       `;
 
     let tr = leaderRowDomMap.get(s.id);
@@ -1937,6 +2043,13 @@ function renderLeaderboard(state) {
       tbody.appendChild(tr);
     }
   });
+
+  for (const [id, node] of leaderRowDomMap.entries()) {
+    if (!activeLeaderIds.has(id)) {
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+      leaderRowDomMap.delete(id);
+    }
+  }
 
   if (orderChanged) {
     let hasShift = false;
@@ -2168,7 +2281,7 @@ function drawPriceChart(state) {
   targetSpot = quotePrice > 0 ? quotePrice : (lastClose > 0 ? lastClose : 0);
 
   const canvas = document.getElementById('priceCanvas');
-  const canvasW = canvas ? (canvas.clientWidth || 800) : 800;
+  const canvasW = (cachedCanvasSize && cachedCanvasSize.w) ? cachedCanvasSize.w : (canvas ? (canvas.clientWidth || 800) : 800);
   const padLeft = 12;
   const padRight = 98;
   const plotW = Math.max(50, canvasW - padLeft - padRight);
@@ -2262,10 +2375,10 @@ function drawPriceChart(state) {
   targetMinP = minP - span * 0.16;
   targetMaxP = maxP + span * 0.16;
 
-  // Bootstrap values on initial load
-  if (animSpot === 0) animSpot = targetSpot;
-  if (animMinP === 0) animMinP = targetMinP;
-  if (animMaxP === 0) animMaxP = targetMaxP;
+  // Bootstrap values on initial load, or snap immediately when paused (e.g. Focus/Full scale switch)
+  if (animSpot === 0 || state.paused) animSpot = targetSpot;
+  if (animMinP === 0 || state.paused) animMinP = targetMinP;
+  if (animMaxP === 0 || state.paused) animMaxP = targetMaxP;
   if (animCandles.length === 0 && targetCandles.length > 0) {
     animCandles = targetCandles.map(c => ({ o: c.o, h: c.h, l: c.l, c: c.c, t: c.t }));
   }
@@ -3035,6 +3148,8 @@ function trackLgSpotlight(e) {
   }
 }
 
+let cursorBackdropEl = null;
+
 window.addEventListener('pointermove', (e) => {
   latestPointerEvent = e;
   lastGlobalPointerX = e.clientX;
@@ -3042,14 +3157,14 @@ window.addEventListener('pointermove', (e) => {
   if (!spotlightRaf) {
     spotlightRaf = requestAnimationFrame(() => {
       spotlightRaf = null;
-      // The --gx/--gy spotlight vars are consumed only by CSS (a
-      // radial-gradient background), which reads them once per frame at
-      // style/paint time. Writing them here -- once per frame -- instead
-      // of on every pointermove event (which can fire many times per
-      // frame during fast mouse movement) is visually identical and
-      // skips redundant style recalculation.
-      document.documentElement.style.setProperty('--gx', `${latestPointerEvent.clientX}px`);
-      document.documentElement.style.setProperty('--gy', `${latestPointerEvent.clientY}px`);
+      // Write --gx/--gy on the backdrop node itself rather than documentElement
+      // so pointer moves never invalidate styles across the entire DOM tree.
+      if (!cursorBackdropEl) {
+        cursorBackdropEl = document.querySelector('.global-cursor-backdrop');
+      }
+      const gxTarget = cursorBackdropEl || document.documentElement;
+      gxTarget.style.setProperty('--gx', `${latestPointerEvent.clientX}px`);
+      gxTarget.style.setProperty('--gy', `${latestPointerEvent.clientY}px`);
       trackLgSpotlight(latestPointerEvent);
     });
   }
@@ -3102,11 +3217,15 @@ function updateChartMouseHover(clientX, clientY) {
         tip.style.display = 'block';
         tip.style.left = Math.min(rect.width - 195, Math.max(10, mouseX + 14)) + 'px';
         tip.style.top = Math.max(10, mouseY - 58) + 'px';
-        tip.innerHTML = `
+        const tipHtml = `
             <div style="font-weight:600;color:var(--ss-text);margin-bottom:2px;">${tStr} · 1m Candle</div>
             <div>O <strong>$${c.o.toFixed(1)}</strong> · H <strong>$${c.h.toFixed(1)}</strong></div>
             <div>L <strong>$${c.l.toFixed(1)}</strong> · C <strong class="${isUp ? 'up' : 'down'}">$${c.c.toFixed(1)} (${isUp ? '+' : ''}${chg}%)</strong></div>
           `;
+        if (tip._lastHtml !== tipHtml) {
+          tip._lastHtml = tipHtml;
+          tip.innerHTML = tipHtml;
+        }
         if (idx !== lastHoverIdx || Math.abs(snapY - lastHoverSnapY) >= 4) {
           needsRedraw = true;
           lastHoverIdx = idx;
@@ -3244,6 +3363,12 @@ function toggleDomFullscreen() {
   }
 }
 
+function blurActiveFocus() {
+  if (document.activeElement && document.activeElement !== document.body && typeof document.activeElement.blur === 'function') {
+    document.activeElement.blur();
+  }
+}
+
 function isAnyModalBlockingShortcuts() {
   if (isWizardOpen) return true;
   const ids = ['shutdownModal', 'resetConfirmModal', 'installCancelConfirmModal', 'networkOfflineOverlay'];
@@ -3266,12 +3391,12 @@ window.addEventListener('keydown', function (e) {
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.ctrlKey || e.altKey || e.metaKey) {
     return;
   }
+  if (isAnyModalBlockingShortcuts() || !splashCompleted) {
+    return;
+  }
   if (target && target.getAttribute && target.getAttribute('role') === 'button' && (e.key === 'Enter' || e.code === 'Space')) {
     e.preventDefault();
     target.click();
-    return;
-  }
-  if (isAnyModalBlockingShortcuts()) {
     return;
   }
   if (e.code === 'Space') {
@@ -3313,8 +3438,10 @@ function updateUiClockDisplay() {
   // .modal-visible fades it in with the modal's own 1.25s entrance.
   const netOverlay = document.getElementById('networkOfflineOverlay');
   if (netOverlay) {
+    const wasShown = netOverlay.classList.contains('modal-visible');
     const showNetOverlay = isOffline && document.body && document.body.classList.contains('arena-ready');
     netOverlay.classList.toggle('modal-visible', showNetOverlay);
+    if (showNetOverlay && !wasShown) blurActiveFocus();
   }
 
   const clockEl = document.getElementById('isoClockDisplay');
@@ -3448,6 +3575,7 @@ function updateUiClockDisplay() {
         if (arenaEl._enterTimer) clearTimeout(arenaEl._enterTimer);
         arenaEl._enterTimer = setTimeout(() => arenaEl.classList.remove('view-entering'), 500);
       }
+      if (latestState) renderAll(latestState);
       triggerSmoothResize();
     }
   }
@@ -3481,10 +3609,11 @@ function updateUiClockDisplay() {
       });
     }
 
+    const myEpoch = ++stateApplyEpoch;
     try {
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.refresh_intel_digest === 'function') {
         const state = await window.pywebview.api.refresh_intel_digest();
-        if (state) {
+        if (state && myEpoch === stateApplyEpoch) {
           latestState = state;
           renderAll(state);
         }
@@ -3658,13 +3787,17 @@ function updateUiClockDisplay() {
       } else {
         result = { state: 'failed', reason: (res && res.reason) || 'Article unavailable' };
       }
-      intelArticleCache[eventId] = result;
-      renderIntelArticle(eventId, result);
+      if (intelEventNodes[eventId]) {
+        intelArticleCache[eventId] = result;
+        renderIntelArticle(eventId, result);
+      }
     }).catch(function (err) {
       delete intelArticlePending[eventId];
       const result = { state: 'failed', reason: 'Article request failed: ' + (err && err.message ? err.message : String(err)) };
-      intelArticleCache[eventId] = result;
-      renderIntelArticle(eventId, result);
+      if (intelEventNodes[eventId]) {
+        intelArticleCache[eventId] = result;
+        renderIntelArticle(eventId, result);
+      }
     });
   }
 
@@ -3795,10 +3928,12 @@ function updateUiClockDisplay() {
       }).join('');
     }
     const actions = evt.strategy_actions || [];
+    const allowedBadgeCls = { bullish: 1, bearish: 1, neutral: 1, buy: 1, sell: 1, profit: 1, loss: 1, info: 1 };
     let actionsHtml = '';
     if (actions.length > 0) {
       actionsHtml = actions.map(function (act) {
-        const bCls = act.badge_cls || 'neutral';
+        const rawCls = String(act.badge_cls || 'neutral').trim().toLowerCase();
+        const bCls = allowedBadgeCls[rawCls] ? rawCls : 'neutral';
         return `<span class="strat-action-pill ${bCls}">`
           + '<strong>' + escapeHtml(act.name) + '</strong>: ' + escapeHtml(act.action) + ' <small style="opacity:0.75;">(' + escapeHtml(act.time || '') + ')</small>'
           + '</span>';
@@ -4136,6 +4271,7 @@ function updateUiClockDisplay() {
 
   function requestShutdown() {
     if (shutdownCloseTimer) { clearTimeout(shutdownCloseTimer); shutdownCloseTimer = null; }
+    blurActiveFocus();
     const modal = document.getElementById('shutdownModal');
     if (modal) {
       modal.style.display = 'flex';
@@ -4214,13 +4350,30 @@ function updateUiClockDisplay() {
 
   function openSetupWizardModal(canDismiss = true) {
     if (wizardCloseTimer) { clearTimeout(wizardCloseTimer); wizardCloseTimer = null; }
+    blurActiveFocus();
+    if (!canDismiss) {
+      clearSplashTimers();
+      if (splashLoop) { clearInterval(splashLoop); splashLoop = null; }
+      if (splashSafetyTimer) { clearTimeout(splashSafetyTimer); splashSafetyTimer = null; }
+    }
+    const openGen = ++wizardOpenGen;
     const modal = document.getElementById('setupWizardModal');
     const closeBtn = document.getElementById('btnWizardClose');
     if (closeBtn) {
       closeBtn.style.display = canDismiss ? 'flex' : 'none';
     }
-    // Reset transient save progress & sensitive password fields on reopen
+    // Reset transient save progress, eye-toggle mask states & sensitive password fields on reopen
     updateSaveLaunchProgress({ status: 'idle', message: '', progress: null, phase: '' });
+    ['keyGemini', 'keyAdminPassword', 'keyAdminPasswordConfirm'].forEach((id) => {
+      const inp = document.getElementById(id);
+      if (inp) inp.type = 'password';
+    });
+    if (modal) {
+      modal.querySelectorAll('.setup-eye-btn.active').forEach((btn) => {
+        btn.classList.remove('active');
+        btn.title = 'Show Key';
+      });
+    }
     const pwInput = document.getElementById('keyAdminPassword');
     const pwConfirm = document.getElementById('keyAdminPasswordConfirm');
     if (pwInput) pwInput.value = '';
@@ -4244,6 +4397,7 @@ function updateUiClockDisplay() {
 
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
       window.pywebview.api.get_setup_status().then((res) => {
+        if (openGen !== wizardOpenGen || !isWizardOpen) return;
         if (res && res.status === 'ok') {
           const configured = res.configured_providers || [];
           Object.entries(provIdMap).forEach(([pKey, domId]) => {
@@ -4292,6 +4446,7 @@ function updateUiClockDisplay() {
   }
 
   function closeSetupWizardModal() {
+    wizardOpenGen += 1;
     const modal = document.getElementById('setupWizardModal');
     if (modal) {
       modal.classList.remove('wizard-visible');
@@ -4342,12 +4497,12 @@ function updateUiClockDisplay() {
     // chart toast lives in the Arena view, so it is invisible while the
     // user is on the Intel Hub page where this button sits.
     const pwdBadge = document.getElementById('omniConsolePwd');
-    const flashCopiedOnButton = () => {
+    const flashBadgeFeedback = (text, isSuccess) => {
       if (!pwdBadge) return;
       if (pwdBadge._copiedTimer) clearTimeout(pwdBadge._copiedTimer);
       if (pwdBadge._copiedOriginal === undefined) pwdBadge._copiedOriginal = pwdBadge.innerHTML;
-      pwdBadge.textContent = 'copied!';
-      pwdBadge.classList.add('pwd-copied');
+      pwdBadge.textContent = text;
+      pwdBadge.classList.toggle('pwd-copied', Boolean(isSuccess));
       pwdBadge._copiedTimer = setTimeout(() => {
         pwdBadge.innerHTML = pwdBadge._copiedOriginal;
         pwdBadge.classList.remove('pwd-copied');
@@ -4356,6 +4511,7 @@ function updateUiClockDisplay() {
       }, 2000);
     };
     const showEnvHint = () => {
+      flashBadgeFeedback('copy failed', false);
       if (typeof showChartToast === 'function') {
         showChartToast({ triggerReason: 'Console password saved', action: 'INFO' });
       }
@@ -4363,7 +4519,7 @@ function updateUiClockDisplay() {
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.copy_omniroute_password === 'function') {
       window.pywebview.api.copy_omniroute_password().then((res) => {
         if (res && res.status === 'ok') {
-          flashCopiedOnButton();
+          flashBadgeFeedback('copied!', true);
           if (typeof showChartToast === 'function') showChartToast({ triggerReason: 'copied!', action: 'COPY' });
         } else {
           showEnvHint();
@@ -4418,6 +4574,7 @@ function updateUiClockDisplay() {
 
   function openInstallCancelConfirm() {
     if (installCancelCloseTimer) { clearTimeout(installCancelCloseTimer); installCancelCloseTimer = null; }
+    blurActiveFocus();
     const modal = document.getElementById('installCancelConfirmModal');
     if (modal) {
       modal.style.display = 'flex';
@@ -4450,6 +4607,7 @@ function updateUiClockDisplay() {
   }
 
   async function confirmCancelInstallAndClose() {
+    stopRuntimeInstallPoll();
     try {
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.cancel_gateway_runtime_install === 'function') {
         await window.pywebview.api.cancel_gateway_runtime_install();
@@ -4457,81 +4615,118 @@ function updateUiClockDisplay() {
     } catch (err) {
       console.debug('cancel install err:', err);
     }
-    if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
-    runtimeInstallPollInFlight = false;
+    stopRuntimeInstallPoll();
     window.__runtimeInstallStatus = { status: 'cancelled', message: '', progress: null, phase: '' };
     const btn = document.getElementById('btnInstallGatewayRuntime');
     if (btn) btn.disabled = false;
-    const prog = document.getElementById('setupInstallProgress');
+    const progWrap = document.getElementById('setupInstallProgressWrap');
     const fill = document.getElementById('setupInstallProgressFill');
-    if (prog) { prog.style.visibility = 'hidden'; prog.style.opacity = '0'; }
-    if (fill) fill.classList.remove('indeterminate');
+    if (progWrap) progWrap.classList.remove('is-open');
+    if (fill) {
+      fill.classList.remove('indeterminate');
+      fill.style.width = '0%';
+    }
     closeInstallCancelConfirm();
     closeSetupWizardModal();
   }
 
   function setWizardBanner(message, type = 'info') {
     const b = document.getElementById('setupWizardStatusBanner');
+    const wrap = document.getElementById('setupWizardBannerWrap');
     if (!b) return;
     if (!message) {
-      // Fixed slot: hide with visibility + opacity, never display: none,
-      // so the reserved banner height never collapses and nothing reflows.
-      b.style.visibility = 'hidden';
-      b.style.opacity = '0';
+      if (wrap) wrap.classList.remove('is-open');
       b.textContent = '';
       return;
     }
     b.className = `setup-wizard-banner ${type}`;
     b.textContent = message;
-    b.style.visibility = 'visible';
-    b.style.opacity = '1';
+    if (wrap) wrap.classList.add('is-open');
   }
 
   let runtimeInstallPollTimer = null;
+  let runtimeInstallPollGen = 0;
   let runtimeInstallPollInFlight = false;
   let saveLaunchPollTimer = null;
   let saveLaunchPollGen = 0;
   let saveLaunchPollInFlight = false;
 
+  function stopRuntimeInstallPoll() {
+    runtimeInstallPollGen += 1;
+    runtimeInstallPollInFlight = false;
+    if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+  }
+
   function ensureRuntimeInstallPoll() {
     if (runtimeInstallPollTimer) return;
+    const pollGen = ++runtimeInstallPollGen;
     runtimeInstallPollTimer = setInterval(() => {
-      if (runtimeInstallPollInFlight) return;
+      if (runtimeInstallPollInFlight || pollGen !== runtimeInstallPollGen) return;
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
         runtimeInstallPollInFlight = true;
         window.pywebview.api.get_setup_status().then((r) => {
-          if (r && r.status === 'ok') updateRuntimeInstallBanner(r.runtime_install_status);
+          if (pollGen !== runtimeInstallPollGen) return;
+          if (r && r.status === 'ok') {
+            applyGatewayAvailability(r);
+            updateRuntimeInstallBanner(r.runtime_install_status);
+          }
         }).catch((e) => console.debug('install poll err:', e))
           .finally(() => { runtimeInstallPollInFlight = false; });
       }
     }, 5000);
   }
 
-  // Gateway availability (item 10 A4): show the reason + one-click install
-  // button when Node.js / OmniRoute is missing; hide both when available.
+  // Gateway availability (item 10 A4): display live detected environment
+  // status (Node.js & OmniRoute) and smoothly expand/collapse the missing
+  // component note + one-click install button to fit content with zero gap.
   function applyGatewayAvailability(res) {
     if (!res) return;
     if (typeof res.gateway_port === 'number') {
       window.__tradebotGatewayPort = res.gateway_port;
     }
+    const nodeOk = !!res.node_available;
+    const omniOk = !!res.omniroute_installed;
+
+    const nodePill = document.getElementById('envNodePill');
+    if (nodePill) {
+      nodePill.className = `setup-status-pill ${nodeOk ? 'valid' : 'neutral'}`;
+      nodePill.textContent = nodeOk ? 'Detected' : 'Not installed';
+      nodePill.title = nodeOk
+        ? 'Node.js is already detected on this machine and will not be re-downloaded'
+        : 'Node.js will be downloaded automatically if needed';
+    }
+    const omniPill = document.getElementById('envOmniRoutePill');
+    if (omniPill) {
+      omniPill.className = `setup-status-pill ${omniOk ? 'valid' : 'neutral'}`;
+      omniPill.textContent = omniOk ? 'Installed' : 'Not installed';
+      omniPill.title = omniOk
+        ? 'OmniRoute is already installed on this machine and will not be re-downloaded'
+        : 'OmniRoute needs a one-time installation (~2.6 GB)';
+    }
+
+    const actionWrap = document.getElementById('gatewayRuntimeActionWrap');
     const gwNote = document.getElementById('gatewayUnavailableNote');
     const gwBtn = document.getElementById('btnInstallGatewayRuntime');
+    const showAction = !!res.gateway_unavailable_reason;
     if (gwNote) {
-      if (res.gateway_unavailable_reason) {
-        gwNote.textContent = res.gateway_unavailable_reason + ' The arena still works in Pure Math mode meanwhile.';
-        gwNote.style.visibility = 'visible';
-        gwNote.style.opacity = '1';
-      } else {
-        gwNote.style.visibility = 'hidden';
-        gwNote.style.opacity = '0';
-        gwNote.textContent = '';
-      }
+      gwNote.textContent = showAction
+        ? (res.gateway_unavailable_reason + ' The arena still works in Pure Math mode meanwhile.')
+        : '';
     }
     if (gwBtn) {
-      // Fixed slot: visibility, never display: none.
-      const showBtn = !!res.gateway_unavailable_reason;
-      gwBtn.style.visibility = showBtn ? 'visible' : 'hidden';
-      gwBtn.style.opacity = showBtn ? '1' : '0';
+      const btnSpan = gwBtn.querySelector('span') || gwBtn;
+      if (!nodeOk && !omniOk) {
+        btnSpan.textContent = 'Install Node.js & OmniRoute';
+      } else if (nodeOk && !omniOk) {
+        btnSpan.textContent = 'Install OmniRoute';
+      } else if (!nodeOk && omniOk) {
+        btnSpan.textContent = 'Install Node.js';
+      } else {
+        btnSpan.textContent = 'Install Node.js & OmniRoute';
+      }
+    }
+    if (actionWrap) {
+      actionWrap.classList.toggle('is-open', showAction);
     }
   }
 
@@ -4543,13 +4738,12 @@ function updateUiClockDisplay() {
     // Latest install state, so the close warning can decide without
     // waiting for the next poll (the poll runs every 5 s).
     window.__runtimeInstallStatus = { status: st, message: msg, progress: pct, phase: statusObj.phase || '' };
+    const progWrap = document.getElementById('setupInstallProgressWrap');
     const prog = document.getElementById('setupInstallProgress');
     const fill = document.getElementById('setupInstallProgressFill');
     const showBar = (st === 'downloading-node' || st === 'installing-omniroute');
+    if (progWrap) progWrap.classList.toggle('is-open', showBar);
     if (prog) {
-      // Fixed slot: visibility + opacity, never display: none.
-      prog.style.visibility = showBar ? 'visible' : 'hidden';
-      prog.style.opacity = showBar ? '1' : '0';
       if (showBar && fill) {
         if (pct !== null) {
           fill.classList.remove('indeterminate');
@@ -4575,16 +4769,16 @@ function updateUiClockDisplay() {
     if (st === 'idle') return;
     if (st === 'done') {
       setWizardBanner(msg || 'OmniRoute installed.', 'success');
-      if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+      stopRuntimeInstallPoll();
       refreshGatewayAvailability();
     } else if (st === 'failed') {
       setWizardBanner(msg || 'Installation failed.', 'error');
-      if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+      stopRuntimeInstallPoll();
       const btn = document.getElementById('btnInstallGatewayRuntime');
       if (btn) btn.disabled = false;
     } else if (st === 'cancelled') {
       setWizardBanner(msg || 'Installation cancelled.', 'info');
-      if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+      stopRuntimeInstallPoll();
       const btn = document.getElementById('btnInstallGatewayRuntime');
       if (btn) btn.disabled = false;
       refreshGatewayAvailability();
@@ -4606,16 +4800,15 @@ function updateUiClockDisplay() {
     if (saveLaunchPollTimer) { clearInterval(saveLaunchPollTimer); saveLaunchPollTimer = null; }
   }
 
-  // Save & Launch progress: same fixed-slot bar pattern as the install
-  // progress. The backend reports stage milestones (10/25/40/55/70/85);
-  // the bar is determinate by stage, and 100% appears only when the
-  // save actually finished (status 'done'). The failed state hides the
-  // bar and leaves the error banner to explain what went wrong.
+  // Save & Launch progress: collapsible bar (determinate by stage milestone;
+  // 100% only when the save actually finished). Collapses to 0px when idle
+  // or failed so surrounding elements resize and shift cleanly.
   function updateSaveLaunchProgress(statusObj) {
     if (!statusObj) return;
     const st = statusObj.status || 'idle';
     const msg = statusObj.message || '';
     const pct = (typeof statusObj.progress === 'number') ? statusObj.progress : null;
+    const progWrap = document.getElementById('setupSaveProgressWrap');
     const prog = document.getElementById('setupSaveProgress');
     const fill = document.getElementById('setupSaveProgressFill');
     const inProgress = (st === 'saving-password' || st === 'syncing-keys' ||
@@ -4623,14 +4816,15 @@ function updateUiClockDisplay() {
       st === 'connecting-gateway' || st === 'starting-gateway' ||
       st === 'starting-engine');
     const showBar = inProgress || st === 'done';
+    if (progWrap) progWrap.classList.toggle('is-open', showBar);
     if (prog) {
-      // Fixed slot: visibility + opacity, never display: none.
-      prog.style.visibility = showBar ? 'visible' : 'hidden';
-      prog.style.opacity = showBar ? '1' : '0';
       if (showBar && fill && pct !== null) {
         fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
         prog.setAttribute('aria-valuenow', String(pct));
       } else if (showBar && fill) {
+        prog.removeAttribute('aria-valuenow');
+      } else if (!showBar && fill) {
+        fill.style.width = '0%';
         prog.removeAttribute('aria-valuenow');
       }
     }
@@ -4657,7 +4851,7 @@ function updateUiClockDisplay() {
         const res = await window.pywebview.api.install_gateway_runtime();
         if (res && res.ok) {
           setWizardBanner(res.message || 'Installation started in the background.', 'info');
-          if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+          stopRuntimeInstallPoll();
           ensureRuntimeInstallPoll();
         } else {
           setWizardBanner((res && res.message) ? res.message : 'Could not start the installation.', 'error');
@@ -4713,6 +4907,7 @@ function updateUiClockDisplay() {
   }
 
   async function saveAndLaunchGateway() {
+    if (isSavingGateway) return;
     const saveBtn = document.getElementById('btnSaveAndLaunch');
 
     const keys = {
@@ -4735,6 +4930,7 @@ function updateUiClockDisplay() {
       }
     }
 
+    isSavingGateway = true;
     if (saveBtn) {
       saveBtn.disabled = true;
       saveBtn.innerHTML = '<span>Saving &amp; Launching...</span>';
@@ -4745,7 +4941,11 @@ function updateUiClockDisplay() {
     // stage (~500 ms) while the synchronous bridge call runs, so the
     // user sees which step is running. The bar only reaches 100% when
     // the call actually returns ok.
-    updateSaveLaunchProgress({ status: 'saving-password', message: 'Saving password...', progress: 0, phase: 'password' });
+    updateSaveLaunchProgress(
+      adminPw
+        ? { status: 'saving-password', message: 'Saving password...', progress: 0, phase: 'password' }
+        : { status: 'syncing-keys', message: 'Connecting AI services...', progress: 0, phase: 'keys' }
+    );
     if (saveLaunchPollTimer) clearInterval(saveLaunchPollTimer);
     const pollGen = ++saveLaunchPollGen;
     saveLaunchPollInFlight = false;
@@ -4810,6 +5010,7 @@ function updateUiClockDisplay() {
       updateSaveLaunchProgress({ status: 'failed', message: `Encountered error: ${err}`, progress: null, phase: '' });
       setWizardBanner(`Encountered error: ${err}`, 'error');
     } finally {
+      isSavingGateway = false;
       stopSaveLaunchPoll();
       if (saveBtn) {
         saveBtn.disabled = false;
@@ -4866,6 +5067,7 @@ function updateUiClockDisplay() {
      ========================================================================== */
   function requestResetArena() {
     if (resetCloseTimer) { clearTimeout(resetCloseTimer); resetCloseTimer = null; }
+    blurActiveFocus();
     const modal = document.getElementById('resetConfirmModal');
     if (modal) {
       modal.style.display = 'flex';

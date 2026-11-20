@@ -42,6 +42,54 @@ PROVIDER_ENV_MAP: Dict[str, str] = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 
+_OMNI_ENV_QUOTED_RE = re.compile(r"""^(['"])([\s\S]*)\1(?:\s+#.*)?$""")
+_OMNI_ENV_INLINE_COMMENT_RE = re.compile(r"\s+#.*$")
+
+
+def parse_omni_env_line(raw_line: str) -> Optional[Tuple[str, str]]:
+    """Parses one .env line mirroring OmniRoute's parseEnvValue.mjs semantics.
+
+    - Matching outer single/double quotes return the inner text verbatim (no
+      backslash unescaping, optional trailing ` # comment` stripped).
+    - Unquoted values strip trailing inline ` # comment` and outer whitespace.
+    """
+    line = (raw_line or "").lstrip("\ufeff").strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return None
+    key, raw_val = line.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+    val = raw_val.strip()
+    m = _OMNI_ENV_QUOTED_RE.match(val)
+    if m:
+        return key, m.group(2)
+    return key, _OMNI_ENV_INLINE_COMMENT_RE.sub("", val).strip()
+
+
+def format_omni_env_value(val: str) -> str:
+    """Formats a .env value so OmniRoute's parser round-trips it verbatim.
+
+    Plain values stay unquoted (e.g. `INITIAL_PASSWORD=TestAdmin123`).
+    Values containing whitespace, `#`, or leading/trailing quote characters are
+    wrapped in matching quotes so inline-comment stripping never truncates them.
+    """
+    if not val:
+        return ""
+    needs_quotes = (
+        any(ch.isspace() for ch in val)
+        or "#" in val
+        or val[0] in ("'", '"')
+        or val[-1] in ("'", '"')
+    )
+    if not needs_quotes:
+        return val
+    if '"' not in val:
+        return f'"{val}"'
+    if "'" not in val:
+        return f"'{val}'"
+    return f'"{val}"'
+
 
 class ConfigManager:
     """
@@ -201,14 +249,15 @@ class ConfigManager:
                 return dict(self._omni_env_cache)
             result: Dict[str, str] = {}
             try:
-                lines = self.omni_env_file.read_text(encoding="utf-8").splitlines()
+                lines = self.omni_env_file.read_text(encoding="utf-8-sig").splitlines()
                 for line in lines:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
+                    parsed = parse_omni_env_line(line)
+                    if parsed is None:
                         continue
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        result[k.strip()] = self._strip_outer_quotes(v)
+                    k, v = parsed
+                    # First-wins mirrors OmniRoute's env loader (if process.env[k] === undefined).
+                    if k not in result:
+                        result[k] = v
             except Exception as e:
                 logger.warning("Could not read omniroute env file: %s", e)
                 return {}
@@ -230,7 +279,7 @@ class ConfigManager:
                 existing_lines: List[str] = []
                 if self.omni_env_file.is_file():
                     try:
-                        existing_lines = self.omni_env_file.read_text(encoding="utf-8").splitlines()
+                        existing_lines = self.omni_env_file.read_text(encoding="utf-8-sig").splitlines()
                     except Exception as e:
                         logger.error("Refusing to overwrite unreadable omniroute env file: %s", e)
                         return {"ok": False, "error": f"Could not read existing .env safely: {e}"}
@@ -241,12 +290,12 @@ class ConfigManager:
                 new_lines: List[str] = []
 
                 for line in existing_lines:
-                    stripped = line.strip()
+                    stripped = line.lstrip("\ufeff").strip()
                     if stripped and not stripped.startswith("#") and "=" in stripped:
                         var_name, _ = stripped.split("=", 1)
                         var_name = var_name.strip()
                         if var_name in updated_vars:
-                            new_lines.append(f"{var_name}={updated_vars.pop(var_name)}")
+                            new_lines.append(f"{var_name}={format_omni_env_value(updated_vars.pop(var_name))}")
                             written_keys.add(var_name)
                             continue
                         if var_name in written_keys:
@@ -254,7 +303,7 @@ class ConfigManager:
                     new_lines.append(line)
 
                 for k, v in updated_vars.items():
-                    new_lines.append(f"{k}={v}")
+                    new_lines.append(f"{k}={format_omni_env_value(v)}")
 
                 self._atomic_write_text(self.omni_env_file, "\n".join(new_lines) + "\n")
 
@@ -262,9 +311,11 @@ class ConfigManager:
                 self._omni_env_cache_key = None
                 self._omni_env_cache = {}
 
-                # Synchronize into current process environment
+                # Synchronize provider API keys into current process environment;
+                # keep INITIAL_PASSWORD out of process env so child tools never inherit it.
                 for env_name, env_val in updates.items():
-                    os.environ[env_name] = env_val
+                    if env_name != "INITIAL_PASSWORD":
+                        os.environ[env_name] = env_val
 
                 return {"ok": True}
         except Exception as e:
@@ -304,6 +355,20 @@ class ConfigManager:
         env_map = self.read_omniroute_env()
         return bool((env_map.get("INITIAL_PASSWORD") or "").strip())
 
+    def validate_admin_password(self, password: Any) -> Tuple[bool, str]:
+        """Validates an admin password without writing to disk.
+
+        Returns (True, cleaned_password) or (False, error_message).
+        """
+        if not isinstance(password, str):
+            return False, "Admin password must be text."
+        pw = password.strip()
+        if len(pw) < self.ADMIN_PASSWORD_MIN_LENGTH:
+            return False, f"Admin password must be at least {self.ADMIN_PASSWORD_MIN_LENGTH} characters."
+        if re.search(r"[\r\n\t\x00-\x1f]", pw):
+            return False, "Admin password contains invalid characters."
+        return True, pw
+
     def set_admin_password(self, password: Any) -> Dict[str, Any]:
         """
         Writes a user-chosen admin password (INITIAL_PASSWORD) into
@@ -311,14 +376,10 @@ class ConfigManager:
         is never logged or returned. Minimum 8 characters; no control
         characters. Returns {"ok": True} or {"ok": False, "error": ...}.
         """
-        if not isinstance(password, str):
-            return {"ok": False, "error": "Admin password must be text."}
-        pw = password.strip()
-        if len(pw) < self.ADMIN_PASSWORD_MIN_LENGTH:
-            return {"ok": False, "error": f"Admin password must be at least {self.ADMIN_PASSWORD_MIN_LENGTH} characters."}
-        if re.search(r"[\r\n\t\x00-\x1f]", pw):
-            return {"ok": False, "error": "Admin password contains invalid characters."}
-        res = self._write_omni_env_vars({"INITIAL_PASSWORD": pw})
+        ok, pw_or_err = self.validate_admin_password(password)
+        if not ok:
+            return {"ok": False, "error": pw_or_err}
+        res = self._write_omni_env_vars({"INITIAL_PASSWORD": pw_or_err})
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error", "Could not write the admin password.")}
         return {"ok": True}

@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import List, Optional
 import logging
 import os
+import threading
 import time
 import warnings
 # Phase 2: pandas/numpy are imported lazily inside
@@ -13,6 +14,7 @@ import warnings
 # moves the cost off the startup path with no behavior change.
 
 logger = logging.getLogger(__name__)
+_yf_lock = threading.Lock()
 
 warnings.filterwarnings("ignore", message=".*inplace.*")
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -208,15 +210,17 @@ class ETHFeed:
 
         try:
             import yfinance as yf
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                df = yf.download(ticker, period=period, interval=interval, progress=False, timeout=3.5)
+            with _yf_lock:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    df = yf.download(ticker, period=period, interval=interval, progress=False, timeout=3.5)
             if df is not None and not df.empty:
                 return df
         except Exception as e:
             logger.debug("yfinance fetch failed, trying CCXT fallback: %s", e)
 
         # Automatic CCXT Public Exchange Fallback (Kraken ETH/USD, zero API key needed)
+        exchange = None
         try:
             import ccxt
             exchange = ccxt.kraken({"enableRateLimit": True, "timeout": 2500})
@@ -233,6 +237,12 @@ class ETHFeed:
                 return df
         except Exception as e:
             logger.warning("CCXT fallback fetch failed, no bars available: %s", e)
+        finally:
+            if exchange is not None and hasattr(exchange, "close"):
+                try:
+                    exchange.close()
+                except Exception:
+                    pass
 
         return pd.DataFrame()
 

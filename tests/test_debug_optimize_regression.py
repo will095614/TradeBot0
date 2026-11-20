@@ -477,6 +477,80 @@ def test_track_c_gateway_npm_strips_secrets_and_no_blind_retry(tmp_path):
 # ============================================================================
 # Track D: GUI & Frontend
 # ============================================================================
+def test_track_c_gateway_sync_admin_password_fresh_and_existing_db(tmp_path):
+    """sync_admin_password uses setup --non-interactive for fresh DB and reset-password --password-stdin for existing DB,
+    never placing the password in command-line arguments and always pinning DATA_DIR."""
+    from src.intelligence.gateway_supervisor import GatewaySupervisor
+
+    data_dir = tmp_path / ".omniroute"
+    sup = GatewaySupervisor(omni_data_dir=data_dir)
+    captured = []
+
+    def _fake_run(cmd, **kwargs):
+        captured.append((list(cmd), dict(kwargs)))
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = "ok"
+        res.stderr = ""
+        return res
+
+    with patch.object(GatewaySupervisor, "_get_cli_base_command", classmethod(lambda cls: ["node", "omniroute.mjs"])), \
+         patch("src.intelligence.gateway_supervisor.subprocess.run", side_effect=_fake_run):
+        # 1. Fresh DB (storage.sqlite does not exist yet) -> setup --non-interactive via child env
+        r1 = sup.sync_admin_password("InitPass1234", data_dir=data_dir)
+        assert r1 == {"ok": True, "skipped": False, "mode": "setup"}
+        cmd1, kw1 = captured[-1]
+        assert cmd1 == ["node", "omniroute.mjs", "setup", "--non-interactive"]
+        assert "InitPass1234" not in " ".join(cmd1)
+        assert kw1["env"]["DATA_DIR"] == str(data_dir)
+        assert kw1["env"]["OMNIROUTE_CLI_SKIP_DEFAULT_DATA_ENV"] == "1"
+        assert kw1["env"]["INITIAL_PASSWORD"] == "InitPass1234"
+
+        # 2. Existing DB (storage.sqlite exists) -> reset-password --password-stdin via stdin
+        (data_dir / "storage.sqlite").write_bytes(b"sqlite")
+        r2 = sup.sync_admin_password("UpdatedPass5678", data_dir=data_dir)
+        assert r2 == {"ok": True, "skipped": False, "mode": "reset-password"}
+        cmd2, kw2 = captured[-1]
+        assert cmd2 == ["node", "omniroute.mjs", "reset-password", "--password-stdin"]
+        assert "UpdatedPass5678" not in " ".join(cmd2)
+        assert kw2["input"] == "UpdatedPass5678"
+        assert "INITIAL_PASSWORD" not in kw2["env"]
+        assert kw2["env"]["DATA_DIR"] == str(data_dir)
+
+
+def test_track_c_save_and_launch_aborts_if_password_db_sync_fails(tmp_path):
+    """save_and_launch_gateway does not mark onboarding complete when OmniRoute DB password sync fails."""
+    from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
+    from src.intelligence.config_manager import ConfigManager
+    from src.intelligence.gateway_supervisor import GatewaySupervisor
+
+    dash = ArenaDashboard()
+    dash.config_manager = ConfigManager(
+        data_dir=tmp_path / "data",
+        omni_env_path=tmp_path / ".omniroute" / ".env",
+    )
+    dash.gateway_supervisor = GatewaySupervisor(
+        daemon_log_path=tmp_path / "logs" / "omniroute_daemon.log",
+        omni_data_dir=tmp_path / ".omniroute",
+    )
+    bridge = _ArenaBridgeApi(dash)
+    try:
+        with patch.object(
+            dash.gateway_supervisor,
+            "sync_admin_password",
+            return_value={"ok": False, "error": "sqlite locked"},
+        ):
+            res = bridge.save_and_launch_gateway(
+                {"gemini": "AIzaSyFakeKeyForTest12345678"},
+                admin_password="ValidPassword123",
+            )
+        assert res["ok"] is False
+        assert "sqlite locked" in res["message"]
+        assert dash.config_manager.load_config()["has_completed_onboarding"] is False
+    finally:
+        dash.engine.stop()
+
+
 def test_track_d_view_model_publisher_excludes_fills_and_detects_is_live_change():
     """ViewModelPublisher omits unchanged fills before deepcopy and detects is_live flips."""
     from src.gui.view_model import ViewModelPublisher
@@ -521,6 +595,45 @@ def test_track_d_dashboard_save_launch_aborts_on_key_sync_failure():
     assert "disk full" in res["message"]
 
 
+def test_track_d_reset_engine_preserves_fills_after_bootstrap_completes():
+    """bootstrap_intraday_session() must NOT wipe fill_records/counters preserved by reset_engine()."""
+    from src.arena.order import FillEvent, OrderSide
+    from src.gui.dashboard import ArenaDashboard
+
+    dash = ArenaDashboard(initial_cash=Decimal("100000.00"))
+    try:
+        dash.engine.paused = True
+        fill = FillEvent(
+            order_id="reset-keep-1",
+            portfolio_id="comp_agg",
+            symbol="ETH/USD",
+            side=OrderSide.BUY,
+            qty=Decimal("1"),
+            price=Decimal("3000"),
+            fee=Decimal("1"),
+            timestamp=time.time(),
+        )
+        dash.engine.fill_records.append(fill)
+        dash.engine._live_fill_seq_offset = 7
+        dash.engine._closed_trades_since_evolve = 4
+        dash.engine.live_start_ts = 1700000000.0
+
+        dash.reset_engine()
+
+        # Wait until the background bootstrap finishes (reproducing the fast-bootstrap race)
+        deadline = time.monotonic() + 5.0
+        while not dash.engine.is_bootstrapped and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        assert dash.engine.is_bootstrapped is True
+        assert fill in dash.engine.fill_records
+        assert dash.engine._live_fill_seq_offset == 7
+        assert dash.engine._closed_trades_since_evolve == 4
+        assert dash.engine.live_start_ts == 1700000000.0
+    finally:
+        dash.engine.stop()
+
+
 def test_track_d_frontend_contracts_css_html_js():
     """Static checks for Track D CSS/HTML/JS bug fixes and zero CJK / forbidden jargon."""
     css = (_ROOT / "src" / "gui" / "assets" / "app.css").read_text(encoding="utf-8")
@@ -538,3 +651,325 @@ def test_track_d_frontend_contracts_css_html_js():
         low = content.lower()
         for forbidden in ("spatial glass", "type a design", "style b tournament"):
             assert forbidden not in low, f"Forbidden jargon {forbidden!r} found in {name}"
+
+
+# ---------------------------------------------------------------------------
+# V2.4.0 Second-Order Debug & Optimization Regression Tests (Tracks A-D)
+# ---------------------------------------------------------------------------
+
+
+def test_v24_track_a_risk_guard_rejects_none_price_and_inverted_brackets():
+    from src.arena.order import OrderSide, OrderTicket, OrderType
+    from src.arena.portfolio import Portfolio
+    from src.arena.risk_guard import RiskGuard
+
+    p = Portfolio(portfolio_id="rg_v24", name="RG V24", initial_cash=Decimal("100000.00"))
+    lim_no_price = OrderTicket(
+        portfolio_id="rg_v24",
+        symbol="ETH/USD",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        qty=Decimal("1"),
+        price=None,
+    )
+    ok, reason = RiskGuard.validate_order(lim_no_price, p, Decimal("0.5"), Decimal("3000"))
+    assert ok is False
+    assert "price" in reason.lower()
+
+    bad_sl = OrderTicket(
+        portfolio_id="rg_v24",
+        symbol="ETH/USD",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        qty=Decimal("1"),
+        stop_loss=Decimal("3100"),
+    )
+    ok_sl, _ = RiskGuard.validate_order(bad_sl, p, Decimal("0.5"), Decimal("3000"))
+    assert ok_sl is False
+
+    bad_tp = OrderTicket(
+        portfolio_id="rg_v24",
+        symbol="ETH/USD",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        qty=Decimal("1"),
+        take_profit=Decimal("2900"),
+    )
+    ok_tp, _ = RiskGuard.validate_order(bad_tp, p, Decimal("0.5"), Decimal("3000"))
+    assert ok_tp is False
+
+
+def test_v24_track_a_broker_liquidation_precedes_tp_at_exact_liq_price():
+    from src.arena.broker_sim import LIQUIDATION_MAINTENANCE_RATIO, BrokerSim
+    from src.arena.order import ExecutionReason, OrderSide, OrderTicket, OrderType
+    from src.arena.portfolio import Portfolio
+
+    broker = BrokerSim(symbol="ETH/USD", slippage_pct=Decimal("0"))
+    p = Portfolio(
+        portfolio_id="lev_liq",
+        name="Lev Liq",
+        initial_cash=Decimal("10000.00"),
+        leverage=Decimal("5.0"),
+        leverage_enabled=True,
+    )
+    broker.register_portfolio(p, max_position_ratio=Decimal("0.50"))
+
+    open_ticket = OrderTicket(
+        portfolio_id="lev_liq",
+        symbol="ETH/USD",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        qty=Decimal("5"),
+        take_profit=Decimal("1500"),
+        timestamp=1000.0,
+    )
+    broker.current_price = Decimal("1000")
+    fill = broker.submit_order(open_ticket)
+    assert fill is not None
+    assert p.position_qty == Decimal("5.0000")
+
+    expected_liq = (
+        Decimal("1000") - (p.margin_locked * (Decimal("1") - LIQUIDATION_MAINTENANCE_RATIO) / Decimal("5"))
+    ).quantize(Decimal("0.01"))
+
+    # Wide candle touches BOTH liquidation and TP (1500): liquidation must win at exact maintenance liq_price.
+    fills = broker.on_tick(
+        price=Decimal("1400"),
+        high=Decimal("1600"),
+        low=Decimal("700"),
+        timestamp=1060.0,
+        open_price=Decimal("990"),
+    )
+    assert len(fills) == 1
+    assert fills[0].reason == ExecutionReason.LIQUIDATION
+    assert fills[0].price == expected_liq
+    assert p.position_qty == Decimal("0")
+
+
+def test_v24_track_a_portfolio_apply_fill_upfront_quantization():
+    from src.arena.order import FillEvent, OrderSide
+    from src.arena.portfolio import Portfolio
+
+    p = Portfolio(portfolio_id="quant_v24", name="Quant V24", initial_cash=Decimal("10000.00"))
+    f_open = FillEvent(
+        order_id="q1",
+        portfolio_id="quant_v24",
+        symbol="ETH/USD",
+        side=OrderSide.BUY,
+        qty=Decimal("1.00004"),
+        price=Decimal("2000.004"),
+        fee=Decimal("1.00"),
+        timestamp=100.0,
+    )
+    p.apply_fill(f_open)
+    assert p.position_qty == Decimal("1.0000")
+    f_close = FillEvent(
+        order_id="q2",
+        portfolio_id="quant_v24",
+        symbol="ETH/USD",
+        side=OrderSide.SELL,
+        qty=Decimal("1.00004"),
+        price=Decimal("2100.004"),
+        fee=Decimal("1.00"),
+        timestamp=200.0,
+    )
+    closed = p.apply_fill(f_close)
+    assert p.position_qty == Decimal("0")
+    assert closed.is_closing_fill is True
+    assert closed.realized_pnl == Decimal("98.00")
+
+
+def test_v24_track_b_live_engine_custom_gateway_url_and_reset_broker_binding():
+    from src.data.live_engine import LiveArenaEngine
+    from src.gui.dashboard import ArenaDashboard
+
+    eng = LiveArenaEngine(
+        initial_cash=Decimal("100000.00"),
+        gateway_base_url="http://127.0.0.1:29999/v1",
+    )
+    try:
+        assert eng.macro_commander.client.base_url == "http://127.0.0.1:29999/v1"
+    finally:
+        eng.stop()
+
+    dash = ArenaDashboard(initial_cash=Decimal("100000.00"))
+    try:
+        dash.engine.paused = True
+        dash.reset_engine()
+        for c in dash.engine.competitors:
+            pid = c.portfolio.portfolio_id
+            assert dash.engine.broker.portfolios[pid] is c.portfolio
+    finally:
+        dash.engine.stop()
+
+
+def test_v24_track_b_timemachine_single_sim_and_flat_empirical_candles():
+    from src.data.timemachine import MonteCarloOddsEvaluator
+
+    ev = MonteCarloOddsEvaluator(seed=42)
+    single = ev.evaluate_bracket(
+        entry_price=Decimal("3000"),
+        stop_loss=Decimal("2940"),
+        take_profit=Decimal("3120"),
+        n_sims=1,
+        n_steps=10,
+    )
+    assert math.isfinite(single.expected_r)
+    assert 0.0 <= single.target_prob <= 1.0
+
+    flat_candles = [{"t": float(i * 60), "o": 3000.0, "h": 3000.0, "l": 3000.0, "c": 3000.0} for i in range(25)]
+    flat_res = ev.evaluate_bracket(
+        entry_price=Decimal("3000"),
+        stop_loss=Decimal("2940"),
+        take_profit=Decimal("3120"),
+        recent_candles=flat_candles,
+        n_sims=64,
+        n_steps=12,
+    )
+    assert math.isfinite(flat_res.expected_r)
+    assert flat_res.target_prob + flat_res.stop_prob <= 1.0 + 1e-6
+
+
+def test_v24_track_b_mtf_seed_1h_merges_same_slot():
+    from src.data.mtf_engine import MultiTimeframeEngine
+
+    mtf = MultiTimeframeEngine()
+    bars = [
+        {"t": 3600.0, "o": 100.0, "h": 110.0, "l": 95.0, "c": 105.0, "v": 10.0},
+        {"t": 3660.0, "o": 105.0, "h": 120.0, "l": 90.0, "c": 115.0, "v": 15.0},
+    ]
+    for i in range(2, 55):
+        bars.append({"t": float(i * 3600), "o": 115.0, "h": 125.0, "l": 110.0, "c": 120.0, "v": 20.0})
+    mtf.seed_1h_buckets(bars)
+    assert len(mtf.candles_1h) == 54
+    first = mtf.candles_1h[0]
+    assert first["t"] == 3600.0
+    assert first["o"] == 100.0
+    assert first["h"] == 120.0
+    assert first["l"] == 90.0
+    assert first["c"] == 115.0
+    assert first["v"] == 25.0
+
+
+def test_v24_track_c_env_roundtrip_and_no_initial_password_in_environ(tmp_path, monkeypatch):
+    import os
+    from src.intelligence.config_manager import (
+        ConfigManager,
+        format_omni_env_value,
+        parse_omni_env_line,
+    )
+
+    for raw in ("SimplePass123", "Pass # with hash", "lead space ", "has'quote#1"):
+        encoded = format_omni_env_value(raw)
+        parsed = parse_omni_env_line(f"INITIAL_PASSWORD={encoded} # trailing comment")
+        assert parsed == ("INITIAL_PASSWORD", raw)
+
+    monkeypatch.delenv("INITIAL_PASSWORD", raising=False)
+    env_file = tmp_path / ".env"
+    cm = ConfigManager(data_dir=tmp_path, omni_env_path=env_file)
+    res_pw = cm.set_admin_password("My#Secret Pass")
+    assert res_pw.get("ok") is True
+    assert "INITIAL_PASSWORD" not in os.environ
+    assert cm.is_admin_password_configured() is True
+
+
+def test_v24_track_c_gemini_header_and_save_gateway_no_split_brain(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
+    from src.intelligence.config_manager import ConfigManager
+    from src.intelligence.gateway_supervisor import GatewaySupervisor
+
+    sup = GatewaySupervisor(host="127.0.0.1", port=20128)
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_cm = MagicMock()
+    mock_cm.__enter__.return_value = mock_resp
+    mock_cm.__exit__.return_value = False
+    with patch("urllib.request.urlopen", return_value=mock_cm) as mock_open:
+        res = sup.test_single_key("gemini", "AIzaFakeSecretKey1234567890")
+    assert res["ok"] is True
+    req_obj = mock_open.call_args[0][0]
+    assert "AIzaFakeSecretKey" not in req_obj.full_url
+    assert req_obj.get_header("X-goog-api-key") == "AIzaFakeSecretKey1234567890"
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("INITIAL_PASSWORD=OldPass123\n", encoding="utf-8")
+    dash = ArenaDashboard(initial_cash=Decimal("100000.00"))
+    try:
+        dash.config_manager = ConfigManager(data_dir=tmp_path, omni_env_path=env_file)
+        bridge = _ArenaBridgeApi(dash)
+        with patch.object(dash.gateway_supervisor, "stop_watchdog"), \
+             patch.object(dash.gateway_supervisor, "shutdown"), \
+             patch.object(
+                 dash.gateway_supervisor,
+                 "sync_admin_password",
+                 return_value={"ok": False, "error": "sqlite locked"},
+             ):
+            out = bridge.save_and_launch_gateway({"gemini": "AIzaNewKey1234567890"}, admin_password="NewPass1234")
+        assert out["ok"] is False
+        assert "INITIAL_PASSWORD=OldPass123" in env_file.read_text(encoding="utf-8")
+    finally:
+        dash.engine.stop()
+
+
+def test_v24_track_c_omniroute_extract_json_retry_hint_dedup_and_https_redirect():
+    from unittest.mock import MagicMock, patch
+    from src.intelligence.ingestion import DeduplicationBuffer
+    from src.intelligence.omniroute_client import _retry_window_seconds, extract_json
+    from src.update_checker import check_for_updates
+
+    raw_with_fence = '{"summary": "use ```python\\nprint(1)\\n``` cleanly", "score": 7}'
+    parsed = extract_json(raw_with_fence)
+    assert parsed == {"summary": "use ```python\nprint(1)\n``` cleanly", "score": 7}
+
+    assert _retry_window_seconds("Rate limit exceeded; try again in 1.5s.") == pytest.approx(1.5)
+
+    buf = DeduplicationBuffer(capacity=2)
+    assert buf.is_new("A", "https://a.invalid") is True
+    assert buf.is_new("B", "https://b.invalid") is True
+    buf.forget("A", "https://a.invalid")
+    assert len(buf) == 1
+    assert buf.is_new("C", "https://c.invalid") is True
+    assert buf.is_new("B", "https://b.invalid") is False  # B was not evicted by a ghost entry
+
+    downgraded = MagicMock()
+    downgraded.raise_for_status.return_value = None
+    downgraded.url = "http://insecure.invalid/manifest.json"
+    downgraded.history = []
+    downgraded.json.return_value = {"version": "V9.9.9"}
+    with patch("src.update_checker.requests.get", return_value=downgraded):
+        res = check_for_updates(manifest_url="https://example.invalid/manifest.json")
+    assert res["status"] == "check_failed"
+
+
+def test_v24_track_d_view_model_sanitizes_mc_stats_and_dev_bat_structure():
+    from src.arena.leaderboard import Leaderboard
+    from src.data.live_engine import LiveArenaEngine
+    from src.gui.view_model import build_engine_view_model
+
+    eng = LiveArenaEngine(initial_cash=Decimal("100000.00"))
+    try:
+        eng.strategy_telemetry["comp_agg"]["mc_stats"] = {
+            "verdict": "PROCEED",
+            "expected_r": float("nan"),
+            "target_prob": float("inf"),
+            "stop_prob": None,
+            "r_multiple": 2.0,
+            "passed": True,
+        }
+        rankings = Leaderboard.get_rankings(eng.broker.portfolios)
+        payload = build_engine_view_model(eng, rankings, gen=1)
+        agg = next(s for s in payload["strategies"] if s["id"] == "comp_agg")
+        assert agg["expected_r"] == 0.0
+        assert agg["target_prob"] == 0.0
+        assert agg["stop_prob"] is None
+        assert agg["r_multiple"] == 2.0
+    finally:
+        eng.stop()
+
+    bat_raw = (_ROOT / "dev_test.bat").read_bytes()
+    assert b"\r\n" in bat_raw and b"\n" not in bat_raw.replace(b"\r\n", b"")
+    bat = bat_raw.decode("utf-8")
+    assert "--basetemp=" in bat
+    assert ":launch_gui_after_verify" in bat
+    assert 'set "LAUNCH_ANYWAY=' in bat

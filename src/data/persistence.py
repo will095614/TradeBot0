@@ -7,6 +7,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import math
 import os
 import sqlite3
 import sys
@@ -31,6 +32,8 @@ def _retry_on_db_error(fn):
     def wrapper(self, *args, **kwargs):
         try:
             return fn(self, *args, **kwargs)
+        except (sqlite3.IntegrityError, sqlite3.InterfaceError):
+            raise
         except sqlite3.Error:
             self._reset_connection()
             return fn(self, *args, **kwargs)
@@ -176,8 +179,30 @@ class ArenaStorage:
                 except Exception as e:
                     logger.debug("Evolution seed column already exists, skipping migration: %s", e)
 
+    @staticmethod
+    def _candle_row(c: Dict[str, Any]) -> Optional[tuple]:
+        try:
+            t_f = float(c["t"])
+            o = float(c["o"])
+            h = float(c["h"])
+            lo = float(c["l"])
+            cl = float(c["c"])
+            v = float(c.get("v", 0.0))
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not (math.isfinite(t_f) and math.isfinite(o) and math.isfinite(h) and math.isfinite(lo) and math.isfinite(cl)):
+            return None
+        if o <= 0.0 or h <= 0.0 or lo <= 0.0 or cl <= 0.0:
+            return None
+        if not math.isfinite(v) or v < 0.0:
+            v = 0.0
+        return (int(t_f), o, h, lo, cl, v)
+
     @_retry_on_db_error
     def save_candle(self, c: Dict[str, Any]) -> None:
+        row = self._candle_row(c)
+        if row is None:
+            return
         with self._db_lock:
             with self._get_connection() as conn:
                 conn.execute(
@@ -185,31 +210,16 @@ class ArenaStorage:
                     INSERT OR REPLACE INTO candles_1m (timestamp, open, high, low, close, volume)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        int(c["t"]),
-                        float(c["o"]),
-                        float(c["h"]),
-                        float(c["l"]),
-                        float(c["c"]),
-                        float(c.get("v", 0.0)),
-                    ),
+                    row,
                 )
 
     @_retry_on_db_error
     def save_candles_batch(self, candles: List[Dict[str, Any]]) -> None:
         if not candles:
             return
-        rows = [
-            (
-                int(c["t"]),
-                float(c["o"]),
-                float(c["h"]),
-                float(c["l"]),
-                float(c["c"]),
-                float(c.get("v", 0.0)),
-            )
-            for c in candles
-        ]
+        rows = [r for r in (self._candle_row(c) for c in candles) if r is not None]
+        if not rows:
+            return
         with self._db_lock:
             with self._get_connection() as conn:
                 conn.executemany(

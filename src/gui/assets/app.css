@@ -202,9 +202,19 @@ body.arena-paused .spatial-dock-bar .lg-dock-pod--controls > *:not(#pauseBtn) {
   opacity: 0.82;
 }
 
-body.arena-paused *,
-body.arena-paused *::before,
-body.arena-paused *::after {
+/* Pause live/ambient animations when paused without freezing modals, dropdowns, or Intel transitions */
+body.arena-paused .lg-ambient-blob,
+body.arena-paused .lg-ambient-caustics,
+body.arena-paused .lg-lens-ring,
+body.arena-paused .lg-orbit-ring,
+body.arena-paused .lg-tube-meniscus,
+body.arena-paused .lg-tube-bubbles i,
+body.arena-paused .lg-wave-bars i,
+body.arena-paused .pulse-dot,
+body.arena-paused .live-dot,
+body.arena-paused .ss-badge__dot,
+body.arena-paused .catalyst-pulse-orb,
+body.arena-paused .orb-ring {
   animation-play-state: paused !important;
 }
 
@@ -5051,17 +5061,15 @@ body:not(.arena-ready) .lg-glass {
 }
 
 .setup-wizard-modal {
-  width: 1080px;
-  max-width: 94vw;
+  width: 560px;
+  max-width: 92vw;
   max-height: 92vh;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  /* .ss-modal sets gap: 16px; without this the modal gains 32px of
-     unintended space between header/body/actions (the section margins
-     already set the intended spacing). */
+  /* .ss-modal sets gap: 16px; keep gap: 0 so section margins control spacing. */
   gap: 0;
-  padding: 18px 24px 14px;
+  padding: 20px 24px 16px;
   overflow-y: hidden;
   border: 1px solid rgba(255, 255, 255, 0.16);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.85), 0 0 40px rgba(0, 242, 254, 0.12);
@@ -5081,6 +5089,11 @@ body:not(.arena-ready) .lg-glass {
   z-index: 10002;
 }
 
+/* Shutdown prompt always sits above all modals including the setup wizard. */
+#shutdownModal {
+  z-index: 10005;
+}
+
 .setup-wizard-overlay.wizard-visible .setup-wizard-modal {
   transform: scale(1) translateY(0);
   opacity: 1;
@@ -5092,8 +5105,15 @@ body:not(.arena-ready) .lg-glass {
 }
 
 .setup-wizard-header {
+  flex-shrink: 0;
+  text-align: center;
   margin-bottom: 12px;
   transition: margin-bottom 0.3s var(--lg-spring);
+}
+
+.setup-wizard-header .ss-modal-desc {
+  max-width: 460px;
+  margin: 4px auto 0;
 }
 
 .setup-wizard-badge {
@@ -5112,26 +5132,34 @@ body:not(.arena-ready) .lg-glass {
   margin-bottom: 6px;
 }
 
+/* Single-column vertical wizard layout (Gemini-only setup). */
 .setup-wizard-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   align-items: start;
   margin-bottom: 12px;
-  transition: gap 0.3s var(--lg-spring), margin-bottom 0.3s var(--lg-spring);
+  transition: margin-bottom 0.3s var(--lg-spring);
 }
 
-/* Two-column wizard (2026-11-14): left = the four API key cards, right =
-   the install-wizard side (admin password, gateway, progress, banner).
-   Columns are flex stacks; min-width: 0 lets long text truncate instead
-   of forcing the grid wider. */
+/* Vertical flex stack with explicit top margins on visible items so collapsed
+   dynamic regions occupy literally 0px (no phantom flex gap). */
 .setup-wizard-column {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
   min-width: 0;
   min-height: 0;
-  transition: gap 0.3s var(--lg-spring);
+}
+
+.setup-wizard-column > .setup-provider-card,
+.setup-wizard-column > .setup-gateway-options {
+  margin-top: 8px;
+  transition: margin-top 0.3s var(--lg-spring), border-color 0.22s ease,
+              background 0.22s ease, padding 0.3s var(--lg-spring);
 }
 
 .setup-provider-card {
@@ -5356,11 +5384,37 @@ body:not(.arena-ready) .lg-glass {
 }
 
 .setup-gateway-options {
-  padding: 10px 12px;
+  padding: 10px 14px;
   border-radius: 10px;
   background: rgba(0, 242, 254, 0.04);
   border: 1px solid rgba(0, 242, 254, 0.24);
+  text-align: center;
   transition: padding 0.3s var(--lg-spring);
+}
+
+/* Environment detection status strip (Node.js & OmniRoute) */
+.setup-env-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding-bottom: 8px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.setup-env-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.setup-env-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #E2E8F0;
 }
 
 .setup-gateway-note {
@@ -5378,49 +5432,69 @@ body:not(.arena-ready) .lg-glass {
   font-family: var(--font-mono);
 }
 
-/* Dynamic gateway note: a fixed two-line slot, always reserved. Hidden
-   state is visibility + opacity -- never display: none -- so showing or
-   hiding the note never moves the install button or anything below it.
-   Text beyond two lines is ellipsised, so the slot height is constant. */
-#gatewayUnavailableNote {
-  min-height: 29px;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  visibility: hidden;
+/* Content-sized collapsible container: collapses cleanly to 0px height and
+   0px margin when inactive, and animates to exact natural content height
+   when .is-open is added so sibling boxes resize and shift smoothly. */
+.setup-collapsible {
+  display: grid;
+  grid-template-rows: 0fr;
   opacity: 0;
-  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+  visibility: hidden;
+  margin-top: 0;
+  pointer-events: none;
+  transition:
+    grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.22s ease,
+    margin-top 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 0.28s;
 }
 
-/* Install button: a fixed 32px slot, always reserved (same visibility
-   rule), so it never pushes the banner or progress bar when it appears. */
-#btnInstallGatewayRuntime {
+.setup-collapsible.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
   margin-top: 8px;
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+  pointer-events: auto;
+  transition:
+    grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.22s ease,
+    margin-top 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 0s;
+}
+
+.setup-collapsible-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.setup-gateway-action-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+#gatewayUnavailableNote {
+  margin-top: 0;
+  color: #CBD5E1;
+  line-height: 1.45;
+}
+
+#btnInstallGatewayRuntime {
+  margin-top: 0;
 }
 
 .setup-wizard-banner {
-  padding: 8px 12px;
+  padding: 9px 14px;
   border-radius: 8px;
   font-size: 11px;
   font-weight: 600;
-  line-height: 1.4;
-  /* Fixed two-line slot, always reserved (visibility + opacity, never
-     display: none): the banner never pushes the progress bar or the
-     actions when it appears, and long messages ellipsise to two lines. */
-  min-height: 48px;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring),
-              background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease,
-              min-height 0.3s var(--lg-spring), padding 0.3s var(--lg-spring);
+  line-height: 1.45;
+  text-align: center;
+  word-break: break-word;
+  transition: background-color 0.25s ease, border-color 0.25s ease,
+              color 0.25s ease, padding 0.3s var(--lg-spring);
 }
 
 .setup-wizard-banner.info {
@@ -5441,18 +5515,11 @@ body:not(.arena-ready) .lg-glass {
   border: 1px solid rgba(255, 51, 75, 0.28);
 }
 
-/* One-click install progress: determinate when the Node.js download
-   reports a real percent, indeterminate (sliding fill, AIMRAN
-   progress-bar pattern) while npm installs -- npm reports no
-   trustworthy percent, so none is fabricated. */
+/* One-click install progress: sits inside #setupInstallProgressWrap
+   (.setup-collapsible) so it takes 0px when idle and glides open cleanly. */
 .setup-install-progress {
-  margin-top: -2px;
-  /* Fixed 8px slot, always reserved (visibility + opacity, never
-     display: none): the bar fading in never moves anything. */
-  min-height: 8px;
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+  margin-top: 0;
+  min-height: 0;
 }
 .setup-install-progress-track {
   height: 6px;
@@ -5477,16 +5544,10 @@ body:not(.arena-ready) .lg-glass {
   100% { transform: translateX(250%); }
 }
 
-/* Save & Launch progress: same fixed-slot bar as the install progress
-   (determinate by stage milestone; 100% only when the save actually
-   finished). The slot is always reserved so the bar fading in never
-   moves anything. */
+/* Save & Launch progress: same collapsible content-sized bar. */
 .setup-save-progress {
-  margin-top: -2px;
-  min-height: 8px;
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 0.25s var(--lg-spring), visibility 0.25s var(--lg-spring);
+  margin-top: 0;
+  min-height: 0;
 }
 .setup-save-progress-track {
   height: 6px;
@@ -5504,10 +5565,11 @@ body:not(.arena-ready) .lg-glass {
 }
 
 .setup-wizard-actions {
+  flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: auto;
+  margin-top: 0;
 }
 
 /* Compact mode (short windows): tighten spacing instead of scrolling --
@@ -5517,12 +5579,15 @@ body:not(.arena-ready) .lg-glass {
 @media (max-height: 720px) {
   .setup-wizard-modal { padding: 12px 20px 10px; }
   .setup-wizard-header { margin-bottom: 6px; }
-  .setup-wizard-body { gap: 12px; margin-bottom: 4px; }
-  .setup-wizard-column { gap: 6px; }
-  .setup-provider-card { padding: 5px 10px; }
+  .setup-wizard-body { margin-bottom: 8px; }
+  .setup-wizard-column > .setup-provider-card,
+  .setup-wizard-column > .setup-gateway-options { margin-top: 6px; }
+  .setup-collapsible.is-open { margin-top: 6px; }
+  .setup-provider-card { padding: 6px 10px; }
   .setup-key-input, .setup-eye-btn, .setup-test-btn { height: 30px; }
   .setup-gateway-options { padding: 8px 10px; }
-  .setup-wizard-banner { min-height: 44px; padding: 6px 10px; }
+  .setup-env-row { padding-bottom: 6px; margin-bottom: 4px; }
+  .setup-wizard-banner { padding: 7px 12px; }
   .setup-keys-intro { line-height: 1.3; }
 }
 
@@ -5564,36 +5629,8 @@ body:not(.arena-ready) .lg-glass {
 }
 
 /* ==========================================================================
-   RESPONSIVE TOP DOCK & SPATIAL POD COLLISION GUARDS
-   ========================================================================== */
-@media (max-width: 1650px) {
-  .spatial-dock-bar { gap: 6px; }
-  .lg-dock-pod { padding: 0 10px; gap: 6px; }
-  .lg-dock-pod--brand { width: 482px !important; min-width: 482px !important; max-width: 482px !important; }
-  .title-group, .title-sub { width: 140px !important; min-width: 140px !important; max-width: 140px !important; }
-  .lg-dock-pod--island { padding: 0 28px 0 16px !important; gap: 8px; }
-  .btn, .lg-btn { padding: 0 9px; font-size: 10.5px; }
-}
-
-@media (max-width: 1480px) {
-  .title-sub { display: none; }
-  .btn, .lg-btn { padding: 0 7px; font-size: 10px; }
-  .auto-evolve-pill { padding: 4px 6px; gap: 5px; }
-}
-
-@media (max-width: 1300px) {
-  .island-micro-metrics { display: none; }
-  .lg-dock-pod--island .stat-divider { display: none; }
-  .auto-evolve-pill select { display: none; }
-}
-/* ==========================================================================
-   TOP DOCK OVERFLOW FIX (2026-11-14): the dock's natural width (2082px)
-   exceeded the viewport at 2K / 125% scaling (2048px logical), clipping
-   the rightmost Exit button by ~60px. All three pods are flex-shrink: 0,
-   so nothing could give, and the existing responsive guards only kick in
-   at <=1650px. Progressive collapse, dock-scoped only, reusing the
-   existing responsive-guard pattern and tokens -- no new palette, no new
-   components, no behaviour change.
+   RESPONSIVE TOP DOCK & SPATIAL POD COLLISION GUARDS (strictly descending)
+   Progressive collapse, dock-scoped only so wizard/modal buttons keep full size.
    ========================================================================== */
 @media (max-width: 2150px) {
   /* L1 compact: brand 531 -> 482, tighter island/controls padding + gaps,
@@ -5602,11 +5639,8 @@ body:not(.arena-ready) .lg-glass {
   .spatial-dock-bar .lg-dock-pod { padding: 0 10px; gap: 6px; }
   .spatial-dock-bar .lg-dock-pod--brand { width: 482px !important; min-width: 482px !important; max-width: 482px !important; }
   .spatial-dock-bar .title-group, .spatial-dock-bar .title-sub { width: 140px !important; min-width: 140px !important; max-width: 140px !important; }
-  /* Island right padding matches the grown base rule (20px): the
-     old 44px left a dead strip inside the pod's right end at
-     the user's 2K width. Left stays 16px (responsive taper). */
   .spatial-dock-bar .lg-dock-pod--island { padding: 0 20px 0 16px !important; gap: 8px; }
-  .spatial-dock-bar .btn, .spatial-dock-bar .lg-btn { padding: 0 9px; }
+  .spatial-dock-bar .btn, .spatial-dock-bar .lg-btn { padding: 0 9px; font-size: 10.5px; }
 }
 
 @media (max-width: 1986px) {
@@ -5635,6 +5669,12 @@ body:not(.arena-ready) .lg-glass {
 
 @media (max-width: 1480px) {
   .spatial-dock-bar .title-sub { display: none; }
+  .spatial-dock-bar .btn, .spatial-dock-bar .lg-btn { padding: 0 7px; font-size: 10px; }
+  .spatial-dock-bar .auto-evolve-pill { padding: 4px 6px; gap: 5px; }
+}
+
+@media (max-width: 1300px) {
+  .spatial-dock-bar .auto-evolve-pill select { display: none; }
 }
 
 

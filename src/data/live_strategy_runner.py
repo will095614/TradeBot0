@@ -141,7 +141,7 @@ class LiveStrategyRunnerMixin:
         # Macro Trend TP Expansion: scale at least the ticket's actual target distance
         # (never shrinking >2R setups down to 2.0R while stretching <=2R setups to >=2R * mult).
         sizing_mult = self._sizing_multiplier_for(competitor)
-        if tp is not None and sizing_mult > Decimal("1.0"):
+        if tp is not None and sl is not None and sizing_mult > Decimal("1.0"):
             risk_dist = abs(price - sl)
             if side == OrderSide.BUY and self.macro_commander.current_state.directional_bias == "LONG_ONLY":
                 base_dist = max(max(Decimal("0"), tp - price), risk_dist * Decimal("2.0"))
@@ -279,7 +279,7 @@ class LiveStrategyRunnerMixin:
             pid = c.portfolio_id
             p = c.portfolio
             if p.position_qty > Decimal("0") and p.avg_entry_price > Decimal("0"):
-                entry_ts = self.position_entry_ts.get(pid, ts)
+                entry_ts = self.position_entry_ts.setdefault(pid, ts)
                 hold_sec = ts - entry_ts
                 is_short = p.position_side == PositionSide.SHORT
                 gain_pct = ((p.avg_entry_price - price) / p.avg_entry_price * Decimal("100")) if is_short else ((price - p.avg_entry_price) / p.avg_entry_price * Decimal("100"))
@@ -528,7 +528,11 @@ class LiveStrategyRunnerMixin:
                     ref_tag = "Trough" if is_short else "Peak"
                     intent = f"TRAILING {pos_dir} {p.position_qty} {asset} | {ref_tag} ${ref_p:,.2f} | Ratchet SL ${sl_p:,.2f}" if sl_p else f"{pos_dir} {p.position_qty} {asset}"
             else:
-                intent = prev_tel.get("intent") or f"SCANNING LIVE BOOK (Cash: ${p.cash:,.2f})"
+                prev_intent = str(prev_tel.get("intent") or "")
+                if not prev_intent or prev_intent.startswith(("LONG ", "SHORT ", "SCALP ", "ORB ", "MEAN ", "TRAILING ")):
+                    intent = f"SCANNING LIVE BOOK (Cash: ${p.cash:,.2f})"
+                else:
+                    intent = prev_intent
 
             self.strategy_telemetry[pid] = {
                 "strategy_type": self._get_strategy_label(pid),

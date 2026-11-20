@@ -135,7 +135,11 @@ class BaseCompetitor(ABC):
             self.portfolio.name = self.name
             self.portfolio.leverage = eff_lev
             self.portfolio.leverage_enabled = new_genome.leverage_enabled
-            if self.portfolio.is_circuit_breaker_tripped:
+            from src.arena.risk_guard import MAX_DRAWDOWN_LIMIT_PCT
+            if (
+                self.portfolio.is_circuit_breaker_tripped
+                or self.portfolio.max_drawdown_pct >= MAX_DRAWDOWN_LIMIT_PCT
+            ):
                 # Generation boundary = fresh risk clock. Resetting the flag
                 # alone is not enough: max_drawdown_pct is sticky, so the
                 # next bar (broker_sim) or order (risk_guard) would re-trip
@@ -191,9 +195,22 @@ class BaseCompetitor(ABC):
                 mid_price=market_price,
                 atr=broker.current_atr,
             )
+            # RiskGuard allows 0.5% slippage tolerance on the equity position cap;
+            # only trim cap_qty below raw_qty when slippage exceeds that band.
+            cap_limit_qty = (
+                ((target_val * Decimal("1.005")) / est_price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+                if est_price > Decimal("0")
+                else Decimal("0")
+            )
+            cap_qty = min(raw_qty, cap_limit_qty)
         else:
             est_price = market_price
-        eff_lev = self.genome.leverage if self.genome.leverage_enabled and self.genome.leverage > Decimal("0") else Decimal("1.0")
+            cap_qty = raw_qty
+        eff_lev = (
+            self.portfolio.leverage
+            if self.portfolio.leverage_enabled and self.portfolio.leverage > Decimal("0")
+            else Decimal("1.0")
+        )
         # Fee is paid 100% in cash while margin is divided by leverage:
         # required_cash = qty * est_price * (1 / eff_lev + fee_rate)
         cash_per_unit = est_price * ((Decimal("1") / eff_lev) + self.portfolio.fee_rate)
@@ -202,7 +219,7 @@ class BaseCompetitor(ABC):
         max_affordable_qty = (self.portfolio.cash / cash_per_unit).quantize(
             Decimal("0.0001"), rounding=ROUND_DOWN
         )
-        return max(Decimal("0"), min(raw_qty, max_affordable_qty))
+        return max(Decimal("0"), min(cap_qty, max_affordable_qty))
 
     def compute_r_multiple_qty(
         self,
@@ -232,8 +249,10 @@ class BaseCompetitor(ABC):
             if risk_budget is not None
             else (equity * self.genome.risk_per_trade_pct)
         )
-        if budget <= Decimal("0"):
+        if not budget.is_finite() or budget <= Decimal("0"):
             return Decimal("0")
+        if not sizing_multiplier.is_finite():
+            sizing_multiplier = Decimal("1.0")
         # News sizing (item 12C): scale the risk budget by the news factor.
         # The position-ratio cap below is NOT scaled: it stays the safety
         # max, so an optimistic regime can never push size past the cap.

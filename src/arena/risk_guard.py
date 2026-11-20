@@ -25,6 +25,14 @@ class RiskGuard:
     ) -> Tuple[bool, str]:
         if not ticket.qty.is_finite() or ticket.qty <= Decimal("0"):
             return False, "Order quantity must be positive."
+        if ticket.order_type in (OrderType.LIMIT, OrderType.STOP_MARKET) and ticket.price is None:
+            return False, f"{ticket.order_type.value} order requires an explicit price."
+        if not market_price.is_finite() or market_price <= Decimal("0"):
+            return False, "Market price must be positive and finite."
+        if not slippage_pct.is_finite() or slippage_pct < Decimal("0"):
+            return False, "Slippage must be finite and non-negative."
+        if not max_position_ratio.is_finite() or max_position_ratio <= Decimal("0"):
+            return False, "Max position ratio must be positive and finite."
 
         base_price = (
             ticket.price
@@ -33,8 +41,15 @@ class RiskGuard:
         )
         if not base_price.is_finite() or base_price <= Decimal("0"):
             return False, "Market price or order price must be positive."
-        if not market_price.is_finite() or not slippage_pct.is_finite():
-            return False, "Market price and slippage must be finite."
+
+        # Validate optional bracket levels upfront so NaN/Inf/non-positive/inverted
+        # levels can never enter BrokerSim.active_stops/active_targets.
+        if ticket.stop_loss is not None:
+            if not ticket.stop_loss.is_finite() or ticket.stop_loss <= Decimal("0"):
+                return False, "Stop-loss price must be positive and finite."
+        if ticket.take_profit is not None:
+            if not ticket.take_profit.is_finite() or ticket.take_profit <= Decimal("0"):
+                return False, "Take-profit price must be positive and finite."
 
         # 1. Closing / Reducing Position Checks (Never blocked by drawdown/breaker)
         if portfolio.position_side == PositionSide.LONG and ticket.side == OrderSide.SELL:
@@ -63,6 +78,18 @@ class RiskGuard:
             )
         else:
             effective_order_price = base_price
+
+        # Directional bracket sanity for opening/expanding orders
+        if ticket.side == OrderSide.BUY:
+            if ticket.stop_loss is not None and ticket.stop_loss >= effective_order_price:
+                return False, "Long stop-loss must be below entry price."
+            if ticket.take_profit is not None and ticket.take_profit <= effective_order_price:
+                return False, "Long take-profit must be above entry price."
+        else:
+            if ticket.stop_loss is not None and ticket.stop_loss <= effective_order_price:
+                return False, "Short stop-loss must be above entry price."
+            if ticket.take_profit is not None and ticket.take_profit >= effective_order_price:
+                return False, "Short take-profit must be below entry price."
 
         order_val = (ticket.qty * effective_order_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         eff_lev = portfolio.leverage if portfolio.leverage_enabled and portfolio.leverage > Decimal("0") else Decimal("1.0")

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -23,7 +24,10 @@ import weakref
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.intelligence.config_manager import parse_omni_env_line
+
 logger = logging.getLogger("tradebot0.gateway_supervisor")
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 PROVIDER_ENDPOINTS = {
     "deepseek": "https://api.deepseek.com/models",
@@ -122,9 +126,13 @@ class GatewaySupervisor:
         port: int = 20128,
         daemon_log_path: Optional[Path] = None,
         install_log_path: Optional[Path] = None,
+        omni_data_dir: Optional[Path] = None,
     ) -> None:
         self.host = host
         self.port = port
+        self.omni_data_dir: Path = (
+            Path(omni_data_dir) if omni_data_dir is not None else (Path.home() / ".omniroute")
+        )
         self.child_process: Optional[subprocess.Popen] = None
         self.is_self_spawned: bool = False
         # Where a spawned daemon's stdout/stderr go (item 8): a real log
@@ -153,6 +161,7 @@ class GatewaySupervisor:
         # port check and spawn two daemons; the second overwrote
         # child_process and orphaned the first.
         self._daemon_lock = threading.Lock()
+        self._password_sync_lock = threading.Lock()
         self._daemon_starting: bool = False
         self._daemon_starting_thread: Optional[int] = None
         self.install_status: str = "idle"  # idle | downloading-node | installing-omniroute | done | failed | cancelled
@@ -183,46 +192,185 @@ class GatewaySupervisor:
             atexit.register(GatewaySupervisor._shutdown_all_at_exit)
 
     @classmethod
+    def _get_cli_base_command(cls) -> Optional[List[str]]:
+        """Resolves a locally installed OmniRoute CLI base invocation without npx.
+
+        Prefers `node.exe <omniroute.mjs>` directly so Windows never allocates a
+        console via cmd.exe / omniroute.cmd. Returns None when OmniRoute is not
+        installed locally (never falls back to npx, which would trigger a 2.6 GB
+        network download).
+        """
+        node_bin = cls._resolve_node_bin()
+        if node_bin:
+            # 0. App-local runtime install first (item 10 B3)
+            local_mjs = cls._runtime_base() / "omniroute" / "node_modules" / "omniroute" / "bin" / "omniroute.mjs"
+            if local_mjs.is_file():
+                return [node_bin, str(local_mjs)]
+
+            # 1. Global npm location in APPDATA
+            appdata = os.environ.get("APPDATA", "")
+            if appdata:
+                global_mjs = os.path.join(appdata, "npm", "node_modules", "omniroute", "bin", "omniroute.mjs")
+                if os.path.exists(global_mjs):
+                    return [node_bin, global_mjs]
+
+            # 2. Relative to omniroute command if present in PATH
+            omni_path = shutil.which("omniroute.cmd") or shutil.which("omniroute")
+            if omni_path:
+                rel_mjs = os.path.join(os.path.dirname(omni_path), "node_modules", "omniroute", "bin", "omniroute.mjs")
+                if os.path.exists(rel_mjs):
+                    return [node_bin, rel_mjs]
+
+        omni_bin = shutil.which("omniroute") or shutil.which("omniroute.cmd")
+        if omni_bin:
+            return [omni_bin]
+        return None
+
+    @classmethod
     def _get_daemon_command(cls, port: int) -> Optional[List[str]]:
         """
         Builds the command line arguments to spawn OmniRoute in 100% headless background mode.
         On Windows, directly uses `node.exe <path_to_omniroute.mjs> serve --no-open --port <port>`
         to bypass `cmd.exe` and `omniroute.cmd` batch scripts which trigger Windows Terminal popups.
         """
-        node_bin = cls._resolve_node_bin()
-        if node_bin:
-            # 0. App-local runtime install first (item 10 B3): the app's own
-            # Node.js + OmniRoute live under the per-user runtime folder,
-            # never in the global npm tree.
-            local_mjs = cls._runtime_base() / "omniroute" / "node_modules" / "omniroute" / "bin" / "omniroute.mjs"
-            if local_mjs.is_file():
-                return [node_bin, str(local_mjs), "serve", "--no-open", "--port", str(port)]
+        base_cmd = cls._get_cli_base_command()
+        if base_cmd:
+            return base_cmd + ["serve", "--no-open", "--port", str(port)]
 
-            # 1. Check global npm location in APPDATA
-            appdata = os.environ.get("APPDATA", "")
-            if appdata:
-                global_mjs = os.path.join(appdata, "npm", "node_modules", "omniroute", "bin", "omniroute.mjs")
-                if os.path.exists(global_mjs):
-                    return [node_bin, global_mjs, "serve", "--no-open", "--port", str(port)]
-
-            # 2. Check relative to omniroute command if present in PATH
-            omni_path = shutil.which("omniroute.cmd") or shutil.which("omniroute")
-            if omni_path:
-                rel_mjs = os.path.join(os.path.dirname(omni_path), "node_modules", "omniroute", "bin", "omniroute.mjs")
-                if os.path.exists(rel_mjs):
-                    return [node_bin, rel_mjs, "serve", "--no-open", "--port", str(port)]
-
-        omni_bin = (
-            shutil.which("omniroute")
-            or shutil.which("omniroute.cmd")
-            or shutil.which("npx")
-        )
-        if omni_bin:
-            if "npx" in os.path.basename(omni_bin).lower():
-                return [omni_bin, "-y", "omniroute", "serve", "--no-open", "--port", str(port)]
-            return [omni_bin, "serve", "--no-open", "--port", str(port)]
+        npx_bin = shutil.which("npx")
+        if npx_bin:
+            return [npx_bin, "-y", "omniroute", "serve", "--no-open", "--port", str(port)]
 
         return None
+
+    @staticmethod
+    def _read_initial_password_from_env_file(env_path: Path) -> str:
+        """Reads INITIAL_PASSWORD from an OmniRoute .env file without logging it."""
+        if not env_path.is_file():
+            return ""
+        try:
+            for raw_line in env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+                parsed = parse_omni_env_line(raw_line)
+                if parsed is not None and parsed[0] == "INITIAL_PASSWORD":
+                    return parsed[1].strip()
+        except Exception as e:
+            logger.debug("Could not read INITIAL_PASSWORD from %s: %s", env_path, e)
+        return ""
+
+    def sync_admin_password(
+        self,
+        password: str,
+        data_dir: Optional[Path] = None,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Persists the admin password directly into OmniRoute's storage.sqlite.
+
+        OmniRoute only consults INITIAL_PASSWORD from .env when storage.sqlite
+        has no bcrypt hash yet; once a hash exists (from any prior run or
+        install), editing .env alone has no effect. This helper invokes
+        OmniRoute's own CLI:
+        - `reset-password --password-stdin` (password sent via stdin, never argv)
+          when `<data_dir>/storage.sqlite` already exists;
+        - `setup --non-interactive` (password sent via INITIAL_PASSWORD in the
+          child env, never argv) when `<data_dir>/storage.sqlite` does not yet
+          exist, creating the DB with requireLogin=true and setupComplete=true.
+        The password value is never logged or placed on the command line.
+        """
+        if not isinstance(password, str) or len(password.strip()) < 8:
+            return {"ok": False, "error": "Admin password must be at least 8 characters."}
+        pw = password.strip()
+        if re.search(r"[\r\n\t\x00-\x1f]", pw):
+            return {"ok": False, "error": "Admin password contains invalid characters."}
+
+        cli_base = self._get_cli_base_command()
+        if not cli_base:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "cli_not_installed",
+            }
+
+        target_dir = Path(data_dir) if data_dir is not None else self.omni_data_dir
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return {"ok": False, "error": f"Failed to prepare OmniRoute data directory: {e}"}
+
+        with self._password_sync_lock:
+            child_env = os.environ.copy()
+            for key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME"):
+                child_env.pop(key, None)
+            child_env["DATA_DIR"] = str(target_dir)
+            child_env["OMNIROUTE_CLI_SKIP_DEFAULT_DATA_ENV"] = "1"
+            child_env["OMNIROUTE_NO_UPDATE_NOTIFIER"] = "1"
+
+            db_path = target_dir / "storage.sqlite"
+            if db_path.is_file():
+                mode = "reset-password"
+                cmd = cli_base + ["reset-password", "--password-stdin"]
+                child_env.pop("INITIAL_PASSWORD", None)
+                stdin_payload: Optional[str] = pw
+            else:
+                mode = "setup"
+                cmd = cli_base + ["setup", "--non-interactive"]
+                child_env["INITIAL_PASSWORD"] = pw
+                stdin_payload = None
+
+            startupinfo = None
+            creation_flags = 0
+            if sys.platform == "win32":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0
+                creation_flags = 0x08000000
+
+            try:
+                run_kwargs: Dict[str, Any] = {
+                    "cwd": os.path.expanduser("~"),
+                    "env": child_env,
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.PIPE,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
+                    "timeout": timeout,
+                    "startupinfo": startupinfo,
+                    "creationflags": creation_flags,
+                    "close_fds": True,
+                }
+                if stdin_payload is not None:
+                    run_kwargs["input"] = stdin_payload
+                else:
+                    run_kwargs["stdin"] = subprocess.DEVNULL
+                proc = subprocess.run(cmd, **run_kwargs)
+            except subprocess.TimeoutExpired:
+                logger.error("OmniRoute %s timed out after %.1fs", mode, timeout)
+                return {"ok": False, "error": f"Applying OmniRoute password timed out ({mode})."}
+            except Exception as e:
+                logger.error("OmniRoute %s failed to execute: %s", mode, type(e).__name__)
+                return {"ok": False, "error": f"Failed to apply OmniRoute password: {type(e).__name__}"}
+
+            if proc.returncode != 0:
+                stderr_lines = [
+                    _ANSI_CSI_RE.sub("", ln).strip()
+                    for ln in (proc.stderr or "").splitlines()
+                    if _ANSI_CSI_RE.sub("", ln).strip()
+                ]
+                stdout_lines = [
+                    _ANSI_CSI_RE.sub("", ln).strip()
+                    for ln in (proc.stdout or "").splitlines()
+                    if _ANSI_CSI_RE.sub("", ln).strip()
+                ]
+                summary = (
+                    stderr_lines[-1]
+                    if stderr_lines
+                    else (stdout_lines[-1] if stdout_lines else f"exit code {proc.returncode}")
+                )
+                logger.error("OmniRoute %s exited with code %d: %s", mode, proc.returncode, summary)
+                return {"ok": False, "error": f"Failed to apply OmniRoute password ({mode}): {summary}"}
+
+            logger.info("Synchronized OmniRoute admin password into storage.sqlite via %s", mode)
+            return {"ok": True, "skipped": False, "mode": mode}
 
     @classmethod
     def is_cli_available(cls) -> bool:
@@ -439,30 +587,50 @@ class GatewaySupervisor:
     def _run_runtime_install(self) -> None:
         """Background worker: Node.js zip (if needed) + npm install omniroute
         into the app-local runtime folder, then start the gateway."""
+        npm_started = False
+        npm_succeeded = False
         try:
             base = self._runtime_base()
             base.mkdir(parents=True, exist_ok=True)
             if self._install_cancel_event.is_set():
                 raise _InstallCancelledError("Installation cancelled.")
             node_bin = self._resolve_node_bin()
+            downloaded_node = False
             if node_bin is None:
                 self._set_install_status("downloading-node", "Downloading Node.js (about 37 MB)...", phase="Downloading Node.js")
                 node_bin = self._download_node(base)
-            npm_bin = self._resolve_npm_bin(node_bin)
-            if npm_bin is None:
-                raise RuntimeError("npm was not found next to Node.js.")
+                downloaded_node = True
+            if not (downloaded_node and self.omniroute_installed()):
+                npm_bin = self._resolve_npm_bin(node_bin)
+                if npm_bin is None:
+                    raise RuntimeError("npm was not found next to Node.js.")
+                self._set_install_status(
+                    "installing-omniroute",
+                    RUNTIME_OMNIROUTE_BASE_MESSAGE,
+                    progress=0,
+                    phase="Installing OmniRoute",
+                )
+                npm_started = True
+                self._npm_install_omniroute(npm_bin, base)
+                if self._install_cancel_event.is_set():
+                    raise _InstallCancelledError("Installation cancelled.")
+                if not self.omniroute_installed():
+                    raise RuntimeError("OmniRoute install finished but the package was not found.")
+                npm_succeeded = True
             self._set_install_status(
                 "installing-omniroute",
-                RUNTIME_OMNIROUTE_BASE_MESSAGE,
-                progress=0,
-                phase="Installing OmniRoute",
+                "OmniRoute installed. Starting the gateway...",
+                progress=99,
+                phase="Starting gateway",
             )
-            self._npm_install_omniroute(npm_bin, base)
-            if self._install_cancel_event.is_set():
-                raise _InstallCancelledError("Installation cancelled.")
-            if not self.omniroute_installed():
-                raise RuntimeError("OmniRoute install finished but the package was not found.")
-            self._set_install_status("done", "OmniRoute installed. Starting the gateway...", progress=100, phase="Installed")
+            # If the user already configured INITIAL_PASSWORD in ~/.omniroute/.env,
+            # apply it directly to storage.sqlite before spawning so an older DB
+            # hash cannot shadow the configured password.
+            saved_pw = self._read_initial_password_from_env_file(self.omni_data_dir / ".env")
+            if saved_pw:
+                pw_sync = self.sync_admin_password(saved_pw, data_dir=self.omni_data_dir)
+                if not pw_sync.get("ok"):
+                    logger.warning("Post-install OmniRoute password sync failed: %s", pw_sync.get("error"))
             ok, msg = self.start_daemon(max_wait_sec=30.0)
             if ok:
                 self._set_install_status("done", "OmniRoute installed and the gateway is online.", progress=100, phase="Installed")
@@ -474,7 +642,7 @@ class GatewaySupervisor:
             self._set_install_status("cancelled", "Installation cancelled.", phase="Cancelled")
         except Exception as e:
             logger.error("OmniRoute runtime install failed: %s", e)
-            if not self.omniroute_installed():
+            if (npm_started and not npm_succeeded) or not self.omniroute_installed():
                 self._cleanup_cancelled_install(self._runtime_base())
             self._set_install_status("failed", f"Installation failed: {e}", phase="Failed")
 
@@ -639,10 +807,23 @@ class GatewaySupervisor:
                             or key.endswith("_API_KEY")
                         ):
                             child_env.pop(key, None)
-                    creation_flags = 0x08000000 if sys.platform == "win32" else 0
+                    startupinfo = None
+                    creation_flags = 0
+                    if sys.platform == "win32":
+                        startupinfo = subprocess.STARTUPINFO()
+                        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        startupinfo.wShowWindow = 0
+                        creation_flags = 0x08000000
                     proc = subprocess.Popen(
-                        cmd, stdout=log_file, stderr=subprocess.STDOUT,
-                        env=child_env, creationflags=creation_flags,
+                        cmd,
+                        cwd=str(prefix),
+                        stdin=subprocess.DEVNULL,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        env=child_env,
+                        startupinfo=startupinfo,
+                        creationflags=creation_flags,
+                        close_fds=True,
                     )
                     with self._install_lock:
                         if self._install_cancel_event.is_set():
@@ -955,9 +1136,15 @@ class GatewaySupervisor:
         t0 = time.perf_counter()
         try:
             if norm_prov == "gemini":
-                # Gemini takes key as URL query parameter (URL-encoded)
-                req_url = f"{endpoint}?key={urllib.parse.quote(key, safe='')}"
-                req = urllib.request.Request(req_url, headers={"User-Agent": "TradeBot0-Validator/2.0"})
+                # Pass Gemini API key via x-goog-api-key header rather than URL query string.
+                req = urllib.request.Request(
+                    endpoint,
+                    headers={
+                        "x-goog-api-key": key,
+                        "User-Agent": "TradeBot0-Validator/2.0",
+                        "Accept": "application/json",
+                    },
+                )
             else:
                 # DeepSeek, Groq, NVIDIA NIM, OpenRouter take Bearer token header
                 req = urllib.request.Request(
@@ -1041,6 +1228,14 @@ class GatewaySupervisor:
                     healthy, _ = self.probe_health(timeout=2.0)
                     if healthy:
                         return True, f"Connected to OmniRoute gateway at {self.host}:{self.port} (started by a concurrent request)"
+                with self._daemon_lock:
+                    still_starting = self._daemon_starting
+                if not still_starting:
+                    if self.is_port_open(timeout=0.2):
+                        healthy, _ = self.probe_health(timeout=2.0)
+                        if healthy:
+                            return True, f"Connected to OmniRoute gateway at {self.host}:{self.port} (started by a concurrent request)"
+                    return False, "Concurrent OmniRoute daemon startup failed."
             return False, f"OmniRoute daemon did not respond within {max_wait_sec}s timeout."
         try:
             return self._start_daemon_once(max_wait_sec)
@@ -1080,6 +1275,18 @@ class GatewaySupervisor:
             child_env = os.environ.copy()
             for key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME"):
                 child_env.pop(key, None)
+            # Pin DATA_DIR to the same directory ConfigManager writes .env into
+            # (~/.omniroute by default), preventing Windows split-brain with %APPDATA%\omniroute.
+            try:
+                self.omni_data_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logger.debug("Could not pre-create omni_data_dir %s: %s", self.omni_data_dir, e)
+            child_env["DATA_DIR"] = str(self.omni_data_dir)
+            child_env["OMNIROUTE_CLI_SKIP_DEFAULT_DATA_ENV"] = "1"
+            if (self.omni_data_dir / ".env").is_file():
+                # Let OmniRoute read the canonical <DATA_DIR>/.env rather than a
+                # possibly stale INITIAL_PASSWORD inherited from os.environ.
+                child_env.pop("INITIAL_PASSWORD", None)
             # Ensure web dashboard is accessible when user clicks Launch Console
             child_env["OMNIROUTE_HEADLESS"] = "0"
 
@@ -1207,7 +1414,7 @@ class GatewaySupervisor:
 
         # Fail-safe cleanup: only if OUR OWN child is somehow still holding
         # the port after termination. A foreign listener is never killed.
-        if owned_pid is not None:
+        if owned_pid is not None and self.is_port_open(timeout=0.1):
             self._kill_port_owner(self.port, owned_pid=owned_pid)
 
         # Close the daemon log handle opened by start_daemon (if any). This
@@ -1229,16 +1436,22 @@ class GatewaySupervisor:
         if sys.platform == "win32":
             try:
                 output = subprocess.check_output(
-                    f"netstat -ano | findstr :{port}",
-                    shell=True,
+                    ["netstat", "-ano"],
+                    shell=False,
                     text=True,
                     timeout=15,
                     stderr=subprocess.DEVNULL,
                     creationflags=0x08000000,
+                    close_fds=True,
                 )
+                port_suffix = f":{int(port)}"
                 for line in output.splitlines():
                     parts = line.strip().split()
-                    if len(parts) >= 5 and "LISTENING" in parts[3].upper():
+                    if (
+                        len(parts) >= 5
+                        and parts[1].endswith(port_suffix)
+                        and "LISTENING" in parts[3].upper()
+                    ):
                         target_pid = parts[4]
                         if target_pid.isdigit() and int(target_pid) == owned_pid:
                             logger.info("Terminating lingering own daemon on port %d (PID %s)", port, target_pid)

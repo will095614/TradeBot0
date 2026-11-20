@@ -120,14 +120,18 @@ def _dedup_normalize_title(title: str) -> str:
 
 class DeduplicationBuffer:
     """
-    High-performance in-memory ring buffer with SHA-256 Title+URL hashing.
-    Prevents redundant token consumption by filtering duplicate articles.
+    High-performance in-memory FIFO buffer with SHA-256 Title+URL hashing.
+    Backed by an insertion-ordered dict for O(1) lookup, O(1) ghost-free
+    forget(), and O(1) oldest eviction.
     """
 
     def __init__(self, capacity: int = 5000) -> None:
-        self.capacity = capacity
-        self.seen_hashes: Set[str] = set()
-        self.ring: deque[str] = deque(maxlen=capacity)
+        self.capacity = max(1, int(capacity))
+        self._seen: Dict[str, None] = {}
+
+    @property
+    def seen_hashes(self):
+        return self._seen.keys()
 
     @staticmethod
     def _hash_key(title: str, url: str) -> str:
@@ -138,13 +142,11 @@ class DeduplicationBuffer:
         if not title:
             return False
         h = self._hash_key(title, url)
-        if h in self.seen_hashes:
+        if h in self._seen:
             return False
-        if len(self.ring) >= self.capacity:
-            oldest = self.ring.popleft()
-            self.seen_hashes.discard(oldest)
-        self.seen_hashes.add(h)
-        self.ring.append(h)
+        if len(self._seen) >= self.capacity:
+            del self._seen[next(iter(self._seen))]
+        self._seen[h] = None
         return True
 
     def forget(self, title: str, url: str) -> None:
@@ -152,10 +154,10 @@ class DeduplicationBuffer:
         if not title:
             return
         h = self._hash_key(title, url)
-        self.seen_hashes.discard(h)
+        self._seen.pop(h, None)
 
     def __len__(self) -> int:
-        return len(self.seen_hashes)
+        return len(self._seen)
 
 
 def _clean_html_text(raw_html: str) -> str:
@@ -734,13 +736,13 @@ class IntelligenceHarvester:
         iso_now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         if parsed_json and "events" in parsed_json and isinstance(parsed_json["events"], list):
-            for item in parsed_json["events"]:
+            for pos, item in enumerate(parsed_json["events"], start=1):
                 if not isinstance(item, dict):
                     continue
                 try:
-                    raw_idx = item.get("index", 1)
-                    idx = (int(raw_idx) - 1) if raw_idx is not None else 0
-                    raw = batch[idx] if (0 <= idx < len(batch)) else batch[0]
+                    raw_idx = item.get("index", pos)
+                    idx = (int(raw_idx) - 1) if raw_idx is not None else (pos - 1)
+                    raw = batch[idx] if (0 <= idx < len(batch)) else batch[min(pos - 1, len(batch) - 1)]
                     raw_urg = item.get("urgency_score")
                     urg_val = int(float(raw_urg)) if raw_urg is not None else 5
                     urgency = max(1, min(10, urg_val))
@@ -910,13 +912,18 @@ class IntelligenceHarvester:
         if not isinstance(value, dict):
             return None
         try:
-            b = max(0.0, float(value.get("bullish", 0.0)))
-            be = max(0.0, float(value.get("bearish", 0.0)))
-            n = max(0.0, float(value.get("neutral", 0.0)))
+            b = float(value.get("bullish", 0.0))
+            be = float(value.get("bearish", 0.0))
+            n = float(value.get("neutral", 0.0))
         except (TypeError, ValueError):
             return None
+        if not (math.isfinite(b) and math.isfinite(be) and math.isfinite(n)):
+            return None
+        b = max(0.0, b)
+        be = max(0.0, be)
+        n = max(0.0, n)
         total = b + be + n
-        if total <= 0.0:
+        if not math.isfinite(total) or total <= 0.0:
             return None
         return {
             "bullish": round(b / total, 2),

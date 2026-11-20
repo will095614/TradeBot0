@@ -1,5 +1,7 @@
 from __future__ import annotations
+from collections import deque
 from decimal import Decimal, ROUND_HALF_UP
+from itertools import islice
 from typing import List, Optional, Tuple
 import time
 from dataclasses import replace
@@ -12,6 +14,18 @@ _ZERO_CASH = Decimal("0.00")
 _ZERO_QTY = Decimal("0.0000")
 _ONE = Decimal("1")
 _HUNDRED = Decimal("100")
+
+
+class _SliceableDeque(deque):
+    """O(1)-append bounded deque that also supports Python list slicing (e.g. hist[-100:])."""
+
+    def __getitem__(self, item):
+        if isinstance(item, slice):
+            start, stop, step = item.indices(len(self))
+            if step == 1:
+                return list(islice(self, start, stop))
+            return list(self)[item]
+        return super().__getitem__(item)
 
 
 class Portfolio:
@@ -64,7 +78,8 @@ class Portfolio:
         self.max_drawdown_pct: Decimal = Decimal("0.00")
 
         self.trade_history: List[FillEvent] = []
-        self.equity_history: List[Tuple[float, Decimal]] = []
+        self.equity_history: List[Tuple[float, Decimal]] = _SliceableDeque(maxlen=2000)  # type: ignore[assignment]
+        self._equity_floats: deque[float] = deque(maxlen=2000)
         # Audit §5.5: version of the equity history, bumped whenever the
         # history is wholesale replaced (reset/restore). The leaderboard
         # Sharpe/Sortino cache keys on it, so a stale cache can never
@@ -119,7 +134,7 @@ class Portfolio:
     @property
     def profit_factor(self) -> float:
         if self.gross_loss <= Decimal("0"):
-            return float(self.gross_profit) if self.gross_profit > Decimal("0") else 0.0
+            return 99.99 if self.gross_profit > Decimal("0") else 0.0
         return round(float(self.gross_profit / self.gross_loss), 2)
 
     def reset(self, initial_cash: Optional[Decimal] = None) -> None:
@@ -153,7 +168,8 @@ class Portfolio:
         self.max_drawdown_pct = Decimal("0.00")
 
         self.trade_history.clear()
-        self.equity_history.clear()
+        self.equity_history = _SliceableDeque(maxlen=2000)  # type: ignore[assignment]
+        self._equity_floats.clear()
         # Audit §5.5: the counters are zeroed too, so without a version
         # bump the leaderboard cache key would collide with the
         # pre-reset one and serve stale metrics for the new history.
@@ -167,7 +183,9 @@ class Portfolio:
         Sharpe/Sortino cache invalidates even though no fill happened
         and the fill counters are unchanged.
         """
-        self.equity_history = list(points)
+        trimmed = list(points)[-2000:]
+        self.equity_history = _SliceableDeque(trimmed, maxlen=2000)  # type: ignore[assignment]
+        self._equity_floats = deque((float(eq) for _, eq in trimmed), maxlen=2000)
         self._equity_history_version += 1
 
     def update_market_price(
@@ -182,7 +200,7 @@ class Portfolio:
         px = price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         self.current_market_price = px
 
-        # Evaluate intra-bar peak & trough
+        # Evaluate intra-bar peak & trough (base_eq and *_upnl are both 2dp PRECISION_CASH)
         if self.position_qty > _ZERO:
             base_eq = self.cash + self.margin_locked
             qty = self.position_qty
@@ -194,12 +212,12 @@ class Portfolio:
                 # For SHORT positions: lower price is favorable (peak), higher price is adverse (drawdown)
                 if low_ok is not None and low_ok != px:
                     peak_upnl = ((entry - low_ok) * qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-                    peak_eq = (base_eq + peak_upnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                    peak_eq = base_eq + peak_upnl
                     if peak_eq > self.peak_equity:
                         self.peak_equity = peak_eq
                 if high_ok is not None and high_ok != px and self.peak_equity > _ZERO:
                     trough_upnl = ((entry - high_ok) * qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-                    trough_eq = (base_eq + trough_upnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                    trough_eq = base_eq + trough_upnl
                     if trough_eq < self.peak_equity:
                         intra_dd = ((self.peak_equity - trough_eq) / self.peak_equity) * _HUNDRED
                         if intra_dd > self.max_drawdown_pct:
@@ -209,19 +227,19 @@ class Portfolio:
                 # For LONG positions: higher price is favorable (peak), lower price is adverse (drawdown)
                 if high_ok is not None and high_ok != px:
                     high_upnl = ((high_ok - entry) * qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-                    high_eq = (base_eq + high_upnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                    high_eq = base_eq + high_upnl
                     if high_eq > self.peak_equity:
                         self.peak_equity = high_eq
                 if low_ok is not None and low_ok != px and self.peak_equity > _ZERO:
                     low_upnl = ((low_ok - entry) * qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-                    low_eq = (base_eq + low_upnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                    low_eq = base_eq + low_upnl
                     if low_eq < self.peak_equity:
                         intra_dd = ((self.peak_equity - low_eq) / self.peak_equity) * _HUNDRED
                         if intra_dd > self.max_drawdown_pct:
                             self.max_drawdown_pct = intra_dd.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 close_upnl = ((px - entry) * qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
 
-            current_eq = (base_eq + close_upnl).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            current_eq = base_eq + close_upnl
         else:
             current_eq = self.cash
 
@@ -234,11 +252,19 @@ class Portfolio:
 
         ts = timestamp if timestamp is not None else time.time()
         hist = self.equity_history
+        eq_f = float(current_eq)
         if hist and hist[-1][0] == ts:
             hist[-1] = (ts, current_eq)
+            if isinstance(hist, _SliceableDeque) and len(self._equity_floats) == len(hist):
+                self._equity_floats[-1] = eq_f
         else:
             hist.append((ts, current_eq))
-            if len(hist) > 2000:
+            if isinstance(hist, _SliceableDeque):
+                if len(self._equity_floats) == len(hist) - 1 or len(self._equity_floats) == 2000:
+                    self._equity_floats.append(eq_f)
+                else:
+                    self._equity_floats = deque((float(e) for _, e in hist), maxlen=2000)
+            elif len(hist) > 2000:
                 del hist[:-2000]
 
     def apply_fill(self, fill: FillEvent) -> FillEvent:
@@ -253,10 +279,16 @@ class Portfolio:
         if not fill.fee.is_finite() or fill.fee < _ZERO:
             raise ValueError(f"Invalid fill fee in {self.portfolio_id}: {fill.fee}")
 
+        qty_q = fill.qty.quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
+        if qty_q <= _ZERO:
+            raise ValueError(f"Invalid quantized fill qty in {self.portfolio_id}: {fill.qty}")
+        price_q = fill.price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        if price_q <= _ZERO:
+            raise ValueError(f"Invalid quantized fill price in {self.portfolio_id}: {fill.price}")
         fee_q = fill.fee.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-        trade_val = (fill.qty * fill.price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        trade_val = (qty_q * price_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         eff_lev = self.leverage if self.leverage_enabled and self.leverage > _ZERO else _ONE
-        enriched_fill = fill
+        enriched_fill = replace(fill, qty=qty_q, price=price_q, fee=fee_q)
 
         # Case 1: Currently FLAT -> Open a new position (BUY opens LONG, SELL opens SHORT)
         if self.position_side == PositionSide.FLAT or self.position_qty == _ZERO:
@@ -266,12 +298,12 @@ class Portfolio:
                 raise ValueError(f"Insufficient cash in {self.portfolio_id}: need {total_initial_cost}, have {self.cash}")
 
             self.position_side = PositionSide.LONG if fill.side == OrderSide.BUY else PositionSide.SHORT
-            self.position_qty = fill.qty
-            self.avg_entry_price = fill.price
+            self.position_qty = qty_q
+            self.avg_entry_price = price_q
             self.open_position_entry_fee = fee_q
             self.margin_locked = required_margin
             self.cash = (self.cash - total_initial_cost).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-            enriched_fill = replace(fill, position_side=self.position_side)
+            enriched_fill = replace(enriched_fill, position_side=self.position_side)
 
         # Case 2: Currently LONG
         elif self.position_side == PositionSide.LONG:
@@ -281,7 +313,7 @@ class Portfolio:
                 total_initial_cost = (required_margin + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 if total_initial_cost > self.cash:
                     raise ValueError(f"Insufficient cash in {self.portfolio_id}: need {total_initial_cost}, have {self.cash}")
-                new_qty = (self.position_qty + fill.qty).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
+                new_qty = (self.position_qty + qty_q).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
                 if new_qty <= _ZERO:
                     raise ValueError(f"Invalid resulting qty in {self.portfolio_id}: {new_qty}")
                 new_avg = ((self.position_qty * self.avg_entry_price) + trade_val) / new_qty
@@ -290,20 +322,20 @@ class Portfolio:
                 self.open_position_entry_fee += fee_q
                 self.margin_locked += required_margin
                 self.cash = (self.cash - total_initial_cost).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-                enriched_fill = replace(fill, position_side=PositionSide.LONG)
+                enriched_fill = replace(enriched_fill, position_side=PositionSide.LONG)
             else:
                 # SELL closes/reduces LONG
-                if fill.qty > self.position_qty:
-                    raise ValueError(f"Overselling in {self.portfolio_id}: selling {fill.qty}, hold {self.position_qty}")
-                remaining_qty = (self.position_qty - fill.qty).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
-                is_full_close = fill.qty >= self.position_qty or remaining_qty <= _ZERO
+                if qty_q > self.position_qty:
+                    raise ValueError(f"Overselling in {self.portfolio_id}: selling {qty_q}, hold {self.position_qty}")
+                remaining_qty = (self.position_qty - qty_q).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
+                is_full_close = qty_q >= self.position_qty or remaining_qty <= _ZERO
                 if is_full_close:
                     entry_fee_share = self.open_position_entry_fee
                     margin_release = self.margin_locked
                     new_margin_locked = _ZERO_CASH
                     remaining_qty = _ZERO_QTY
                 else:
-                    close_ratio = fill.qty / self.position_qty
+                    close_ratio = qty_q / self.position_qty
                     entry_fee_share = (self.open_position_entry_fee * close_ratio).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                     margin_release = min(
                         self.margin_locked,
@@ -312,10 +344,10 @@ class Portfolio:
                     new_margin_locked = (self.margin_locked - margin_release).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
 
                 closing_entry_price = self.avg_entry_price
-                gross_gain = ((fill.price - closing_entry_price) * fill.qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                gross_gain = ((price_q - closing_entry_price) * qty_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 pnl = (gross_gain - fee_q - entry_fee_share).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 self.realized_pnl += pnl
-                enriched_fill = fill.with_realized_pnl(pnl, entry_price=closing_entry_price)
+                enriched_fill = enriched_fill.with_realized_pnl(pnl, entry_price=closing_entry_price)
                 enriched_fill = replace(enriched_fill, position_side=PositionSide.LONG)
 
                 if pnl > _ZERO:
@@ -347,7 +379,7 @@ class Portfolio:
                 total_initial_cost = (required_margin + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 if total_initial_cost > self.cash:
                     raise ValueError(f"Insufficient cash in {self.portfolio_id}: need {total_initial_cost}, have {self.cash}")
-                new_qty = (self.position_qty + fill.qty).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
+                new_qty = (self.position_qty + qty_q).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
                 if new_qty <= _ZERO:
                     raise ValueError(f"Invalid resulting qty in {self.portfolio_id}: {new_qty}")
                 new_avg = ((self.position_qty * self.avg_entry_price) + trade_val) / new_qty
@@ -356,20 +388,20 @@ class Portfolio:
                 self.open_position_entry_fee += fee_q
                 self.margin_locked += required_margin
                 self.cash = (self.cash - total_initial_cost).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-                enriched_fill = replace(fill, position_side=PositionSide.SHORT)
+                enriched_fill = replace(enriched_fill, position_side=PositionSide.SHORT)
             else:
                 # BUY closes/covers SHORT
-                if fill.qty > self.position_qty:
-                    raise ValueError(f"Overcovering short in {self.portfolio_id}: buying {fill.qty}, short {self.position_qty}")
-                remaining_qty = (self.position_qty - fill.qty).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
-                is_full_close = fill.qty >= self.position_qty or remaining_qty <= _ZERO
+                if qty_q > self.position_qty:
+                    raise ValueError(f"Overcovering short in {self.portfolio_id}: buying {qty_q}, short {self.position_qty}")
+                remaining_qty = (self.position_qty - qty_q).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
+                is_full_close = qty_q >= self.position_qty or remaining_qty <= _ZERO
                 if is_full_close:
                     entry_fee_share = self.open_position_entry_fee
                     margin_release = self.margin_locked
                     new_margin_locked = _ZERO_CASH
                     remaining_qty = _ZERO_QTY
                 else:
-                    close_ratio = fill.qty / self.position_qty
+                    close_ratio = qty_q / self.position_qty
                     entry_fee_share = (self.open_position_entry_fee * close_ratio).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                     margin_release = min(
                         self.margin_locked,
@@ -379,10 +411,10 @@ class Portfolio:
 
                 closing_entry_price = self.avg_entry_price
                 # For SHORT: profit is (entry_price - exit_price) * qty
-                gross_gain = ((closing_entry_price - fill.price) * fill.qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                gross_gain = ((closing_entry_price - price_q) * qty_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 pnl = (gross_gain - fee_q - entry_fee_share).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 self.realized_pnl += pnl
-                enriched_fill = fill.with_realized_pnl(pnl, entry_price=closing_entry_price)
+                enriched_fill = enriched_fill.with_realized_pnl(pnl, entry_price=closing_entry_price)
                 enriched_fill = replace(enriched_fill, position_side=PositionSide.SHORT)
 
                 if pnl > _ZERO:
@@ -409,5 +441,7 @@ class Portfolio:
         self.total_fees_paid = (self.total_fees_paid + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         self.total_fills += 1
         self.trade_history.append(enriched_fill)
-        self.update_market_price(fill.price, fill.timestamp)
+        if len(self.trade_history) > 2000:
+            del self.trade_history[:-2000]
+        self.update_market_price(price_q, fill.timestamp)
         return enriched_fill

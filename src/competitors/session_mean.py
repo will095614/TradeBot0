@@ -67,6 +67,17 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
             except Exception:
                 return default
 
+        min_stop_floor = min(
+            Decimal("10.00"),
+            max(Decimal("0.01"), (market_price * Decimal("0.004")).quantize(Decimal("0.01"))),
+        )
+        base_ratio = Decimal("0.026") / Decimal("0.012")
+        r_mult = (
+            Decimal("2.2") * ((self.genome.take_profit_pct / self.genome.stop_loss_pct) / base_ratio)
+            if (self.genome.take_profit_pct is not None and self.genome.stop_loss_pct > Decimal("0"))
+            else Decimal("2.2")
+        )
+
         if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
             mean_dec = _parse_pos_dec(indicators.get("mean_ref"))
             atr_dec = _parse_pos_dec(indicators.get("atr"), Decimal("20.00")) or Decimal("20.00")
@@ -75,17 +86,21 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
                 # Pullback zone: within 0.85x ATR of the session mean
                 if abs(market_price - mean_dec) > (atr_dec * Decimal("0.85")):
                     return None
-                stop_price = max(Decimal("0.01"), (mean_dec - max(Decimal("10.00"), atr_dec * Decimal("0.5"))).quantize(Decimal("0.01")))
-                if (market_price - stop_price) < Decimal("10.00"):
-                    fallback_dist = max(Decimal("10.00"), (market_price * Decimal("0.007")).quantize(Decimal("0.01")))
+                stop_price = max(Decimal("0.01"), (mean_dec - max(min_stop_floor, atr_dec * Decimal("0.5"))).quantize(Decimal("0.01")))
+                if (market_price - stop_price) < min_stop_floor:
+                    fallback_dist = max(min_stop_floor, (market_price * Decimal("0.007")).quantize(Decimal("0.01")))
                     stop_price = max(Decimal("0.01"), (market_price - fallback_dist).quantize(Decimal("0.01")))
-                stop_dist = max(Decimal("10.00"), market_price - stop_price)
+                stop_dist = max(min_stop_floor, market_price - stop_price)
             else:
-                stop_dist = max(Decimal("10.00"), market_price * self.genome.stop_loss_pct)
+                stop_dist = max(min_stop_floor, market_price * self.genome.stop_loss_pct)
                 stop_price = max(Decimal("0.01"), (market_price - stop_dist).quantize(Decimal("0.01")))
 
-            target_dist = stop_dist * Decimal("2.2")  # 2.2R Institutional Reward
+            if stop_price >= market_price:
+                return None
+            target_dist = stop_dist * r_mult
             target_price = (market_price + target_dist).quantize(Decimal("0.01"))
+            if target_price <= market_price:
+                return None
 
             qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
@@ -111,16 +126,18 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
                 # Pullback zone: within 0.85x ATR of the session mean
                 if abs(market_price - mean_dec) > (atr_dec * Decimal("0.85")):
                     return None
-                stop_price = (mean_dec + max(Decimal("10.00"), atr_dec * Decimal("0.5"))).quantize(Decimal("0.01"))
-                if (stop_price - market_price) < Decimal("10.00"):
-                    fallback_dist = max(Decimal("10.00"), (market_price * Decimal("0.007")).quantize(Decimal("0.01")))
+                stop_price = (mean_dec + max(min_stop_floor, atr_dec * Decimal("0.5"))).quantize(Decimal("0.01"))
+                if (stop_price - market_price) < min_stop_floor:
+                    fallback_dist = max(min_stop_floor, (market_price * Decimal("0.007")).quantize(Decimal("0.01")))
                     stop_price = (market_price + fallback_dist).quantize(Decimal("0.01"))
-                stop_dist = max(Decimal("10.00"), stop_price - market_price)
+                stop_dist = max(min_stop_floor, stop_price - market_price)
             else:
-                stop_dist = max(Decimal("10.00"), market_price * self.genome.stop_loss_pct)
+                stop_dist = max(min_stop_floor, market_price * self.genome.stop_loss_pct)
                 stop_price = (market_price + stop_dist).quantize(Decimal("0.01"))
 
-            target_dist = stop_dist * Decimal("2.2")  # 2.2R Institutional Reward
+            if stop_price <= market_price:
+                return None
+            target_dist = stop_dist * r_mult
             target_price = max(Decimal("0.01"), (market_price - target_dist).quantize(Decimal("0.01")))
             if target_price >= market_price:
                 return None

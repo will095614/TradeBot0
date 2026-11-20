@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import hashlib
 import logging
+import math
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -130,11 +132,13 @@ def _event_age_min(timestamp: str, now: float) -> float:
 def _safe_float(value: Any, default: float) -> float:
     """Parses an untrusted numeric value (LLM output / feed data).
 
-    Returns `default` when the value is missing or not a number, instead of
-    raising. A failed parse must never take down the veto pipeline (item 6).
+    Returns `default` when the value is missing, non-finite (NaN/Inf), or not a
+    number, instead of raising. A failed parse must never take down the veto
+    pipeline (item 6).
     """
     try:
-        return float(value)
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else default
     except (TypeError, ValueError):
         return default
 
@@ -322,13 +326,15 @@ class MacroCommander:
             "updated_at": time.time(),
         }
 
-    async def refresh_digest_async(self) -> MacroRegimeState:
+    async def refresh_digest_async(self, stop_event: Optional[threading.Event] = None) -> MacroRegimeState:
         """
         Triggers an AI-driven refresh of macro intelligence, fetching genuine live RSS feeds
         over HTTP and synthesizing through OmniRoute or local deterministic NLP.
         Records the real pipeline stage in self.sync_status so the Intel
         Hub stream loading bar can show honest milestone progress.
         """
+        if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+            return self.current_state
         fetch_error: Optional[str] = None
         # Audit 3.12: check_health catches every Exception and returns a
         # bool, so a dead gateway never raised here -- the "failed" stage
@@ -353,13 +359,19 @@ class MacroCommander:
         except Exception as ex:
             self._set_sync_stage("failed", f"Gateway unreachable: {str(ex)[:60]}")
             raise
+        if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+            return self.current_state
         try:
             self._set_sync_stage("fetching", "Fetching live news feeds")
             raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 3.5)
+            if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+                return self.current_state
             structured_all: List[StructuredEvent] = []
             if raw_events:
                 self._set_sync_stage("processing", f"Reading {len(raw_events)} new stories")
                 structured_all.extend(await self.harvester.process_batch(raw_events))
+            if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+                return self.current_state
             # Forum batch (item 12B): StockTwits streams are collected on
             # their own cadence and scored in a separate batch, so forum
             # chatter never crowds breaking news out of the 6-event cap.
@@ -371,6 +383,13 @@ class MacroCommander:
                 if forum_events:
                     structured_all.extend(await self.harvester.process_batch(forum_events))
             except Exception as ex:
+                if (
+                    "cannot schedule new futures after shutdown" in str(ex)
+                    or sys.is_finalizing()
+                    or (stop_event is not None and stop_event.is_set())
+                ):
+                    logger.debug("Forum collection skipped during shutdown: %s", ex)
+                    return self.current_state
                 logger.warning("Forum collection failed, continuing with news only: %s", ex)
             if structured_all:
                 self._set_sync_stage("synthesizing", "Synthesizing market direction")
@@ -379,8 +398,9 @@ class MacroCommander:
                                      percent=100 if self.curated_events else 90)
                 return state
         except Exception as ex:
-            if "cannot schedule new futures after shutdown" in str(ex):
+            if "cannot schedule new futures after shutdown" in str(ex) or sys.is_finalizing():
                 logger.debug("Live feed harvest skipped during shutdown: %s", ex)
+                return self.current_state
             else:
                 logger.warning("Error harvesting live feeds in refresh_digest_async: %s", ex)
             fetch_error = str(ex)[:80] or ex.__class__.__name__
@@ -408,7 +428,7 @@ class MacroCommander:
         self._set_sync_stage("waiting", "No new events yet")
         return self.current_state
 
-    def run_digest_sync(self) -> "MacroRegimeState":
+    def run_digest_sync(self, stop_event: Optional[threading.Event] = None) -> "MacroRegimeState":
         """Run refresh_digest_async on a private loop, then clean up.
 
         The LLM client creates a session per event loop; this wrapper
@@ -416,9 +436,23 @@ class MacroCommander:
         never leaves an Unclosed client session behind. Callers that
         already have a running loop use refresh_digest_async directly.
         """
+        if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+            return self.current_state
+
         async def _wrapped() -> "MacroRegimeState":
             try:
-                return await self.refresh_digest_async()
+                import inspect as _inspect
+                fn = self.refresh_digest_async
+                try:
+                    params = _inspect.signature(fn).parameters
+                    accepts_stop = "stop_event" in params or any(
+                        p.kind == _inspect.Parameter.VAR_KEYWORD for p in params.values()
+                    )
+                except (TypeError, ValueError):
+                    accepts_stop = False
+                if accepts_stop:
+                    return await fn(stop_event=stop_event)
+                return await fn()
             finally:
                 closer = getattr(self.client, "close_loop_session", None)
                 if callable(closer):
@@ -716,29 +750,31 @@ class MacroCommander:
         if is_close:
             return True, "PASSED"
 
-        today = date.today()
-        if today != self._veto_day:
-            self._veto_day = today
-            self.current_state.veto_count_today = 0
+        with self._events_lock:
+            today = date.today()
+            if today != self._veto_day:
+                self._veto_day = today
+                self.current_state.veto_count_today = 0
 
-        bias = self.current_state.directional_bias
+            bias = self.current_state.directional_bias
+            headline = self.current_state.active_headline
 
-        if bias == "LONG_ONLY" and side == OrderSide.SELL:
-            self.current_state.veto_count_today += 1
-            reason = f"VETO_MACRO_LONG_ONLY: Short trade blocked by Macro Commander ({self.current_state.active_headline})"
-            return False, reason
+            if bias == "LONG_ONLY" and side == OrderSide.SELL:
+                self.current_state.veto_count_today += 1
+                reason = f"VETO_MACRO_LONG_ONLY: Short trade blocked by Macro Commander ({headline})"
+                return False, reason
 
-        if bias == "SHORT_ONLY" and side == OrderSide.BUY:
-            self.current_state.veto_count_today += 1
-            reason = f"VETO_MACRO_SHORT_ONLY: Long trade blocked by Macro Commander ({self.current_state.active_headline})"
-            return False, reason
+            if bias == "SHORT_ONLY" and side == OrderSide.BUY:
+                self.current_state.veto_count_today += 1
+                reason = f"VETO_MACRO_SHORT_ONLY: Long trade blocked by Macro Commander ({headline})"
+                return False, reason
 
-        if bias == "HOLD_CASH":
-            self.current_state.veto_count_today += 1
-            reason = f"VETO_MACRO_HOLD_CASH: All opening orders blocked during severe risk-off regime ({self.current_state.active_headline})"
-            return False, reason
+            if bias == "HOLD_CASH":
+                self.current_state.veto_count_today += 1
+                reason = f"VETO_MACRO_HOLD_CASH: All opening orders blocked during severe risk-off regime ({headline})"
+                return False, reason
 
-        return True, "PASSED"
+            return True, "PASSED"
 
     def _expire_fallback_if_stale(self, now: float) -> None:
         """Steps an expired keyword fallback down to neutral (item 12 / A3).
@@ -840,9 +876,15 @@ class MacroCommander:
         to [0.5, 1.5], the risk_multiplier range.
         """
         try:
-            rm = max(0.5, min(1.5, float(self.current_state.risk_multiplier)))
-            conf = max(0.5, min(1.0, float(self.current_state.confidence)))
-            sens = max(0.0, min(1.0, float(news_sensitivity)))
+            with self._events_lock:
+                rm_raw = float(self.current_state.risk_multiplier)
+                conf_raw = float(self.current_state.confidence)
+            sens_raw = float(news_sensitivity)
+            if not (math.isfinite(rm_raw) and math.isfinite(conf_raw) and math.isfinite(sens_raw)):
+                return 1.0
+            rm = max(0.5, min(1.5, rm_raw))
+            conf = max(0.5, min(1.0, conf_raw))
+            sens = max(0.0, min(1.0, sens_raw))
         except (TypeError, ValueError):
             return 1.0
         base = 1.0 + (rm - 1.0) * ((conf - 0.5) / 0.5)
@@ -857,14 +899,15 @@ class MacroCommander:
         async with self._get_synthesis_lock():
             now = time.time()
             if not recent_events:
-                self.current_state.last_synthesis_ts = now
-                self.current_state.status = "ONLINE" if self.client.is_gateway_online else "STANDBY"
-                self.current_state.weighted_sentiment = 0.0
-                self.current_state.weighted_urgency = 0.0
-                self.current_state.weighted_coverage = 0.0
-                # No fresh evidence: an expired fallback still steps down
-                # (item 12 / A3), even with nothing new to synthesize.
-                self._expire_fallback_if_stale(now)
+                with self._events_lock:
+                    self.current_state.last_synthesis_ts = now
+                    self.current_state.status = "ONLINE" if self.client.is_gateway_online else "STANDBY"
+                    self.current_state.weighted_sentiment = 0.0
+                    self.current_state.weighted_urgency = 0.0
+                    self.current_state.weighted_coverage = 0.0
+                    # No fresh evidence: an expired fallback still steps down
+                    # (item 12 / A3), even with nothing new to synthesize.
+                    self._expire_fallback_if_stale(now)
                 return self.current_state
 
             # Ingest structured events into curated timeline (newest first), ensuring Traditional Chinese headline & summary.
@@ -915,9 +958,6 @@ class MacroCommander:
             # urgency / time-decay scores. The LLM still judges, but it
             # sees the same numbers the keyword fallback would use.
             w_s, w_u, w_n = self.compute_weighted_sentiment(recent_events, now)
-            self.current_state.weighted_sentiment = w_s
-            self.current_state.weighted_urgency = w_u
-            self.current_state.weighted_coverage = w_n
 
             system_prompt = (
                 "You are the Supreme Macro Commander governing a 5-strategy ETH/USD crypto trading arena.\n"
@@ -954,77 +994,84 @@ class MacroCommander:
                     max_tokens=600,
                 )
 
-            self.current_state.total_evaluations += 1
-            self.current_state.last_synthesis_ts = now
-
-            if parsed and isinstance(parsed, dict) and "directional_bias" in parsed:
-                regime = str(parsed.get("regime", "NORMAL")).upper()
-                if regime not in {"BULLISH_SURGE", "BEARISH_PANIC", "HIGH_VOLATILITY_CHOP", "NORMAL"}:
-                    regime = "NORMAL"
-
-                bias = str(parsed.get("directional_bias", "BIDIRECTIONAL")).upper()
-                if bias not in {"LONG_ONLY", "SHORT_ONLY", "BIDIRECTIONAL", "HOLD_CASH"}:
-                    bias = "BIDIRECTIONAL"
-
-                # LLM numbers are untrusted text: a non-numeric value (e.g.
-                # "high") falls back to the safe default instead of raising
-                # out of the veto pipeline (item 6).
-                risk_mult = max(0.5, min(1.5, _safe_float(parsed.get("risk_multiplier"), 1.0)))
-                conf = max(0.0, min(1.0, _safe_float(parsed.get("confidence"), 0.70)))
-                headline = str(parsed.get("active_headline", "Macro regime updated from live stream"))
-
-                self.current_state.regime = regime
-                self.current_state.directional_bias = bias
-                self.current_state.risk_multiplier = risk_mult
-                self.current_state.confidence = conf
-                self.current_state.active_headline = headline
-                self.current_state.status = "ONLINE"
-                # LLM is back in charge: the fallback provenance clears.
-                self.current_state.fallback = False
-                self.current_state.fallback_since_ts = 0.0
-                logger.info("Macro Commander Regime Updated: %s | Bias: %s | Headline: %s", regime, bias, headline)
-            else:
-                # Fallback (item 12C / C1): if the LLM is unreachable or
-                # unparseable, direction comes from the weighted scores
-                # (S/U/N) instead of the old unweighted average + max.
-                # The bar is deliberately conservative: one extreme event
-                # (N < 1.9) can never flip the arena, and HOLD_CASH is never
-                # set here -- it needs live LLM confidence >= 0.8, which a
-                # keyword fallback by definition does not have. Confidence
-                # resets to 0.50 ("no confidence"), so news sizing (C2) is
-                # neutral until the LLM is back.
-                if w_s > 0.45 and w_u >= 7 and w_n >= 1.9:
-                    self.current_state.regime = "BULLISH_SURGE"
-                    self.current_state.directional_bias = "LONG_ONLY"
-                    self.current_state.risk_multiplier = 1.25
-                    self.current_state.active_headline = recent_events[-1].summary[:80]
-                elif w_s < -0.45 and w_u >= 7 and w_n >= 1.9:
-                    self.current_state.regime = "BEARISH_PANIC"
-                    self.current_state.directional_bias = "SHORT_ONLY"
-                    self.current_state.risk_multiplier = 0.75
-                    self.current_state.active_headline = recent_events[-1].summary[:80]
-                else:
-                    self.current_state.regime = "NORMAL"
-                    self.current_state.directional_bias = "BIDIRECTIONAL"
-                    self.current_state.risk_multiplier = 1.0
-                    self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
-                self.current_state.confidence = 0.50
-
-                # Emergency backup only (item 12 / A3 option 2): the keyword
-                # fallback is marked as such, and after 30 minutes without
-                # the LLM it steps down to neutral instead of letting stale
-                # keyword scores keep vetoing trades.
-                if not self.current_state.fallback:
-                    self.current_state.fallback = True
-                    self.current_state.fallback_since_ts = now
-                self._expire_fallback_if_stale(now)
-
-                self.current_state.status = "STANDBY" if not self.client.is_gateway_online else "ONLINE"
-
-            self._last_synthesized_keys = tuple((e.raw_title or e.summary) for e in recent_events[-10:])
+            log_msg: Optional[Tuple[str, str, str]] = None
             with self._events_lock:
+                self.current_state.weighted_sentiment = w_s
+                self.current_state.weighted_urgency = w_u
+                self.current_state.weighted_coverage = w_n
+                self.current_state.total_evaluations += 1
+                self.current_state.last_synthesis_ts = now
+
+                if parsed and isinstance(parsed, dict) and "directional_bias" in parsed:
+                    regime = str(parsed.get("regime", "NORMAL")).upper()
+                    if regime not in {"BULLISH_SURGE", "BEARISH_PANIC", "HIGH_VOLATILITY_CHOP", "NORMAL"}:
+                        regime = "NORMAL"
+
+                    bias = str(parsed.get("directional_bias", "BIDIRECTIONAL")).upper()
+                    if bias not in {"LONG_ONLY", "SHORT_ONLY", "BIDIRECTIONAL", "HOLD_CASH"}:
+                        bias = "BIDIRECTIONAL"
+
+                    # LLM numbers are untrusted text: a non-numeric value (e.g.
+                    # "high") falls back to the safe default instead of raising
+                    # out of the veto pipeline (item 6).
+                    risk_mult = max(0.5, min(1.5, _safe_float(parsed.get("risk_multiplier"), 1.0)))
+                    conf = max(0.0, min(1.0, _safe_float(parsed.get("confidence"), 0.70)))
+                    headline = str(parsed.get("active_headline", "Macro regime updated from live stream"))
+
+                    self.current_state.regime = regime
+                    self.current_state.directional_bias = bias
+                    self.current_state.risk_multiplier = risk_mult
+                    self.current_state.confidence = conf
+                    self.current_state.active_headline = headline
+                    self.current_state.status = "ONLINE"
+                    # LLM is back in charge: the fallback provenance clears.
+                    self.current_state.fallback = False
+                    self.current_state.fallback_since_ts = 0.0
+                    log_msg = (regime, bias, headline)
+                else:
+                    # Fallback (item 12C / C1): if the LLM is unreachable or
+                    # unparseable, direction comes from the weighted scores
+                    # (S/U/N) instead of the old unweighted average + max.
+                    # The bar is deliberately conservative: one extreme event
+                    # (N < 1.9) can never flip the arena, and HOLD_CASH is never
+                    # set here -- it needs live LLM confidence >= 0.8, which a
+                    # keyword fallback by definition does not have. Confidence
+                    # resets to 0.50 ("no confidence"), so news sizing (C2) is
+                    # neutral until the LLM is back.
+                    if w_s > 0.45 and w_u >= 7 and w_n >= 1.9:
+                        self.current_state.regime = "BULLISH_SURGE"
+                        self.current_state.directional_bias = "LONG_ONLY"
+                        self.current_state.risk_multiplier = 1.25
+                        self.current_state.active_headline = recent_events[-1].summary[:80]
+                    elif w_s < -0.45 and w_u >= 7 and w_n >= 1.9:
+                        self.current_state.regime = "BEARISH_PANIC"
+                        self.current_state.directional_bias = "SHORT_ONLY"
+                        self.current_state.risk_multiplier = 0.75
+                        self.current_state.active_headline = recent_events[-1].summary[:80]
+                    else:
+                        self.current_state.regime = "NORMAL"
+                        self.current_state.directional_bias = "BIDIRECTIONAL"
+                        self.current_state.risk_multiplier = 1.0
+                        self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+                    self.current_state.confidence = 0.50
+
+                    # Emergency backup only (item 12 / A3 option 2): the keyword
+                    # fallback is marked as such, and after 30 minutes without
+                    # the LLM it steps down to neutral instead of letting stale
+                    # keyword scores keep vetoing trades.
+                    if not self.current_state.fallback:
+                        self.current_state.fallback = True
+                        self.current_state.fallback_since_ts = now
+                    self._expire_fallback_if_stale(now)
+
+                    self.current_state.status = "STANDBY" if not self.client.is_gateway_online else "ONLINE"
+
+                self._last_synthesized_keys = tuple((e.raw_title or e.summary) for e in recent_events[-10:])
                 if self.curated_events:
                     self.current_state.latest_event = self.curated_events[0]
+
+            if log_msg is not None:
+                logger.info("Macro Commander Regime Updated: %s | Bias: %s | Headline: %s", *log_msg)
 
             return self.current_state
 

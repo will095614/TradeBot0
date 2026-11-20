@@ -3,6 +3,7 @@ src/data/session_codec.py - Session Snapshot Serialization, Autosave & Restore.
 """
 from __future__ import annotations
 
+import copy
 from decimal import Decimal
 import logging
 import threading
@@ -191,8 +192,8 @@ class SessionCodecMixin:
                         "peak_equity": str(p.peak_equity),
                         "max_drawdown_pct": str(p.max_drawdown_pct),
                         "is_circuit_breaker_tripped": p.is_circuit_breaker_tripped,
-                        "trade_history_total": len(p.trade_history),
-                        "trade_history_truncated": len(p.trade_history) > 50,
+                        "trade_history_total": max(p.total_fills, len(p.trade_history)),
+                        "trade_history_truncated": max(p.total_fills, len(p.trade_history)) > 50,
                         "total_fills": p.total_fills,
                         "trade_history": [self._serialize_fill(f) for f in p.trade_history[-50:] if f is not None],
                         "equity_history": [[float(ts), str(eq)] for ts, eq in p.equity_history[-100:]],
@@ -221,19 +222,28 @@ class SessionCodecMixin:
                         }
                     comp_states.append(comp_entry)
 
+                evicted_live_on_save = 0
+                if len(self.fill_records) > 200 and self.live_start_ts:
+                    evicted_live_on_save = sum(
+                        1
+                        for ef in self.fill_records[:-200]
+                        if float(getattr(ef, "timestamp", 0.0)) >= self.live_start_ts - 5.0
+                    )
+
                 snapshot = {
                     "schema_version": 2,
                     "saved_at": time.time(),
                     "generation": gen,
                     "live_start_ts": self.live_start_ts,
-                    "live_fill_seq_offset": int(getattr(self, "_live_fill_seq_offset", 0)),
+                    "live_fill_seq_offset": int(getattr(self, "_live_fill_seq_offset", 0)) + evicted_live_on_save,
                     "closed_trades_since_evolve": int(getattr(self, "_closed_trades_since_evolve", 0)),
                     "last_evolve_ts": float(getattr(self, "last_evolve_ts", 0.0)),
+                    "auto_evolve_disabled_ts": getattr(self, "_auto_evolve_disabled_ts", None),
                     "evolution_events": [dict(e) for e in getattr(self, "evolution_events", [])[-24:]],
-                    "tv_champion": dict(getattr(self, "tv_champion", {})),
-                    "strategy_telemetry": dict(self.strategy_telemetry),
-                    "fill_records": [self._serialize_fill(f) for f in self.fill_records[-100:] if f is not None],
-                    "broker_execution_audit": [self._serialize_fill(f) for f in self.broker.execution_audit[-100:] if f is not None] if hasattr(self, "broker") else [],
+                    "tv_champion": copy.deepcopy(getattr(self, "tv_champion", {})),
+                    "strategy_telemetry": copy.deepcopy(self.strategy_telemetry),
+                    "fill_records": [self._serialize_fill(f) for f in self.fill_records[-200:] if f is not None],
+                    "broker_execution_audit": [self._serialize_fill(f) for f in self.broker.execution_audit[-200:] if f is not None] if hasattr(self, "broker") else [],
                     "auto_evolve_interval_sec": self.auto_evolve_interval_sec,
                     "auto_evolve_enabled": self.auto_evolve_enabled,
                     "cadence_sec": self.cadence_sec,
@@ -422,23 +432,47 @@ class SessionCodecMixin:
                 if "evolution_events" in snapshot and isinstance(snapshot["evolution_events"], list):
                     self.evolution_events = [dict(e) for e in snapshot["evolution_events"][-24:] if isinstance(e, dict)]
                 if "tv_champion" in snapshot and isinstance(snapshot["tv_champion"], dict) and snapshot["tv_champion"]:
-                    self.tv_champion = dict(snapshot["tv_champion"])
+                    self.tv_champion = copy.deepcopy(snapshot["tv_champion"])
                 if "strategy_telemetry" in snapshot and isinstance(snapshot["strategy_telemetry"], dict):
                     roster = {c.portfolio_id for c in self.competitors}
-                    self.strategy_telemetry.update({k: v for k, v in snapshot["strategy_telemetry"].items() if k in roster})
+                    self.strategy_telemetry.update({k: copy.deepcopy(v) for k, v in snapshot["strategy_telemetry"].items() if k in roster})
                 if "fill_records" in snapshot and isinstance(snapshot["fill_records"], list):
                     self.fill_records = [f for f in (self._deserialize_fill(d) for d in snapshot["fill_records"]) if f is not None]
-                if "broker_execution_audit" in snapshot and isinstance(snapshot["broker_execution_audit"], list) and hasattr(self, "broker"):
-                    self.broker.execution_audit = [f for f in (self._deserialize_fill(d) for d in snapshot["broker_execution_audit"]) if f is not None]
-                    self._audit_cursor = len(self.broker.execution_audit)
-                    max_seq = max((int(getattr(f, "fill_seq", 0)) for f in self.broker.execution_audit), default=0)
-                    self.broker.reset_seq(max_seq)
+                if hasattr(self, "broker"):
+                    if "broker_execution_audit" in snapshot and isinstance(snapshot["broker_execution_audit"], list):
+                        self.broker.execution_audit = [f for f in (self._deserialize_fill(d) for d in snapshot["broker_execution_audit"]) if f is not None]
+                        self._audit_cursor = len(self.broker.execution_audit)
+                    max_seq = max(
+                        (
+                            int(getattr(f, "fill_seq", 0))
+                            for f in (
+                                list(self.broker.execution_audit)
+                                + list(self.fill_records)
+                                + [tf for c in self.competitors for tf in c.portfolio.trade_history]
+                            )
+                        ),
+                        default=0,
+                    )
+                    if max_seq > 0:
+                        self.broker.reset_seq(max_seq)
+                    for c in self.competitors:
+                        if c.portfolio.current_market_price > Decimal("0"):
+                            self.broker.current_price = c.portfolio.current_market_price
+                            break
                 if "live_fill_seq_offset" in snapshot:
                     self._live_fill_seq_offset = int(snapshot.get("live_fill_seq_offset", 0) or 0)
                 if "auto_evolve_interval_sec" in snapshot:
                     self.auto_evolve_interval_sec = int(snapshot["auto_evolve_interval_sec"])
                 if "auto_evolve_enabled" in snapshot:
                     self.auto_evolve_enabled = bool(snapshot["auto_evolve_enabled"])
+                if "auto_evolve_disabled_ts" in snapshot:
+                    raw_dis = snapshot.get("auto_evolve_disabled_ts")
+                    try:
+                        self._auto_evolve_disabled_ts = float(raw_dis) if (raw_dis is not None and not self.auto_evolve_enabled) else None
+                    except (TypeError, ValueError):
+                        self._auto_evolve_disabled_ts = None
+                elif self.auto_evolve_enabled:
+                    self._auto_evolve_disabled_ts = None
                 if "cadence_sec" in snapshot:
                     self.cadence_sec = max(1.0, min(10.0, float(snapshot["cadence_sec"])))
                 if "live_orders_enabled" in snapshot:

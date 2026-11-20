@@ -81,17 +81,22 @@ class LiveArenaEngine(
         symbol: str = "ETH/USD",
         storage: Optional[ArenaStorage] = None,
         auto_redeploy_when_flat: bool = True,
+        gateway_base_url: Optional[str] = None,
     ):
         self.symbol = symbol
         self.initial_cash = initial_cash
         self.lock = threading.RLock()
         self._snapshot_lock = threading.Lock()
+        self._session_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
         self._ui_state_snapshot: Optional[Dict[str, Any]] = None
         self.market_online: bool = False
         self.is_bootstrapped: bool = False
         self.live_orders_enabled: bool = False
         self.live_trading_active: bool = False
         self._has_restored_session: bool = False
+        self._preserved_from_reset: bool = False
+        self._last_candle_prune_ts: float = 0.0
 
         # Strictly increasing epoch: a new engine always supersedes any older instance.
         with SessionCodecMixin._persistence_epoch_lock:
@@ -195,12 +200,19 @@ class LiveArenaEngine(
 
         self.mc_evaluator = MonteCarloOddsEvaluator(seed=19)
 
-        self.omniroute_client = OmniRouteClient()
+        self.omniroute_client = (
+            OmniRouteClient(base_url=gateway_base_url)
+            if gateway_base_url
+            else OmniRouteClient()
+        )
         self.macro_commander = MacroCommander(self.omniroute_client)
         self.intel_refresh_interval_sec: float = 300.0
         self.last_intel_refresh_ts: float = time.time()
         self._is_refreshing_intel: bool = False
         self._intel_refresh_lock = threading.Lock()
+        self._intel_thread: Optional[threading.Thread] = None
+        self._mtf_seed_thread: Optional[threading.Thread] = None
+        self._bg_tasks: set = set()
 
         self.quote_manager = QuoteManager(
             session=self.session,
@@ -256,7 +268,7 @@ class LiveArenaEngine(
                 if getattr(f, "is_closing_fill", False):
                     self._closed_trades_since_evolve += 1
                 try:
-                    is_short_pos = getattr(f, "position_side", PositionSide.SHORT) == PositionSide.SHORT
+                    is_short_pos = getattr(f, "position_side", PositionSide.LONG) == PositionSide.SHORT
                     is_entry = (f.side == OrderSide.SELL) if is_short_pos else (f.side == OrderSide.BUY)
                     if is_short_pos:
                         action_label = "OPEN SHORT" if is_entry else "COVER SHORT"
@@ -277,7 +289,7 @@ class LiveArenaEngine(
                         "pnl": float(f.realized_pnl) if not is_entry else None,
                         "fee": float(getattr(f, "fee", 0) or 0),
                         "reason": f.reason.value,
-                        "is_live": bool(self.live_start_ts and f.timestamp >= self.live_start_ts - 2.0),
+                        "is_live": bool(self.live_start_ts and f.timestamp >= self.live_start_ts - 5.0),
                     }
                     if getattr(self, "_defer_sql_flush", False):
                         self._pending_sql_fills.append(payload)
@@ -290,7 +302,7 @@ class LiveArenaEngine(
                 self._live_fill_seq_offset += sum(
                     1
                     for ef in evicted
-                    if bool(self.live_start_ts and float(getattr(ef, "timestamp", 0.0)) >= self.live_start_ts - 2.0)
+                    if bool(self.live_start_ts and float(getattr(ef, "timestamp", 0.0)) >= self.live_start_ts - 5.0)
                 )
                 self.fill_records = self.fill_records[-200:]
             if self._audit_cursor > 500:
@@ -526,6 +538,9 @@ class LiveArenaEngine(
             if not self._has_restored_session:
                 for comp in self.competitors:
                     comp.portfolio.reset(self.initial_cash)
+                    if hasattr(self, "broker"):
+                        self.broker.portfolios[comp.portfolio_id] = comp.portfolio
+                        self.broker.competitor_caps[comp.portfolio_id] = comp.max_position_ratio
                     self.strategy_telemetry[comp.portfolio_id] = {
                         "strategy_type": self._get_strategy_label(comp.portfolio_id),
                         "intent": "Scanning orderflow & waiting for live reveal...",
@@ -544,15 +559,20 @@ class LiveArenaEngine(
                     self.broker.execution_audit.clear()
                     self.broker.rejection_audit.clear()
                 self._audit_cursor = 0
-                self._closed_trades_since_evolve = 0
                 self.live_chop_gate_blocked = 0
-                self.fill_records.clear()
-                self._live_fill_seq_offset = 0
+                if not self._preserved_from_reset:
+                    self._closed_trades_since_evolve = 0
+                    self.fill_records.clear()
+                    self._live_fill_seq_offset = 0
+                    should_try_restore = (os.environ.get("ARENA_FAST_TEST") != "1")
                 self.live_logs = [log for log in self.live_logs if log.get("tag") not in ("BUY", "SELL", "STOP_LOSS", "TAKE_PROFIT")]
                 self.strategy_cooldown.clear()
                 self.position_entry_ts.clear()
-                should_try_restore = (os.environ.get("ARENA_FAST_TEST") != "1")
             else:
+                if hasattr(self, "broker"):
+                    for comp in self.competitors:
+                        self.broker.portfolios[comp.portfolio_id] = comp.portfolio
+                        self.broker.competitor_caps[comp.portfolio_id] = comp.max_position_ratio
                 if recent_bars:
                     last_price = recent_bars[-1].close
                     for comp in self.competitors:
@@ -564,6 +584,13 @@ class LiveArenaEngine(
                 self.storage.save_candles_batch(candles_to_save)
             except Exception as e:
                 logger.debug("SQLite candle batch save skipped: %s", e)
+
+        if not self._stop_event.is_set() and self._is_current_generation():
+            try:
+                self.storage.prune_old_candles()
+                self._last_candle_prune_ts = time.time()
+            except Exception as e:
+                logger.debug("SQLite candle prune skipped during bootstrap: %s", e)
 
         if should_try_restore and not self._stop_event.is_set():
             try:
@@ -583,7 +610,8 @@ class LiveArenaEngine(
 
             if not self.live_orders_enabled:
                 self.live_trading_active = False
-                self.live_start_ts = None
+                if not self._preserved_from_reset:
+                    self.live_start_ts = None
 
             self.published_candles = [dict(c) for c in self.candles]
             self.published_quote = self.latest_quote
@@ -598,8 +626,14 @@ class LiveArenaEngine(
                 logger.debug("State publish skipped during bootstrap: %s", e)
             try:
                 if os.environ.get("ARENA_FAST_TEST") != "1":
-                    threading.Thread(target=self.refresh_intel_digest, daemon=True).start()
-                    threading.Thread(target=self._seed_mtf_1h_history, daemon=True).start()
+                    self.trigger_intel_refresh_async()
+                    if self._mtf_seed_thread is None or not self._mtf_seed_thread.is_alive():
+                        self._mtf_seed_thread = threading.Thread(
+                            target=self._seed_mtf_1h_history,
+                            daemon=True,
+                            name="MTFSeed1hThread",
+                        )
+                        self._mtf_seed_thread.start()
             except Exception as e:
                 logger.warning("Failed to start intel digest refresh thread: %s", e)
 
@@ -612,12 +646,14 @@ class LiveArenaEngine(
 
             has_restored_positions = any(c.portfolio.position_qty > Decimal("0") for c in self.competitors)
 
-            if self.live_orders_enabled and has_restored_positions:
+            if self.live_orders_enabled:
                 self.live_trading_active = True
                 if not self.live_start_ts:
                     self.live_start_ts = time.time()
                 self._publish_state_snapshot()
-                return {"accepted": True, "reason": "Live trading active with restored positions", "restored": True}
+                if has_restored_positions:
+                    return {"accepted": True, "reason": "Live trading active with restored positions", "restored": True}
+                return {"accepted": True, "reason": "Live trading already active", "restored": False}
 
             self.live_orders_enabled = True
             self.live_trading_active = True
@@ -625,21 +661,20 @@ class LiveArenaEngine(
                 self.live_start_ts = time.time()
 
             if not has_restored_positions:
-                if hasattr(self, "broker"):
-                    self.broker.execution_audit.clear()
-                    self.broker.rejection_audit.clear()
-                self._audit_cursor = 0
-                self.fill_records.clear()
-                self._live_fill_seq_offset = 0
+                if not self._preserved_from_reset and not self._has_restored_session:
+                    if hasattr(self, "broker"):
+                        self.broker.execution_audit.clear()
+                        self.broker.rejection_audit.clear()
+                    self._audit_cursor = 0
+                    self.fill_records.clear()
+                    self._live_fill_seq_offset = 0
 
-                is_quote_online = bool(
-                    self.latest_quote
-                    and not getattr(self.latest_quote, "is_offline", False)
-                    and self.latest_quote.price > Decimal("0")
-                )
+                is_quote_online = self._is_quote_fresh(self.latest_quote)
 
-                if is_quote_online:
+                if is_quote_online and self.latest_quote is not None:
                     quote_p = self.latest_quote.price
+                    if hasattr(self, "broker"):
+                        self.broker.current_price = quote_p
                     self._ensure_active_live_positions(quote_p, self.live_start_ts)
                     self._harvest_fills()
                     self.log_event("ARENA_REVEALED", f"Arena initialization verified. Live order placement activated @ ${quote_p:,.2f}", "info")
@@ -652,6 +687,18 @@ class LiveArenaEngine(
             self._publish_state_snapshot()
             return {"accepted": True, "reason": "Live trading active with restored positions", "restored": True}
 
+    def trigger_intel_refresh_async(self) -> bool:
+        """Spawns a single tracked background thread to refresh macro intelligence."""
+        if self._stop_event.is_set() or not self._is_current_generation():
+            return False
+        with self._intel_refresh_lock:
+            if self._is_refreshing_intel or (self._intel_thread is not None and self._intel_thread.is_alive()):
+                return False
+            t = threading.Thread(target=self.refresh_intel_digest, daemon=True, name="IntelRefreshThread")
+            self._intel_thread = t
+            t.start()
+            return True
+
     def refresh_intel_digest(self) -> Dict[str, Any]:
         """Triggers an AI-driven macro intelligence refresh via OmniRoute."""
         if self._stop_event.is_set() or not self._is_current_generation():
@@ -661,6 +708,7 @@ class LiveArenaEngine(
                 return self.macro_commander.get_intel_hub_telemetry()
             self._is_refreshing_intel = True
         self.last_intel_refresh_ts = time.time()
+        scheduled_async = False
         try:
             try:
                 loop = asyncio.get_running_loop()
@@ -668,19 +716,49 @@ class LiveArenaEngine(
                 loop = None
 
             if loop and loop.is_running():
-                loop.create_task(self.macro_commander.refresh_digest_async())
+                import inspect as _inspect
+                _fn = self.macro_commander.refresh_digest_async
+                try:
+                    _params = _inspect.signature(_fn).parameters
+                    _accepts_stop = "stop_event" in _params or any(
+                        p.kind == _inspect.Parameter.VAR_KEYWORD for p in _params.values()
+                    )
+                except (TypeError, ValueError):
+                    _accepts_stop = False
+                _coro = _fn(stop_event=self._stop_event) if _accepts_stop else _fn()
+                task = loop.create_task(_coro)
+                self._bg_tasks.add(task)
+
+                def _on_done(t: asyncio.Task) -> None:
+                    self._bg_tasks.discard(t)
+                    try:
+                        if not t.cancelled() and t.exception() is not None:
+                            logger.warning("Async intel digest refresh error: %s", t.exception())
+                    except Exception:
+                        pass
+                    with self._intel_refresh_lock:
+                        self._is_refreshing_intel = False
+                    if not self._stop_event.is_set() and self._is_current_generation():
+                        try:
+                            self._publish_state_snapshot()
+                        except Exception as pub_err:
+                            logger.debug("State publish skipped after async intel refresh: %s", pub_err)
+
+                task.add_done_callback(_on_done)
+                scheduled_async = True
             else:
-                self.macro_commander.run_digest_sync()
+                self.macro_commander.run_digest_sync(stop_event=self._stop_event)
         except Exception as e:
             logger.warning("Intel digest refresh error: %s", e)
         finally:
-            with self._intel_refresh_lock:
-                self._is_refreshing_intel = False
-            if not self._stop_event.is_set() and self._is_current_generation():
-                try:
-                    self._publish_state_snapshot()
-                except Exception as e:
-                    logger.debug("State publish skipped after intel refresh: %s", e)
+            if not scheduled_async:
+                with self._intel_refresh_lock:
+                    self._is_refreshing_intel = False
+                if not self._stop_event.is_set() and self._is_current_generation():
+                    try:
+                        self._publish_state_snapshot()
+                    except Exception as e:
+                        logger.debug("State publish skipped after intel refresh: %s", e)
         return self.macro_commander.get_intel_hub_telemetry()
 
     def _record_series_point(self, price: Decimal, ts: float) -> None:
@@ -702,7 +780,7 @@ class LiveArenaEngine(
         """Hidden background thread querying public REST APIs without blocking UI cadence."""
         while self.running and not self._stop_event.is_set():
             if self.paused:
-                time.sleep(0.25)
+                self._stop_event.wait(0.25)
                 continue
             try:
                 if not self.ws_feed.is_fresh():
@@ -718,50 +796,61 @@ class LiveArenaEngine(
                                     del self._slice_ticks[:-1200]
             except Exception as e:
                 logger.debug("Background quote fetcher error: %s", e)
-            for _ in range(10):
-                if not self.running or self._stop_event.is_set():
-                    break
-                time.sleep(0.1)
+            self._stop_event.wait(1.0)
 
     def start_live_loop(self, interval_sec: float = 1.0) -> None:
-        if self.running:
-            return
-        if self.worker_thread is not None and self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=3.0)
-            if self.worker_thread.is_alive():
-                logger.warning("Previous live loop thread still alive; refusing to start a second one")
+        with self._lifecycle_lock:
+            if self.running:
                 return
-        if self.raw_fetch_thread is not None and self.raw_fetch_thread.is_alive():
-            self.raw_fetch_thread.join(timeout=3.0)
-            if self.raw_fetch_thread.is_alive():
-                logger.warning("Previous quote fetch thread still alive; refusing to start a second one")
-                return
-        self.cadence_sec = max(1.0, min(10.0, float(interval_sec)))
-        self._stop_event.clear()
-        self.running = True
-        self.worker_thread = threading.Thread(target=self._live_loop, daemon=True)
-        self.worker_thread.start()
+            if self.worker_thread is not None and self.worker_thread.is_alive():
+                self.worker_thread.join(timeout=3.0)
+                if self.worker_thread.is_alive():
+                    logger.warning("Previous live loop thread still alive; refusing to start a second one")
+                    return
+            if self.raw_fetch_thread is not None and self.raw_fetch_thread.is_alive():
+                self.raw_fetch_thread.join(timeout=3.0)
+                if self.raw_fetch_thread.is_alive():
+                    logger.warning("Previous quote fetch thread still alive; refusing to start a second one")
+                    return
+            self.cadence_sec = max(1.0, min(10.0, float(interval_sec)))
+            self._stop_event.clear()
+            self.running = True
+            self.worker_thread = threading.Thread(target=self._live_loop, daemon=True)
+            self.worker_thread.start()
 
     def stop_live_loop(self, timeout: float = 3.0) -> None:
-        self.running = False
-        self._stop_event.set()
-        self.ws_feed.stop()
-        if self.worker_thread and self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=timeout)
-        if self.worker_thread and not self.worker_thread.is_alive():
-            self.worker_thread = None
-        if self.raw_fetch_thread and self.raw_fetch_thread.is_alive():
-            self.raw_fetch_thread.join(timeout=timeout)
-        if self.raw_fetch_thread and not self.raw_fetch_thread.is_alive():
-            self.raw_fetch_thread = None
-        try:
-            self.session.close()
-        except Exception as e:
-            logger.debug("Quote session close failed during stop: %s", e)
-        try:
-            self.storage.close()
-        except Exception as e:
-            logger.debug("Storage close failed during stop: %s", e)
+        with self._lifecycle_lock:
+            self.running = False
+            self._stop_event.set()
+            self.ws_feed.stop()
+            if self.worker_thread and self.worker_thread.is_alive():
+                self.worker_thread.join(timeout=timeout)
+            if self.worker_thread and not self.worker_thread.is_alive():
+                self.worker_thread = None
+            if self.raw_fetch_thread and self.raw_fetch_thread.is_alive():
+                self.raw_fetch_thread.join(timeout=timeout)
+            raw_still_alive = bool(self.raw_fetch_thread and self.raw_fetch_thread.is_alive())
+            if not raw_still_alive:
+                self.raw_fetch_thread = None
+            bg_join = min(timeout, 1.5)
+            if self._intel_thread and self._intel_thread.is_alive():
+                self._intel_thread.join(timeout=bg_join)
+            if self._intel_thread and not self._intel_thread.is_alive():
+                self._intel_thread = None
+            if self._mtf_seed_thread and self._mtf_seed_thread.is_alive():
+                self._mtf_seed_thread.join(timeout=bg_join)
+            if self._mtf_seed_thread and not self._mtf_seed_thread.is_alive():
+                self._mtf_seed_thread = None
+            if not raw_still_alive:
+                try:
+                    with self._session_lock:
+                        self.session.close()
+                except Exception as e:
+                    logger.debug("Quote session close failed during stop: %s", e)
+            try:
+                self.storage.close()
+            except Exception as e:
+                logger.debug("Storage close failed during stop: %s", e)
 
     def stop(self) -> None:
         self.stop_live_loop()
@@ -769,28 +858,32 @@ class LiveArenaEngine(
     def _live_loop(self) -> None:
         pairs = parse_symbol_pairs(self.symbol)
         asset = pairs["base"]
-        self.log_event("BOOT", f"Connecting to real-time {pairs['symbol']} orderflow & warming 1m indicators...", "info")
-        self.ws_feed.start()
-        self.bootstrap_intraday_session()
         if not self.running or self._stop_event.is_set():
             return
-
-        with self.lock:
-            now_init = time.time()
-            if self.live_orders_enabled and self.live_start_ts is None:
-                self.live_start_ts = now_init
-            if self.last_evolve_ts <= 0.0:
-                self.last_evolve_ts = now_init
-            self._last_autosave_ts = now_init
-            self.last_cadence_slot = math.floor(now_init / self.cadence_sec) * self.cadence_sec
-
-        self.raw_fetch_thread = threading.Thread(target=self._quote_fetch_worker, daemon=True)
-        self.raw_fetch_thread.start()
-
+        self.log_event("BOOT", f"Connecting to real-time {pairs['symbol']} orderflow & warming 1m indicators...", "info")
+        self.ws_feed.start()
         try:
+            self.bootstrap_intraday_session()
+            if not self.running or self._stop_event.is_set():
+                return
+
+            with self.lock:
+                now_init = time.time()
+                if self.live_orders_enabled and self.live_start_ts is None:
+                    self.live_start_ts = now_init
+                if self.last_evolve_ts <= 0.0:
+                    self.last_evolve_ts = now_init
+                self._last_autosave_ts = now_init
+                self.last_cadence_slot = math.floor(now_init / self.cadence_sec) * self.cadence_sec
+
+            if not self.running or self._stop_event.is_set():
+                return
+            self.raw_fetch_thread = threading.Thread(target=self._quote_fetch_worker, daemon=True)
+            self.raw_fetch_thread.start()
+
             while self.running and not self._stop_event.is_set():
                 if self.paused:
-                    time.sleep(0.25)
+                    self._stop_event.wait(0.25)
                     continue
 
                 now = time.time()
@@ -804,7 +897,9 @@ class LiveArenaEngine(
                         with self.lock:
                             self._defer_sql_flush = True
                             try:
-                                raw = self._raw_quote_cache or self.latest_quote
+                                if self._raw_quote_cache is None and self.latest_quote is not None:
+                                    self._raw_quote_cache = self.latest_quote
+                                raw = self._raw_quote_cache
                                 ticks = list(self._slice_ticks)
                                 self._slice_ticks.clear()
 
@@ -855,8 +950,17 @@ class LiveArenaEngine(
                                     )
                                     self._recompute_candle_indicators()
 
-                                    # Publish candle slices on the 1.0-second cadence heartbeat
-                                    self.published_candles = [dict(c) for c in self.candles]
+                                    # Publish candle slices on the 1.0-second cadence heartbeat (incremental tail update)
+                                    if (
+                                        self.published_candles
+                                        and self.candles
+                                        and len(self.published_candles) == len(self.candles)
+                                        and self.published_candles[-1]["t"] == self.candles[-1]["t"]
+                                        and self.published_candles[0]["t"] == self.candles[0]["t"]
+                                    ):
+                                        self.published_candles = self.published_candles[:-1] + [dict(self.candles[-1])]
+                                    else:
+                                        self.published_candles = [dict(c) for c in self.candles]
                                     self.last_cadence_ts = float(current_slot)
 
                                     # Update live exponential moving averages on each cadence beat
@@ -869,13 +973,16 @@ class LiveArenaEngine(
                                         self.live_ema_fast = ((cadenced_quote.price * alpha_f) + (self.live_ema_fast * (Decimal("1") - alpha_f))).quantize(Decimal("0.01"))
                                         self.live_ema_slow = ((cadenced_quote.price * alpha_s) + (self.live_ema_slow * (Decimal("1") - alpha_s))).quantize(Decimal("0.01"))
 
+                                    self.broker.current_price = cadenced_quote.price
+
                                     # Live orders & simulated matching activate on each cadence boundary
                                     if self.live_orders_enabled:
                                         if not self.live_trading_active:
                                             self.live_trading_active = True
                                             if not self.live_start_ts:
                                                 self.live_start_ts = time.time()
-                                            self.last_evolve_ts = time.time()
+                                            if self.last_evolve_ts <= 0.0:
+                                                self.last_evolve_ts = time.time()
                                             self._ensure_active_live_positions(cadenced_quote.price, float(current_slot))
                                             self._harvest_fills()
                                             self.log_event("LIVE_START", f"Arena revealed. Live order dispatch active @ ${cadenced_quote.price:,.2f}", "buy")
@@ -934,16 +1041,29 @@ class LiveArenaEngine(
                         self._flush_sql_queues()
                         if _evolve_reason is not None:
                             self.evolve_now(trigger=f"auto:{_evolve_reason}")
-                            self._publish_state_snapshot()
                         if _should_refresh_intel:
-                            threading.Thread(target=self.refresh_intel_digest, daemon=True).start()
+                            self.trigger_intel_refresh_async()
+                        if (
+                            (now - self._last_candle_prune_ts) >= 86400.0
+                            and not self._stop_event.is_set()
+                            and self._is_current_generation()
+                        ):
+                            self._last_candle_prune_ts = now
+                            try:
+                                self.storage.prune_old_candles()
+                            except Exception as prune_err:
+                                logger.debug("Periodic candle prune skipped: %s", prune_err)
 
                     except Exception as e:
                         self.log_event("FEED_WARN", f"Retrying live quote stream: {e}", "loss")
 
                 self._maybe_autosave(now)
-                time.sleep(0.1)  # High-frequency poll to align cleanly with the cadence slot without drift
+                self._stop_event.wait(0.1)  # High-frequency poll to align cleanly with the cadence slot without drift
         finally:
+            try:
+                self.ws_feed.stop()
+            except Exception as e:
+                logger.debug("WebSocket stop skipped during loop exit: %s", e)
             try:
                 self._flush_sql_queues()
             except Exception as e:
@@ -1108,11 +1228,14 @@ class LiveArenaEngine(
 
         if records_to_save and records_to_save[0] and records_to_save[1]:
             try:
-                GeneticEvolver.save_history(records_to_save[0], records_to_save[1], storage=self.storage)
+                with SessionCodecMixin._persistence_epoch_lock:
+                    if not self._stop_event.is_set() and self._is_current_generation():
+                        GeneticEvolver.save_history(records_to_save[0], records_to_save[1], storage=self.storage)
             except Exception as e:
                 logger.warning("Failed to persist evolution history outside lock: %s", e)
 
         self._autosave_pending = True
+        self._publish_state_snapshot()
         return logs
 
     STRATEGY_COLORS: Dict[str, str] = {
@@ -1202,13 +1325,13 @@ class LiveArenaEngine(
 
     def _publish_state_snapshot(self) -> None:
         """Atomically publishes double-buffered UI snapshot for lock-free IPC consumption."""
-        if not self._is_current_generation():
-            logger.debug("Stale engine epoch %.3f: skipping state publish from a superseded generation", self.engine_epoch)
-            return
         with self.lock:
+            if not self._is_current_generation():
+                logger.debug("Stale engine epoch %.3f: skipping state publish from a superseded generation", self.engine_epoch)
+                return
             snapshot = self._build_snapshot_locked()
-        with self._snapshot_lock:
-            self._ui_state_snapshot = snapshot
+            with self._snapshot_lock:
+                self._ui_state_snapshot = snapshot
 
     def get_ui_state(self) -> Dict[str, Any]:
         """Retrieves current UI state from the lock-free double-buffered snapshot."""

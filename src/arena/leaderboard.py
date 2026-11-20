@@ -4,7 +4,11 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Dict, Optional
 import math
 import time
-from src.arena.portfolio import Portfolio
+try:
+    import numpy as _np
+except Exception:  # pragma: no cover
+    _np = None  # type: ignore[assignment]
+from src.arena.portfolio import Portfolio, _SliceableDeque
 from src.arena.order import OrderSide
 
 # A3: annualization convention -- 35040 periods/year = 365 days x 96
@@ -52,15 +56,27 @@ class Leaderboard:
         # Annualize at the 15-minute-bar convention (see the named
         # constant PERIODS_PER_YEAR_15MIN_BARS above): sub-60s histories
         # would otherwise annualize at their tick frequency and blow
-        # up the Sharpe/Sortino factor.
-        if len(equity_history) < 2:
-            return PERIODS_PER_YEAR_15MIN_BARS  # Default: 15-min bars in a 365-day 24/7 crypto year
-        dt_total = equity_history[-1][0] - equity_history[0][0]
-        avg_dt = dt_total / max(1, len(equity_history) - 1)
-        if avg_dt < 60.0:
+        # up the Sharpe/Sortino factor. Use the median of sampled
+        # consecutive timestamp deltas so offline/pause gaps do not
+        # stretch avg_dt and halve Sharpe/Sortino after a restart.
+        n_pts = len(equity_history)
+        if n_pts < 2:
+            return PERIODS_PER_YEAR_15MIN_BARS
+        max_samples = 64
+        step = max(1, (n_pts - 1) // max_samples)
+        deltas: List[float] = []
+        for idx in range(0, n_pts - 1, step):
+            dt = equity_history[idx + 1][0] - equity_history[idx][0]
+            if dt > 0.0:
+                deltas.append(dt)
+        if not deltas:
+            return PERIODS_PER_YEAR_15MIN_BARS
+        deltas.sort()
+        median_dt = deltas[len(deltas) // 2]
+        if median_dt < 60.0:
             return PERIODS_PER_YEAR_15MIN_BARS
         seconds_per_year = 365.25 * 86400.0
-        return max(252.0, min(PERIODS_PER_YEAR_15MIN_BARS, seconds_per_year / avg_dt))
+        return max(252.0, min(PERIODS_PER_YEAR_15MIN_BARS, seconds_per_year / median_dt))
 
     @classmethod
     def calculate_sharpe_and_sortino(
@@ -94,42 +110,64 @@ class Leaderboard:
                 return cached[1]
             # TTL expired: fall through and recompute below.
 
-        # Single-pass Welford online mean/variance + Sortino downside accumulation
-        # (avoids allocating returns/non_zero/downside_sq lists and halves Decimal->float casts).
-        it = iter(history)
-        prev_eq = float(next(it)[1])
-        n = 0
-        non_zero_count = 0
-        mean_ret = 0.0
-        m2 = 0.0
-        downside_sq_sum = 0.0
-        downside_count = 0
+        eq_floats = getattr(portfolio, "_equity_floats", None)
+        if (
+            _np is not None
+            and isinstance(history, _SliceableDeque)
+            and eq_floats is not None
+            and len(eq_floats) == len(history)
+        ):
+            arr = _np.fromiter(eq_floats, dtype=_np.float64, count=len(eq_floats))
+            prev = arr[:-1]
+            valid = prev > 0.0
+            rets = (arr[1:][valid] - prev[valid]) / prev[valid]
+            n = int(rets.size)
+            non_zero_count = int(_np.count_nonzero(_np.abs(rets) > 1e-9)) if n else 0
+            if non_zero_count < 2 or n < 2:
+                result = (0.0, 0.0)
+                portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
+                portfolio._metrics_cache_time = time.monotonic()  # type: ignore[attr-defined]
+                return result
+            mean_ret = float(rets.mean())
+            std_dev = float(rets.std(ddof=1))
+            down_mask = rets < risk_free_rate
+            downside_count = int(_np.count_nonzero(down_mask))
+            downside_sq_sum = float(_np.sum((rets[down_mask] - risk_free_rate) ** 2)) if downside_count > 0 else 0.0
+        else:
+            # Single-pass Welford online mean/variance + Sortino downside accumulation
+            it = iter(history)
+            prev_eq = float(next(it)[1])
+            n = 0
+            non_zero_count = 0
+            mean_ret = 0.0
+            m2 = 0.0
+            downside_sq_sum = 0.0
+            downside_count = 0
 
-        for _, eq_dec in it:
-            curr_eq = float(eq_dec)
-            if prev_eq > 0.0:
-                r = (curr_eq - prev_eq) / prev_eq
-                n += 1
-                if abs(r) > 1e-9:
-                    non_zero_count += 1
-                delta = r - mean_ret
-                mean_ret += delta / n
-                m2 += delta * (r - mean_ret)
-                if r < risk_free_rate:
-                    diff = r - risk_free_rate
-                    downside_sq_sum += diff * diff
-                    downside_count += 1
-            prev_eq = curr_eq
+            for _, eq_dec in it:
+                curr_eq = float(eq_dec)
+                if prev_eq > 0.0:
+                    r = (curr_eq - prev_eq) / prev_eq
+                    n += 1
+                    if abs(r) > 1e-9:
+                        non_zero_count += 1
+                    delta = r - mean_ret
+                    mean_ret += delta / n
+                    m2 += delta * (r - mean_ret)
+                    if r < risk_free_rate:
+                        diff = r - risk_free_rate
+                        downside_sq_sum += diff * diff
+                        downside_count += 1
+                prev_eq = curr_eq
 
-        # If portfolio never traded or all returns are 0
-        if non_zero_count < 2 or n < 2:
-            result = (0.0, 0.0)
-            portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
-            portfolio._metrics_cache_time = time.monotonic()  # type: ignore[attr-defined]
-            return result
+            if non_zero_count < 2 or n < 2:
+                result = (0.0, 0.0)
+                portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
+                portfolio._metrics_cache_time = time.monotonic()  # type: ignore[attr-defined]
+                return result
 
-        variance = m2 / (n - 1)
-        std_dev = math.sqrt(variance) if variance > 0.0 else 0.0
+            variance = m2 / (n - 1)
+            std_dev = math.sqrt(variance) if variance > 0.0 else 0.0
 
         periods_per_year = cls._estimate_periods_per_year(history)
         ann_factor = math.sqrt(periods_per_year)

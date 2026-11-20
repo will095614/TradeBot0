@@ -26,6 +26,7 @@ V1.0.0 (2026-11-18, first public GitHub release): version numbering reset only, 
 V2.0.0 (2026-11-19): Full BUG-01..BUG-17 resolution, LiveArenaEngine decomposition into 4 cohesive mixins, non-blocking SQLite/evolution lock narrowing, Student-t/bootstrap antithetic Monte Carlo EV gate, and complete ETH/USD docs & regression test suite.
 V2.1.0 (2026-11-20): Setup wizard simplified to Google Gemini only; OmniRoute npm install progress bar tracks real written bytes and estimated remaining time.
 V2.2.0 (2026-11-20): Full debug & optimization pass across arena ledger/broker/evolution, live engine/MTF/Monte Carlo/SQLite, intelligence/gateway/config, and GUI/frontend rendering & state sync.
+V2.4.0 (2026-11-21): Vertical Gemini Setup Wizard with live Node.js/OmniRoute environment detection, real OmniRoute SQLite admin password sync, unified dev_test.bat launcher, and comprehensive second-order debug & optimization sweep across Arena, LiveEngine, Intelligence/Gateway, and GUI/Frontend.
 Going forward each new batch bumps the matching number by 1 (new
 feature group -> Y, fix / optimization batch -> Z, breaking change
 -> X with Y and Z reset to 0). The comparison helper accepts an
@@ -33,4 +34,4 @@ optional ``v``/``V`` prefix and plain ``X.Y.Z`` too.
 """
 
 APP_NAME = "TradeBot0"
-APP_VERSION = "V2.2.0"
+APP_VERSION = "V2.4.0"

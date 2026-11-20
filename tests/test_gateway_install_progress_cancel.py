@@ -21,10 +21,12 @@ from src.intelligence.gateway_supervisor import GatewaySupervisor
 
 
 def _make_supervisor(tmp_path):
-    return GatewaySupervisor(
+    sup = GatewaySupervisor(
         daemon_log_path=tmp_path / "daemon.log",
         install_log_path=tmp_path / "install.log",
     )
+    sup.omni_data_dir = tmp_path / "omni_data"
+    return sup
 
 
 class _FakeDownloadResp:
@@ -248,73 +250,72 @@ def test_frontend_progress_bar_and_cancel_confirm_ids():
     assert "max-height: 92vh" in modal_block
 
 
-def test_wizard_two_column_fixed_layout():
-    """Two-column wizard (2026-11-14, user-approved mockup): the modal is a
-    two-column grid, the 1040px scroll fallback is gone, every dynamic
-    element reserves a fixed-height slot (visibility, never display: none),
-    and the dynamic regions carry transitions so any residual shift
-    animates instead of jumping."""
+def test_wizard_vertical_content_sized_layout():
+    """Single-column vertical wizard (Gemini-only): narrow vertical modal,
+    live Node.js/OmniRoute environment detection pills, and content-sized
+    collapsible boxes (.setup-collapsible: 0fr -> 1fr) so hidden elements
+    leave zero dead space and visible boxes resize/shift smoothly."""
     assets = Path(__file__).resolve().parent.parent / "src" / "gui" / "assets"
     html = (assets / "index.html").read_text(encoding="utf-8")
     js = (assets / "app.js").read_text(encoding="utf-8")
     css = (assets / "app.css").read_text(encoding="utf-8")
 
-    # Two columns: keys left, gateway right; the actions row still spans
-    # both columns below the grid (unchanged).
-    assert html.count('class="setup-wizard-column"') == 2
+    # Single vertical column layout (replacing the old 2-column 1080px grid).
+    assert html.count('class="setup-wizard-column"') == 1
     assert ".setup-wizard-column" in css
-    assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)" in css
+    body_block = css.split(".setup-wizard-body {", 1)[1].split("}", 1)[0]
+    assert "grid-template-columns: minmax(0, 1fr);" in body_block
     modal_block = css.split(".setup-wizard-modal {", 1)[1].split("}", 1)[0]
-    assert "width: 1080px" in modal_block
+    assert "width: 560px" in modal_block
     assert "gap: 0" in modal_block
     assert "overflow-y: hidden" in modal_block
     assert "max-height: 92vh" in modal_block
 
-    # No scroll fallback at any height: the 1040px media query is gone, and
-    # the compact-mode block (720px) tightens spacing without overflow.
+    # Environment detection status pills for Node.js & OmniRoute.
+    assert 'id="envNodePill"' in html
+    assert 'id="envOmniRoutePill"' in html
+    assert "envNodePill" in js
+    assert "envOmniRoutePill" in js
+    assert "Install OmniRoute" in js
+
+    # No scroll fallback at any height: compact-mode block (720px) tightens
+    # spacing without enabling overflow.
     assert "@media (max-height: 1040px)" not in css
     assert "@media (max-height: 720px)" in css
     compact = css.split("@media (max-height: 720px)", 1)[1].split("@media", 1)[0]
     assert "overflow" not in compact
 
-    # Fixed slots: the four dynamic elements no longer carry an inline
-    # display:none, and their CSS hides them with visibility + opacity.
-    for frag in ['id="gatewayUnavailableNote" style="display:none;"',
-                 'id="btnInstallGatewayRuntime" onclick="installGatewayRuntime()" style="display:none;"',
-                 'id="setupWizardStatusBanner" class="setup-wizard-banner" style="display:none;"',
-                 'id="setupInstallProgress" class="setup-install-progress" style="display:none;"']:
-        assert frag not in html
-    for sel in ["#gatewayUnavailableNote", "#btnInstallGatewayRuntime"]:
-        rule = css.split(sel + " {", 1)[1].split("}", 1)[0]
-        assert "visibility: hidden" in rule
-        assert "opacity: 0" in rule
-    banner_rule = css.split(".setup-wizard-banner {", 1)[1].split("}", 1)[0]
-    assert "visibility: hidden" in banner_rule
-    assert "min-height: 48px" in banner_rule
-    assert "opacity 0.25s var(--lg-spring)" in banner_rule
-    prog_rule = css.split(".setup-install-progress {", 1)[1].split("}", 1)[0]
-    assert "visibility: hidden" in prog_rule
-    assert "min-height: 8px" in prog_rule
-    assert "gwNote.style.display" not in js
-    assert "gwBtn.style.display" not in js
-    assert "prog.style.display" not in js
-    assert "b.style.display" not in js
-    assert "b.style.visibility" in js
-    assert "gwNote.style.visibility" in js
-    assert "gwBtn.style.visibility" in js
-    assert "prog.style.visibility" in js
+    # Content-sized collapsible containers: collapse cleanly to 0fr (0px)
+    # when closed and expand to 1fr (exact content height) when .is-open.
+    for wrap_id in (
+        "gatewayRuntimeActionWrap",
+        "setupWizardBannerWrap",
+        "setupInstallProgressWrap",
+        "setupSaveProgressWrap",
+    ):
+        assert f'id="{wrap_id}"' in html
+        assert wrap_id in js
 
-    # Long text cannot grow a slot: pills truncate to one line, the test
-    # button has a fixed width, the gateway note and banner clamp to two.
+    coll_rule = css.split(".setup-collapsible {", 1)[1].split("}", 1)[0]
+    assert "grid-template-rows: 0fr" in coll_rule
+    assert "margin-top: 0" in coll_rule
+    coll_open = css.split(".setup-collapsible.is-open {", 1)[1].split("}", 1)[0]
+    assert "grid-template-rows: 1fr" in coll_open
+
+    # Banner & unavailable note size dynamically to content (no fixed dead-space slots).
+    banner_rule = css.split(".setup-wizard-banner {", 1)[1].split("}", 1)[0]
+    assert "min-height: 48px" not in banner_rule
+    assert "-webkit-line-clamp" not in banner_rule
+    note_rule = css.split("#gatewayUnavailableNote {", 1)[1].split("}", 1)[0]
+    assert "min-height: 29px" not in note_rule
+    assert "-webkit-line-clamp" not in note_rule
+
+    # Pills stay single-line and test button stays fixed width.
     pill_rule = css.split(".setup-status-pill {", 1)[1].split("}", 1)[0]
     assert "text-overflow: ellipsis" in pill_rule
     assert "white-space: nowrap" in pill_rule
     test_btn_rule = css.split(".setup-test-btn {", 1)[1].split("}", 1)[0]
     assert "width: 64px" in test_btn_rule
-    note_rule = css.split("#gatewayUnavailableNote {", 1)[1].split("}", 1)[0]
-    assert "-webkit-line-clamp: 2" in note_rule
-    assert "min-height: 29px" in note_rule
-    assert "-webkit-line-clamp: 2" in banner_rule
 
 
 def _setup_npm_only_env(tmp_path, monkeypatch, expected_bytes):

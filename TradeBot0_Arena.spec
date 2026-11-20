@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('src/gui/assets', 'src/gui/assets')]
-binaries = [('src/compat/win7/api-ms-win-core-path-l1-1-0.dll', '.')]
+binaries = []
 hiddenimports = ['clr']
 tmp_ret = collect_all('webview')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

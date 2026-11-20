@@ -63,14 +63,18 @@ def efficiency_ratio(closes: Any) -> float:
         return 1.0
     it = iter(closes)
     first = float(next(it))
+    if not math.isfinite(first):
+        return 1.0
     prev = first
     path = 0.0
     for val in it:
         cur = float(val)
+        if not math.isfinite(cur):
+            return 1.0
         path += abs(cur - prev)
         prev = cur
     net = abs(prev - first)
-    return (net / path) if path > 0.0 else 1.0
+    return (net / path) if (path > 0.0 and math.isfinite(path)) else 1.0
 
 
 class TimeMachineArena:
@@ -437,6 +441,9 @@ class MonteCarloOddsEvaluator:
         n_steps: int = 120,
         min_ev_threshold: float = -0.05,
     ) -> MonteCarloBracketOdds:
+        if n_sims < 1 or n_steps < 1:
+            return self._reject_bracket("Rejected (Invalid simulation horizon)")
+
         try:
             entry_f = float(entry_price)
             sl_f = float(stop_loss)
@@ -485,6 +492,7 @@ class MonteCarloOddsEvaluator:
         drift = 0.0
         empirical_ret_arr = None
         empirical_mean = 0.0
+        empirical_std = 0.0
         used_empirical = False
         if recent_candles and len(recent_candles) >= 5:
             cache_key = (
@@ -494,7 +502,7 @@ class MonteCarloOddsEvaluator:
                 recent_candles[-1].get("c"),
             )
             if self._ret_cache_key == cache_key and self._ret_cache_val is not None:
-                empirical_ret_arr, empirical_mean, sigma, drift, used_empirical = self._ret_cache_val
+                empirical_ret_arr, empirical_mean, empirical_std, sigma, drift, used_empirical = self._ret_cache_val
             else:
                 closes: List[float] = []
                 for c in recent_candles:
@@ -516,11 +524,12 @@ class MonteCarloOddsEvaluator:
                         else:
                             std_val = 0.0015
                             empirical_mean = 0.0
+                        empirical_std = std_val
                         sigma = max(0.0006, min(0.008, std_val))
                         drift = max(-0.001, min(0.001, empirical_mean * 0.5))
                         used_empirical = True
                 self._ret_cache_key = cache_key
-                self._ret_cache_val = (empirical_ret_arr, empirical_mean, sigma, drift, used_empirical)
+                self._ret_cache_val = (empirical_ret_arr, empirical_mean, empirical_std, sigma, drift, used_empirical)
 
         if not used_empirical and atr is not None:
             try:
@@ -536,8 +545,8 @@ class MonteCarloOddsEvaluator:
 
         # Vectorized path simulation via NumPy (fat-tailed bootstrap + antithetic variance reduction)
         if np is not None and self._rng is not None:
-            if empirical_ret_arr is not None and len(empirical_ret_arr) >= 20:
-                shifted_rets = empirical_ret_arr - empirical_mean + eff_drift
+            if empirical_ret_arr is not None and len(empirical_ret_arr) >= 20 and empirical_std > 1e-12:
+                shifted_rets = (empirical_ret_arr - empirical_mean) * (sigma / empirical_std) + eff_drift
                 shocks = self._rng.choice(shifted_rets, size=(n_sims, n_steps), replace=True)
             else:
                 # Heavy-tailed Student-t(df=6) shocks variance-matched to sigma
@@ -550,6 +559,8 @@ class MonteCarloOddsEvaluator:
                 if len(shocks) < n_sims:
                     extra = eff_drift + self._rng.standard_t(df=df, size=(1, n_steps)) * scale_t
                     shocks = np.concatenate([shocks, extra], axis=0)
+                elif len(shocks) > n_sims:
+                    shocks = shocks[:n_sims]
 
             # Evaluate barrier hits directly in log-return space (avoids full 2D exp + 3 extra arrays).
             log_paths = np.cumsum(shocks, axis=1, out=shocks)

@@ -293,7 +293,12 @@ class GeneticEvolver:
         directly so callers never have to rely solely on class state ``_last_records``.
         """
         comp_map: Dict[str, BaseCompetitor] = {c.portfolio_id: c for c in competitors}
-        valid_rankings = [r for r in rankings if r.portfolio_id in comp_map]
+        seen_pids: set[str] = set()
+        valid_rankings: List[CompetitorStats] = []
+        for r in rankings:
+            if r.portfolio_id in comp_map and r.portfolio_id not in seen_pids:
+                seen_pids.add(r.portfolio_id)
+                valid_rankings.append(r)
         if len(valid_rankings) < 2:
             return [], None
 
@@ -378,7 +383,7 @@ class GeneticEvolver:
                 "fine_tuned_genes": tuned_genes,
                 "action": action,
                 "new_generation": next_gen,
-                "new_genome": {k: str(v) if isinstance(v, Decimal) else v for k, v in asdict(new_g).items()}
+                "new_genome": {k: str(v) if isinstance(v, Decimal) else v for k, v in asdict(comp.genome).items()}
             })
 
         if save_history:

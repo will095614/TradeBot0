@@ -243,10 +243,10 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
                 # defaults (EV 0.0, win 50%, R 1.8, passed True, verdict
                 # "EV Gate Active") were invented numbers (item 7).
                 "mc_verdict": mc_st.get("verdict"),
-                "expected_r": mc_st.get("expected_r"),
-                "target_prob": mc_st.get("target_prob"),
-                "stop_prob": mc_st.get("stop_prob"),
-                "r_multiple": mc_st.get("r_multiple"),
+                "expected_r": fz(mc_st.get("expected_r")) if mc_st.get("expected_r") is not None else None,
+                "target_prob": fz(mc_st.get("target_prob")) if mc_st.get("target_prob") is not None else None,
+                "stop_prob": fz(mc_st.get("stop_prob")) if mc_st.get("stop_prob") is not None else None,
+                "r_multiple": fz(mc_st.get("r_multiple")) if mc_st.get("r_multiple") is not None else None,
                 # A2: True when the 1.8R above is the uncapped-runner
                 # model assumption rather than a real TP.
                 "r_multiple_is_assumption": mc_st.get("r_multiple_is_assumption"),

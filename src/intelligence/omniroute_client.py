@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import re
+import sys
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -57,7 +58,7 @@ _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 def extract_json(text: Optional[str]) -> Optional[Dict[str, Any]]:
     """
     Defensively strips reasoning tags (<think>...</think>), markdown code fences,
-    and extracts the outermost JSON dictionary {...}.
+    and extracts a valid JSON dictionary {...}.
     Returns None if no valid JSON dictionary can be parsed.
     """
     if not text or not isinstance(text, str):
@@ -66,13 +67,40 @@ def extract_json(text: Optional[str]) -> Optional[Dict[str, Any]]:
     # 1. Strip closed and unclosed thinking blocks from reasoning models
     s = _THINK_CLOSED.sub("", text)
     s = _THINK_OPEN.sub("", s)
+    stripped = s.strip()
 
-    # 2. Extract code fence if present
-    m = _FENCE.search(s)
-    if m:
-        s = m.group(1)
+    # 2. Fast-path: whole response is already a JSON object (avoids corrupting
+    #    embedded ```code``` fences inside JSON string fields like articles).
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            obj = json.loads(stripped)
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
 
-    # 3. Locate outermost {...}
+    # 3. Try each markdown code fence in order (handles non-JSON fences before the JSON block)
+    for m in _FENCE.finditer(s):
+        block = m.group(1).strip()
+        if not block:
+            continue
+        try:
+            obj = json.loads(block)
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+        b_start = block.find("{")
+        b_end = block.rfind("}")
+        if b_start != -1 and b_end > b_start:
+            try:
+                obj = json.loads(block[b_start : b_end + 1])
+                if isinstance(obj, dict):
+                    return obj
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+
+    # 4. Locate outermost {...}
     start = s.find("{")
     end = s.rfind("}")
     if start == -1 or end <= start:
@@ -90,7 +118,7 @@ def extract_json(text: Optional[str]) -> Optional[Dict[str, Any]]:
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
-    # Fallback: scan individual `{` offsets with JSONDecoder.raw_decode so
+    # 5. Fallback: scan individual `{` offsets with JSONDecoder.raw_decode so
     # prose containing trailing `{...}` after a valid JSON object still parses.
     decoder = json.JSONDecoder()
     pos = start
@@ -183,7 +211,7 @@ _TERMINAL_CREDIT_PATTERNS = (
 )
 
 _RETRY_HINT_RE = re.compile(
-    r"(?:try again in|retry (?:after|in))\s*:?\s*([^.;\n]{1,40})",
+    r"(?:try again in|retry (?:after|in))\s*:?\s*((?:[^.;\n]|\.(?=\d)){1,40})",
     re.IGNORECASE,
 )
 _RETRY_UNIT_RE = re.compile(
@@ -418,11 +446,27 @@ class OmniRouteClient:
         self._quota_failures: Dict[str, float] = {}
         self._unattributed_quota_ts: Optional[float] = None
 
-    def _maybe_rollover_daily_quota(self) -> None:
+    def _maybe_rollover_daily_quota_locked(self) -> None:
         today = date.today()
         if today != self._quota_day:
             self._quota_day = today
             self.total_tokens_used = 0
+
+    def _maybe_rollover_daily_quota(self) -> None:
+        with self._quota_lock:
+            self._maybe_rollover_daily_quota_locked()
+
+    def _record_token_usage(self, usage: Any) -> None:
+        if not isinstance(usage, dict):
+            return
+        try:
+            tok = int(usage.get("total_tokens", 0))
+        except (TypeError, ValueError):
+            logger.debug("OmniRoute usage.total_tokens not numeric: %r", usage.get("total_tokens"))
+            return
+        with self._quota_lock:
+            self._maybe_rollover_daily_quota_locked()
+            self.total_tokens_used += tok
 
     def record_dedup_hit(self) -> None:
         """Records one deduplication hit (a duplicate title+URL skipped).
@@ -474,11 +518,12 @@ class OmniRouteClient:
         single request. With no DAILY_TOKEN_QUOTA set there is no usage
         threshold at all -- only the 429 signal can trip this (F4).
         """
-        self._maybe_rollover_daily_quota()
-        if self.daily_quota_limit is not None and self.daily_quota_limit > 0:
-            if self.total_tokens_used >= self.daily_quota_limit:
-                return True
-        return self.is_rate_limited()
+        with self._quota_lock:
+            self._maybe_rollover_daily_quota_locked()
+            if self.daily_quota_limit is not None and self.daily_quota_limit > 0:
+                if self.total_tokens_used >= self.daily_quota_limit:
+                    return True
+            return time.monotonic() < self._rate_limit_until
 
     def note_failure(self, classification: Dict[str, Any]) -> None:
         """Records one classified LLM failure for the gateway diagnosis.
@@ -527,9 +572,10 @@ class OmniRouteClient:
     def is_daily_budget_exhausted(self) -> bool:
         """True only when the user's own DAILY_TOKEN_QUOTA budget is used
         up. Unset budget means unknown, never exhausted."""
-        self._maybe_rollover_daily_quota()
-        limit = self.daily_quota_limit
-        return limit is not None and limit > 0 and self.total_tokens_used >= limit
+        with self._quota_lock:
+            self._maybe_rollover_daily_quota_locked()
+            limit = self.daily_quota_limit
+            return limit is not None and limit > 0 and self.total_tokens_used >= limit
 
     def is_all_providers_quota_exhausted(self, configured_providers: Any) -> bool:
         """True when every configured provider has failed with a
@@ -590,11 +636,12 @@ class OmniRouteClient:
         reports a daily free allowance, so any % would invent a
         denominator (F4). Only a user-set budget yields a real %.
         """
-        self._maybe_rollover_daily_quota()
-        if self.daily_quota_limit is None or self.daily_quota_limit <= 0:
-            return None
-        remaining = max(0, self.daily_quota_limit - self.total_tokens_used)
-        return round((remaining / self.daily_quota_limit) * 100.0, 1)
+        with self._quota_lock:
+            self._maybe_rollover_daily_quota_locked()
+            if self.daily_quota_limit is None or self.daily_quota_limit <= 0:
+                return None
+            remaining = max(0, self.daily_quota_limit - self.total_tokens_used)
+            return round((remaining / self.daily_quota_limit) * 100.0, 1)
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         try:
@@ -739,6 +786,8 @@ class OmniRouteClient:
             retry_delay: Optional[float] = None
             retry_format = False
             try:
+                if getattr(sess, "closed", False):
+                    sess = await self.get_session()
                 async with self._get_semaphore():
                     async with sess.post(
                         endpoint,
@@ -755,18 +804,15 @@ class OmniRouteClient:
                             self.note_rate_limit(retry_after)
 
                         if status == 200:
-                            body = await resp.json()
+                            body = await self._parse_ok_json_body(resp)
+                            if not isinstance(body, dict):
+                                logger.warning("OmniRoute 200 OK returned non-JSON or non-object body")
+                                return None
                             self.is_gateway_online = True
                             self.note_success()
-                            usage = body.get("usage", {})
-                            if isinstance(usage, dict):
-                                try:
-                                    self._maybe_rollover_daily_quota()
-                                    self.total_tokens_used += int(usage.get("total_tokens", 0))
-                                except (TypeError, ValueError):
-                                    logger.debug("OmniRoute usage.total_tokens not numeric: %r", usage.get("total_tokens"))
-                            choices = body.get("choices", [])
-                            if choices and isinstance(choices[0], dict) and "message" in choices[0]:
+                            self._record_token_usage(body.get("usage"))
+                            choices = body.get("choices")
+                            if isinstance(choices, list) and choices and isinstance(choices[0], dict) and "message" in choices[0]:
                                 msg = choices[0].get("message") or {}
                                 raw_content = msg.get("content") if isinstance(msg, dict) else ""
                                 content = raw_content if isinstance(raw_content, str) else ""
@@ -856,6 +902,21 @@ class OmniRouteClient:
         self.failed_requests += 1
         return None
 
+    async def _parse_ok_json_body(self, resp: Any) -> Optional[Dict[str, Any]]:
+        """Parses an HTTP 200 response body defensively without treating bad Content-Type as offline."""
+        try:
+            body = await resp.json()
+            return body if isinstance(body, dict) else None
+        except (aiohttp.ContentTypeError, ValueError, TypeError, json.JSONDecodeError):
+            try:
+                raw_text = await resp.text()
+                if isinstance(raw_text, str) and raw_text.strip():
+                    body = json.loads(raw_text)
+                    return body if isinstance(body, dict) else None
+            except Exception as e:
+                logger.debug("OmniRoute 200 fallback text JSON parse failed: %s", e)
+            return None
+
     async def _repair_json_once(
         self,
         sess: Any,
@@ -873,6 +934,8 @@ class OmniRouteClient:
         ignores response_format) must not be re-asked forever.
         """
         try:
+            if getattr(sess, "closed", False):
+                sess = await self.get_session()
             repair_payload = dict(payload)
             repair_payload["messages"] = list(payload.get("messages", [])) + [
                 {"role": "user",
@@ -891,16 +954,12 @@ class OmniRouteClient:
                 ) as resp:
                     if resp.status != 200:
                         return None
-                    body = await resp.json()
-                    usage = body.get("usage", {})
-                    if isinstance(usage, dict):
-                        try:
-                            self._maybe_rollover_daily_quota()
-                            self.total_tokens_used += int(usage.get("total_tokens", 0))
-                        except (TypeError, ValueError):
-                            pass
-                    choices = body.get("choices", [])
-                    if choices and isinstance(choices[0], dict) and "message" in choices[0]:
+                    body = await self._parse_ok_json_body(resp)
+                    if not isinstance(body, dict):
+                        return None
+                    self._record_token_usage(body.get("usage"))
+                    choices = body.get("choices")
+                    if isinstance(choices, list) and choices and isinstance(choices[0], dict) and "message" in choices[0]:
                         msg = choices[0].get("message") or {}
                         raw_content = msg.get("content") if isinstance(msg, dict) else ""
                         content = raw_content if isinstance(raw_content, str) else ""
@@ -914,14 +973,20 @@ class OmniRouteClient:
             logger.debug("OmniRoute repair retry failed: %s", e)
             return None
 
+    def _all_sessions_with_loops(self) -> list:
+        """Every owned (loop_or_none, session) pair, de-duplicated."""
+        with self._sessions_lock:
+            pairs = list(self._sessions.items())
+            self._sessions.clear()
+            latest = self._session
+            latest_loop = self._session_loop
+        if latest is not None and all(latest is not s for _, s in pairs):
+            pairs.append((latest_loop, latest))
+        return pairs
+
     def _all_sessions(self) -> list:
         """Every owned session, newest-last / shared first, de-duplicated."""
-        with self._sessions_lock:
-            sessions = list(self._sessions.values())
-            self._sessions.clear()
-        if self._session is not None and all(self._session is not s for s in sessions):
-            sessions.append(self._session)
-        return sessions
+        return [s for _, s in self._all_sessions_with_loops()]
 
     async def close(self) -> None:
         """Closes every owned aiohttp session to prevent resource leaks."""
@@ -935,22 +1000,28 @@ class OmniRouteClient:
         self._session_loop = None
 
     def close_sync(self) -> None:
-        """Synchronously closes owned sessions or schedules their close."""
-        sessions = self._all_sessions()
+        """Synchronously closes owned sessions or schedules their close on their owning loop."""
+        if sys.is_finalizing():
+            return
+        pairs = self._all_sessions_with_loops()
         if not self._owns_session:
             self._session = None
             return
-        for sess in sessions:
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        for owner_loop, sess in pairs:
             if sess is None or sess.closed:
                 continue
             try:
-                loop = None
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    pass
-                if loop and loop.is_running():
-                    loop.create_task(sess.close())
+                if owner_loop is not None and owner_loop.is_running():
+                    if running_loop is owner_loop:
+                        owner_loop.create_task(sess.close())
+                    else:
+                        owner_loop.call_soon_threadsafe(owner_loop.create_task, sess.close())
+                elif running_loop is not None and running_loop.is_running():
+                    running_loop.create_task(sess.close())
                 else:
                     asyncio.run(sess.close())
             except Exception as e:
@@ -959,6 +1030,8 @@ class OmniRouteClient:
         self._session_loop = None
 
     def __del__(self) -> None:
+        if sys.is_finalizing():
+            return
         try:
             self.close_sync()
         except Exception as e:

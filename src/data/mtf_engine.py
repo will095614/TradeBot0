@@ -32,6 +32,7 @@ class MultiTimeframeEngine:
         self.htf_bias: str = "NEUTRAL"
         self._last_1m_ts: float = -1.0
         self._last_1m_vol: float = 0.0
+        self._ema_prefix_cache: Any = None
 
     @staticmethod
     def calc_ema(closes: List[float], period: int) -> float:
@@ -77,17 +78,27 @@ class MultiTimeframeEngine:
             if len(bucket_list) > max_len:
                 del bucket_list[:-max_len]
 
-    def update_from_1m_bar(self, new_1m_bar: Dict[str, Any]) -> str:
+    def update_from_1m_bar(self, new_1m_bar: Dict[str, Any], recompute: bool = True) -> str:
         """
-        Aggregates a 1m bar into 5m, 15m, and 1h buckets and updates the 1h EMA trend regime.
+        Aggregates a 1m bar into 5m, 15m, and 1h buckets and optionally updates the 1h EMA trend regime.
         """
         try:
             ts = float(new_1m_bar["t"])
-            v = max(0.0, float(new_1m_bar.get("v", 0.0)))
+            o = float(new_1m_bar["o"])
+            h = float(new_1m_bar["h"])
+            lo = float(new_1m_bar["l"])
+            c = float(new_1m_bar["c"])
+            v = float(new_1m_bar.get("v", 0.0))
         except (KeyError, TypeError, ValueError):
             return self.htf_bias
-        if not (math.isfinite(ts) and math.isfinite(v)):
+        if not (
+            math.isfinite(ts) and math.isfinite(o) and math.isfinite(h)
+            and math.isfinite(lo) and math.isfinite(c) and math.isfinite(v)
+        ):
             return self.htf_bias
+        if o <= 0.0 or h <= 0.0 or lo <= 0.0 or c <= 0.0:
+            return self.htf_bias
+        v = max(0.0, v)
 
         # Repeated 1s updates for the same 1m bar carry cumulative 1m volume; add only the delta.
         if ts == self._last_1m_ts:
@@ -102,17 +113,53 @@ class MultiTimeframeEngine:
             # Ignore out-of-order older 1m bars if we already have higher buckets past them.
             return self.htf_bias
 
+        prev_1h_len = len(self.candles_1h)
+        prev_1h_tail_t = self.candles_1h[-1]["t"] if prev_1h_len else -1.0
         self._upsert_bucket(self.candles_5m, 300, bar_for_agg, self.max_htf_bars)
         self._upsert_bucket(self.candles_15m, 900, bar_for_agg, self.max_htf_bars)
         self._upsert_bucket(self.candles_1h, 3600, bar_for_agg, self.max_htf_bars)
-        return self.recompute_regime()
+        if len(self.candles_1h) != prev_1h_len or (self.candles_1h and self.candles_1h[-1]["t"] != prev_1h_tail_t):
+            self._ema_prefix_cache = None
+        return self.recompute_regime() if recompute else self.htf_bias
+
+    @staticmethod
+    def _calc_ema_raw(closes: List[float], period: int) -> float:
+        alpha = 2.0 / (period + 1.0)
+        ema = float(closes[0])
+        for c in closes[1:]:
+            ema = (float(c) * alpha) + (ema * (1.0 - alpha))
+        return ema
 
     def recompute_regime(self) -> str:
-        if len(self.candles_1h) >= self.MIN_HTF_BARS:
-            closes = [float(c["c"]) for c in self.candles_1h]
-            self.htf_ema_50 = self.calc_ema(closes, 50)
-            self.htf_ema_200 = self.calc_ema(closes, 200) if len(closes) >= 200 else self.htf_ema_50
-            last_close = closes[-1]
+        c1h = self.candles_1h
+        n = len(c1h)
+        if n >= self.MIN_HTF_BARS:
+            last_close = float(c1h[-1]["c"])
+            prefix_key = (
+                id(c1h),
+                n,
+                c1h[0]["t"],
+                c1h[0]["c"],
+                c1h[-2]["t"],
+                c1h[-2]["c"],
+            )
+            cache = self._ema_prefix_cache
+            if cache is not None and cache[0] == prefix_key:
+                _, ema50_prev, ema200_prev = cache
+            else:
+                prefix_closes = [float(c["c"]) for c in c1h[:-1]]
+                ema50_prev = self._calc_ema_raw(prefix_closes, 50)
+                ema200_prev = self._calc_ema_raw(prefix_closes, 200) if n >= 200 else None
+                self._ema_prefix_cache = (prefix_key, ema50_prev, ema200_prev)
+
+            a50 = 2.0 / 51.0
+            self.htf_ema_50 = round((last_close * a50) + (ema50_prev * (1.0 - a50)), 2)
+            if n >= 200 and ema200_prev is not None:
+                a200 = 2.0 / 201.0
+                self.htf_ema_200 = round((last_close * a200) + (ema200_prev * (1.0 - a200)), 2)
+            else:
+                self.htf_ema_200 = self.htf_ema_50
+
             if last_close > self.htf_ema_50 and self.htf_ema_50 >= self.htf_ema_200:
                 self.htf_bias = "BULLISH"
             elif last_close < self.htf_ema_50 and self.htf_ema_50 <= self.htf_ema_200:
@@ -183,11 +230,14 @@ class MultiTimeframeEngine:
         slotted: List[Dict[str, float]] = []
         for b in dedup:
             slot = float(int(b["t"] // 3600) * 3600)
-            entry = {"t": slot, "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b["v"]}
             if slotted and slotted[-1]["t"] == slot:
-                slotted[-1] = entry
+                cur = slotted[-1]
+                cur["h"] = max(cur["h"], b["h"])
+                cur["l"] = min(cur["l"], b["l"])
+                cur["c"] = b["c"]
+                cur["v"] = cur.get("v", 0.0) + b["v"]
             else:
-                slotted.append(entry)
+                slotted.append({"t": slot, "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b["v"]})
         if len(slotted) < self.MIN_HTF_BARS:
             return self.htf_bias
 
@@ -205,6 +255,7 @@ class MultiTimeframeEngine:
 
         self.candles_1h.clear()
         self.candles_1h.extend(slotted[-self.max_htf_bars:])
+        self._ema_prefix_cache = None
         return self.recompute_regime()
 
     def is_entry_permitted(self, side: OrderSide) -> bool:

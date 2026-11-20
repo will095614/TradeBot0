@@ -128,6 +128,10 @@ def main() -> None:
                 app.stop()
             except Exception as e:
                 logger.debug("Clean shutdown encountered error: %s", e)
+            try:
+                atexit.unregister(app.stop)
+            except Exception:
+                pass
             import gc
             import os
             import logging

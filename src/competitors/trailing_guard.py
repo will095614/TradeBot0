@@ -158,21 +158,22 @@ class TrailingGuardCompetitor(BaseCompetitor):
                         )
 
             if signal == "SELL":
-                self.highest_price_since_entry = Decimal("0")
-                self.lowest_price_since_entry = Decimal("0")
-                self.trailing_active = False
+                # Leave trailing state intact until the close actually fills;
+                # lines above clear it automatically once position_qty == 0.
                 return self._close_ticket(broker, timestamp)
 
         # Opening new position
         if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
-            self.highest_price_since_entry = market_price
-            self.lowest_price_since_entry = Decimal("0")
-            self.trailing_active = False
-
-            stop_price = (market_price * (Decimal("1") - self.genome.stop_loss_pct)).quantize(Decimal("0.01"))
+            stop_price = max(Decimal("0.01"), (market_price * (Decimal("1") - self.genome.stop_loss_pct)).quantize(Decimal("0.01")))
+            if stop_price >= market_price:
+                return None
             qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
+
+            self.highest_price_since_entry = market_price
+            self.lowest_price_since_entry = Decimal("0")
+            self.trailing_active = False
 
             return OrderTicket(
                 portfolio_id=self.portfolio_id,
@@ -187,14 +188,16 @@ class TrailingGuardCompetitor(BaseCompetitor):
             )
 
         elif signal == "BUY" and side == OrderSide.SELL and self.portfolio.position_qty == Decimal("0"):
-            self.highest_price_since_entry = Decimal("0")
-            self.lowest_price_since_entry = market_price
-            self.trailing_active = False
-
             stop_price = (market_price * (Decimal("1") + self.genome.stop_loss_pct)).quantize(Decimal("0.01"))
+            if stop_price <= market_price:
+                return None
             qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):
                 return None
+
+            self.highest_price_since_entry = Decimal("0")
+            self.lowest_price_since_entry = market_price
+            self.trailing_active = False
 
             return OrderTicket(
                 portfolio_id=self.portfolio_id,

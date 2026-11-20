@@ -84,10 +84,11 @@ class IndicatorEngineMixin:
                 }
             except (KeyError, TypeError, ValueError):
                 continue
-            self.mtf_engine.update_from_1m_bar(bar)
+            self.mtf_engine.update_from_1m_bar(bar, recompute=False)
             fed += 1
         if fed == 0:
             return 0
+        self.mtf_engine.recompute_regime()
         self.candles_5m = self.mtf_engine.candles_5m
         self.candles_15m = self.mtf_engine.candles_15m
         self.candles_1h = self.mtf_engine.candles_1h
@@ -167,6 +168,7 @@ class IndicatorEngineMixin:
             self.candles.append({"t": minute, "o": o, "h": max(h, o), "l": min(lo, o), "c": c})
             if len(self.candles) > self.max_candles:
                 del self.candles[:-self.max_candles]
+            self._ind_prefix_cache = None
 
         if self.candles:
             self._update_mtf_regimes(self.candles[-1])
@@ -204,31 +206,89 @@ class IndicatorEngineMixin:
             self._orb_range_frozen = True
 
     def _recompute_candle_indicators(self, period: int = 14) -> None:
-        """Wilder RSI(14), ATR(14), ORB range, and session typical-price mean."""
+        """Wilder RSI(14), ATR(14), ORB range, and session typical-price mean (O(1) cached over closed bars)."""
         cs = self.candles
         if not cs:
             return
         self._recompute_orb_range(cs)
-        cum_p = sum((x["h"] + x["l"] + x["c"]) / 3.0 for x in cs)
-        mean_val = cum_p / len(cs)
-        if math.isfinite(mean_val) and mean_val > 0.0:
-            self.live_typical_mean = Decimal(str(round(mean_val, 2)))
 
-        if len(cs) < period + 1:
+        n = len(cs)
+        last_bar = cs[-1]
+        last_typ = (last_bar["h"] + last_bar["l"] + last_bar["c"]) / 3.0
+
+        if n < period + 1:
+            cum_p = sum((x["h"] + x["l"] + x["c"]) / 3.0 for x in cs)
+            mean_val = cum_p / n
+            if math.isfinite(mean_val) and mean_val > 0.0:
+                self.live_typical_mean = Decimal(str(round(mean_val, 2)))
             return
 
-        trs = [
-            max(cs[i]["h"] - cs[i]["l"], abs(cs[i]["h"] - cs[i - 1]["c"]), abs(cs[i]["l"] - cs[i - 1]["c"]))
-            for i in range(1, len(cs))
-        ]
+        prev_bar = cs[-2]
+        prefix_key = (
+            id(cs),
+            n,
+            period,
+            cs[0]["t"],
+            cs[0]["c"],
+            prev_bar["t"],
+            prev_bar["c"],
+            prev_bar["h"],
+            prev_bar["l"],
+        )
+        cache = getattr(self, "_ind_prefix_cache", None)
 
-        closes = [x["c"] for x in cs]
-        avg_g = sum(max(0.0, closes[i] - closes[i - 1]) for i in range(1, period + 1)) / period
-        avg_l = sum(max(0.0, closes[i - 1] - closes[i]) for i in range(1, period + 1)) / period
-        for i in range(period + 1, len(closes)):
-            d = closes[i] - closes[i - 1]
-            avg_g = (avg_g * (period - 1) + max(0.0, d)) / period
-            avg_l = (avg_l * (period - 1) + max(0.0, -d)) / period
+        if n == period + 1:
+            cum_p = sum((x["h"] + x["l"] + x["c"]) / 3.0 for x in cs)
+            mean_val = cum_p / n
+            if math.isfinite(mean_val) and mean_val > 0.0:
+                self.live_typical_mean = Decimal(str(round(mean_val, 2)))
+
+            avg_g = sum(max(0.0, cs[i]["c"] - cs[i - 1]["c"]) for i in range(1, period + 1)) / period
+            avg_l = sum(max(0.0, cs[i - 1]["c"] - cs[i]["c"]) for i in range(1, period + 1)) / period
+            atr = sum(
+                max(cs[i]["h"] - cs[i]["l"], abs(cs[i]["h"] - cs[i - 1]["c"]), abs(cs[i]["l"] - cs[i - 1]["c"]))
+                for i in range(1, period + 1)
+            ) / period
+        else:
+            if cache is not None and cache[0] == prefix_key:
+                _, typ_sum_prev, avg_g_prev, avg_l_prev, atr_prev = cache
+            else:
+                typ_sum_prev = sum((cs[i]["h"] + cs[i]["l"] + cs[i]["c"]) / 3.0 for i in range(n - 1))
+                avg_g_prev = sum(max(0.0, cs[i]["c"] - cs[i - 1]["c"]) for i in range(1, period + 1)) / period
+                avg_l_prev = sum(max(0.0, cs[i - 1]["c"] - cs[i]["c"]) for i in range(1, period + 1)) / period
+                for i in range(period + 1, n - 1):
+                    d = cs[i]["c"] - cs[i - 1]["c"]
+                    avg_g_prev = (avg_g_prev * (period - 1) + max(0.0, d)) / period
+                    avg_l_prev = (avg_l_prev * (period - 1) + max(0.0, -d)) / period
+
+                atr_prev = sum(
+                    max(cs[i]["h"] - cs[i]["l"], abs(cs[i]["h"] - cs[i - 1]["c"]), abs(cs[i]["l"] - cs[i - 1]["c"]))
+                    for i in range(1, period + 1)
+                ) / period
+                for i in range(period + 1, n - 1):
+                    tr_i = max(
+                        cs[i]["h"] - cs[i]["l"],
+                        abs(cs[i]["h"] - cs[i - 1]["c"]),
+                        abs(cs[i]["l"] - cs[i - 1]["c"]),
+                    )
+                    atr_prev = (atr_prev * (period - 1) + tr_i) / period
+
+                self._ind_prefix_cache = (prefix_key, typ_sum_prev, avg_g_prev, avg_l_prev, atr_prev)
+
+            mean_val = (typ_sum_prev + last_typ) / n
+            if math.isfinite(mean_val) and mean_val > 0.0:
+                self.live_typical_mean = Decimal(str(round(mean_val, 2)))
+
+            d_last = last_bar["c"] - prev_bar["c"]
+            avg_g = (avg_g_prev * (period - 1) + max(0.0, d_last)) / period
+            avg_l = (avg_l_prev * (period - 1) + max(0.0, -d_last)) / period
+            tr_last = max(
+                last_bar["h"] - last_bar["l"],
+                abs(last_bar["h"] - prev_bar["c"]),
+                abs(last_bar["l"] - prev_bar["c"]),
+            )
+            atr = (atr_prev * (period - 1) + tr_last) / period
+
         if avg_l == 0 and avg_g == 0:
             rsi = 50.0
         elif avg_l == 0:
@@ -238,10 +298,6 @@ class IndicatorEngineMixin:
         else:
             rs = avg_g / avg_l
             rsi = 100.0 - (100.0 / (1.0 + rs))
-
-        atr = sum(trs[:period]) / period
-        for tr in trs[period:]:
-            atr = (atr * (period - 1) + tr) / period
 
         if math.isfinite(rsi):
             self.live_rsi = Decimal(str(round(rsi, 2)))
