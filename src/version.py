@@ -24,6 +24,7 @@ V2.8.5 the same day: lazy article fades in when it loads;
 V2.8.7 the same day: article re-render jitter fixed + articles preload while collapsed;
 V1.0.0 (2026-11-18, first public GitHub release): version numbering reset only, code and features unchanged from V2.8.7);
 V2.0.0 (2026-11-19): Full BUG-01..BUG-17 resolution, LiveArenaEngine decomposition into 4 cohesive mixins, non-blocking SQLite/evolution lock narrowing, Student-t/bootstrap antithetic Monte Carlo EV gate, and complete ETH/USD docs & regression test suite.
+V2.1.0 (2026-11-20): Setup wizard simplified to Google Gemini only; OmniRoute npm install progress bar tracks real written bytes and estimated remaining time.
 Going forward each new batch bumps the matching number by 1 (new
 feature group -> Y, fix / optimization batch -> Z, breaking change
 -> X with Y and Z reset to 0). The comparison helper accepts an
@@ -31,4 +32,4 @@ optional ``v``/``V`` prefix and plain ``X.Y.Z`` too.
 """
 
 APP_NAME = "TradeBot0"
-APP_VERSION = "V2.0.0"
+APP_VERSION = "V2.1.0"

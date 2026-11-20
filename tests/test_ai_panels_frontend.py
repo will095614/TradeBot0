@@ -8,8 +8,11 @@ _ASSETS = Path(__file__).resolve().parents[1] / "src" / "gui" / "assets"
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
 _KEY_URLS = (
-    "https://build.nvidia.com/settings/api-keys",
     "https://aistudio.google.com/apikey",
+)
+
+_REMOVED_KEY_URLS = (
+    "https://build.nvidia.com/settings/api-keys",
     "https://console.groq.com/keys",
     "https://openrouter.ai/settings/keys",
 )
@@ -40,13 +43,17 @@ def test_wizard_key_cards_plain_wording_and_links():
         "Global Multi-Model Unified Router",
     ):
         assert old_hint not in html
-    assert html.count("News reading and market analysis.") == 4
+    assert html.count("News reading and market analysis.") == 1
     for url in _KEY_URLS:
         assert url in html
+    for url in _REMOVED_KEY_URLS:
+        assert url not in html
     assert "Get a key" in html
-    assert "Start with one key if you like" in html
-    assert html.count('class="setup-key-help"') == 4
-    assert html.count('class="setup-key-help-popup"') == 4
+    assert "One key is all you need." in html
+    assert "Start with one key if you like" not in html
+    assert "multi-provider" not in html
+    assert html.count('class="setup-key-help"') == 1
+    assert html.count('class="setup-key-help-popup"') == 1
     assert "Lets TradeBot0 ask" in html
 
 
@@ -170,6 +177,8 @@ def test_key_page_links_use_allowlisted_bridge():
     assert "def open_external_url" in dash
     for url in _KEY_URLS:
         assert url in dash
+    for url in _REMOVED_KEY_URLS:
+        assert url not in dash
     assert "open_external_url" in js
     assert "openProviderKeyPage" in js
 

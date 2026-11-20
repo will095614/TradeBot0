@@ -4131,10 +4131,7 @@ function updateUiClockDisplay() {
 
     // Pre-populate configured providers from bridge
     const provIdMap = {
-      nvidia: 'Nvidia',
-      gemini: 'Gemini',
-      groq: 'Groq',
-      openrouter: 'OpenRouter'
+      gemini: 'Gemini'
     };
 
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
@@ -4419,8 +4416,9 @@ function updateUiClockDisplay() {
           fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
           prog.setAttribute('aria-valuenow', String(pct));
         } else {
-          // npm reports no trustworthy percent: an honest indeterminate
-          // bar, never a fabricated number.
+          // No trustworthy percent available (e.g. download without
+          // Content-Length): show an honest indeterminate bar, never a
+          // fabricated number.
           fill.classList.add('indeterminate');
           fill.style.width = '40%';
           prog.removeAttribute('aria-valuenow');
@@ -4444,9 +4442,14 @@ function updateUiClockDisplay() {
       if (btn) btn.disabled = false;
       refreshGatewayAvailability();
     } else {
-      // In progress: append the real percent when the backend has one
-      // (Node.js download); otherwise show the phase message as-is.
-      setWizardBanner(pct !== null ? (msg + ' ' + pct + '%') : (msg || 'Installing...'), 'info');
+      // In progress: append the percent when the backend has one and
+      // the message does not already embed it (e.g. OmniRoute ETA messages).
+      const bannerText = pct !== null
+        ? (new RegExp('(?:^|\\D)' + pct + '%').test(msg)
+          ? msg
+          : ((msg || 'Installing...') + ' ' + pct + '%'))
+        : (msg || 'Installing...');
+      setWizardBanner(bannerText, 'info');
     }
   }
 
@@ -4526,10 +4529,7 @@ function updateUiClockDisplay() {
 
   async function testProviderKey(provider) {
     const provIdMap = {
-      nvidia: 'Nvidia',
-      gemini: 'Gemini',
-      groq: 'Groq',
-      openrouter: 'OpenRouter'
+      gemini: 'Gemini'
     };
     const normKey = (provider || '').toLowerCase();
     const cap = provIdMap[normKey] || (provider.charAt(0).toUpperCase() + provider.slice(1));
@@ -4573,10 +4573,7 @@ function updateUiClockDisplay() {
     const saveBtn = document.getElementById('btnSaveAndLaunch');
 
     const keys = {
-      nvidia: (document.getElementById('keyNvidia')?.value || '').trim(),
       gemini: (document.getElementById('keyGemini')?.value || '').trim(),
-      groq: (document.getElementById('keyGroq')?.value || '').trim(),
-      openrouter: (document.getElementById('keyOpenRouter')?.value || '').trim(),
     };
 
     // Admin password (item 10 A1): required when the backend says so, or

@@ -730,33 +730,13 @@
         </div>
         <h2 class="ss-modal-title" id="setupWizardTitle">TradeBot0 Gateway Setup</h2>
         <p class="ss-modal-desc">
-          Configure multi-provider LLM API keys for macro news intelligence, sentiment filtering, and real-time regime shifts.
+          Add your Google Gemini API key so TradeBot0 can read the news and judge the market.
         </p>
       </div>
 
       <div class="setup-wizard-body">
         <div class="setup-wizard-column">
-        <div class="setup-keys-intro">Start with one key if you like — you can add the others later.</div>
-        <!-- NVIDIA NIM -->
-        <div class="setup-provider-card">
-          <div class="setup-provider-meta">
-            <span class="setup-provider-name">NVIDIA NIM API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask NVIDIA NIM to read the news and judge the market.</span></button></span>
-            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://build.nvidia.com/settings/api-keys'); return false;">Get a key</a></span>
-          </div>
-          <div class="setup-input-group">
-            <input type="password" id="keyNvidia" class="setup-key-input num" placeholder="nvapi-..." autocomplete="off" spellcheck="false" />
-            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyNvidia', this)" title="Show / Hide Key">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
-            </button>
-            <button type="button" class="btn lg-btn setup-test-btn" id="btnTestNvidia" onclick="testProviderKey('nvidia')">
-              <span>Test</span>
-            </button>
-          </div>
-          <div class="setup-provider-status" id="statusNvidia">
-            <span class="setup-status-pill neutral">Not added</span>
-          </div>
-        </div>
-
+        <div class="setup-keys-intro">One key is all you need.</div>
         <!-- Google Gemini -->
         <div class="setup-provider-card">
           <div class="setup-provider-meta">
@@ -773,46 +753,6 @@
             </button>
           </div>
           <div class="setup-provider-status" id="statusGemini">
-            <span class="setup-status-pill neutral">Not added</span>
-          </div>
-        </div>
-
-        <!-- Groq -->
-        <div class="setup-provider-card">
-          <div class="setup-provider-meta">
-            <span class="setup-provider-name">Groq API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask Groq to read the news and judge the market.</span></button></span>
-            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://console.groq.com/keys'); return false;">Get a key</a></span>
-          </div>
-          <div class="setup-input-group">
-            <input type="password" id="keyGroq" class="setup-key-input num" placeholder="gsk_..." autocomplete="off" spellcheck="false" />
-            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyGroq', this)" title="Show / Hide Key">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
-            </button>
-            <button type="button" class="btn lg-btn setup-test-btn" id="btnTestGroq" onclick="testProviderKey('groq')">
-              <span>Test</span>
-            </button>
-          </div>
-          <div class="setup-provider-status" id="statusGroq">
-            <span class="setup-status-pill neutral">Not added</span>
-          </div>
-        </div>
-
-        <!-- OpenRouter -->
-        <div class="setup-provider-card">
-          <div class="setup-provider-meta">
-            <span class="setup-provider-name">OpenRouter API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask OpenRouter to read the news and judge the market.</span></button></span>
-            <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://openrouter.ai/settings/keys'); return false;">Get a key</a></span>
-          </div>
-          <div class="setup-input-group">
-            <input type="password" id="keyOpenRouter" class="setup-key-input num" placeholder="sk-or-v1-..." autocomplete="off" spellcheck="false" />
-            <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyOpenRouter', this)" title="Show / Hide Key">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
-            </button>
-            <button type="button" class="btn lg-btn setup-test-btn" id="btnTestOpenRouter" onclick="testProviderKey('openrouter')">
-              <span>Test</span>
-            </button>
-          </div>
-          <div class="setup-provider-status" id="statusOpenRouter">
             <span class="setup-status-pill neutral">Not added</span>
           </div>
         </div>

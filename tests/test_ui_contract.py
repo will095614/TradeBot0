@@ -505,9 +505,9 @@ def _js_referenced_ids(js_text):
     - Literal ``getElementById('...')`` calls.
     - Template-literal ``getElementById(`prefix${...}`)`` calls, expanded
       with the provider suffixes from the ``provIdMap`` literals in the
-      same file (Nvidia / Gemini / Groq / OpenRouter) -- this is how
-      ``statusNvidia`` et al. are reached; a rename on either side
-      breaks the expansion and fails the test.
+      same file (Gemini) -- this is how ``statusGemini`` et al. are
+      reached; a rename on either side breaks the expansion and fails
+      the test.
     - ``querySelector(All)('#id...')`` (the ``:hover`` pseudo-class
       selector yields its base id, which is a real reference).
     - First-argument literals of ``syncSegThumb`` / ``setVesselLevel``,
@@ -559,3 +559,66 @@ def test_html_ids_have_owner_or_are_documented_dead():
         "index.html; remove them from DOCUMENTED_DECORATIVE_IDS: "
         f"{stale}"
     )
+
+
+def test_wizard_gemini_only_contract_and_url_allowlist(tmp_path):
+    """Task 1 contract: wizard HTML exposes Gemini only and bridge URL
+    allowlist permits only the Google Gemini key page."""
+    import webbrowser
+    from unittest.mock import patch
+
+    from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
+    from src.intelligence.config_manager import ConfigManager
+    from src.intelligence.gateway_supervisor import GatewaySupervisor
+
+    html = _read(_ASSETS / "index.html")
+    wizard_start = html.index('id="setupWizardModal"')
+    wizard_end = html.index('id="shutdownModal"')
+    wizard_html = html[wizard_start:wizard_end]
+
+    assert 'id="keyGemini"' in wizard_html
+    assert 'id="btnTestGemini"' in wizard_html
+    assert 'id="statusGemini"' in wizard_html
+    for removed_id in (
+        "keyNvidia",
+        "keyGroq",
+        "keyOpenRouter",
+        "btnTestNvidia",
+        "btnTestGroq",
+        "btnTestOpenRouter",
+        "statusNvidia",
+        "statusGroq",
+        "statusOpenRouter",
+    ):
+        assert removed_id not in wizard_html
+    assert wizard_html.count('class="setup-provider-card"') == 2
+    assert wizard_html.count("setup-test-btn") == 1
+
+    dash = ArenaDashboard()
+    dash.config_manager = ConfigManager(
+        data_dir=tmp_path / "data",
+        omni_env_path=tmp_path / ".omniroute" / ".env",
+    )
+    dash.gateway_supervisor = GatewaySupervisor(
+        daemon_log_path=tmp_path / "logs" / "omniroute_daemon.log",
+        install_log_path=tmp_path / "logs" / "omniroute_install.log",
+    )
+    bridge = _ArenaBridgeApi(dash)
+    try:
+        with patch.object(webbrowser, "open") as mock_open:
+            ok_res = bridge.open_external_url("https://aistudio.google.com/apikey")
+            assert ok_res["status"] == "ok"
+            mock_open.assert_called_once_with("https://aistudio.google.com/apikey")
+
+            mock_open.reset_mock()
+            for blocked_url in (
+                "https://build.nvidia.com/settings/api-keys",
+                "https://console.groq.com/keys",
+                "https://openrouter.ai/settings/keys",
+            ):
+                err_res = bridge.open_external_url(blocked_url)
+                assert err_res["status"] == "error"
+                assert "not allowed" in err_res["message"].lower()
+            mock_open.assert_not_called()
+    finally:
+        dash.engine.stop()

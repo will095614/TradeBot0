@@ -298,16 +298,13 @@ class _ArenaBridgeApi:
     def open_external_url(self, url: str) -> Dict[str, Any]:
         """Opens an approved provider key page in the system browser.
 
-        AI panels (W2): the setup wizard's "Get a key" links. Only the
-        four provider key pages are allowed; anything else is refused
+        AI panels (W2): the setup wizard's "Get a key" link. Only the
+        Google Gemini API key page is allowed; anything else is refused
         and never opened. Never raises.
         """
         import webbrowser
 
         allowed = {
-            "https://openrouter.ai/settings/keys",
-            "https://console.groq.com/keys",
-            "https://build.nvidia.com/settings/api-keys",
             "https://aistudio.google.com/apikey",
         }
         if url not in allowed:

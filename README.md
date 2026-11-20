@@ -33,7 +33,7 @@ TradeBot0 是一套在本機運行的 ETH/USD 多策略模擬交易軟體。系�
 2. 因安裝檔未包含商業數位簽章，Windows SmartScreen 可能顯示提示視窗，點擊「其他資訊」並選擇「仍要執行」即可繼續。
 3. 首次啟動將顯示設定精靈：
    - 設定本機管理密碼。
-   - 輸入 AI 服務的 API Key（支援 NVIDIA NIM、Google Gemini、Groq、OpenRouter）。精靈會自動安裝並啟動所需的 AI 服務。
+   - 輸入 Google Gemini 的 API Key。精靈會自動安裝並啟動所需的 AI 服務。
 
 ### 2. 原始碼執行（開發者）
 

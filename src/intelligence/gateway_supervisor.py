@@ -42,6 +42,16 @@ DAEMON_LOG_FILENAME = "omniroute_daemon.log"
 RUNTIME_NODE_VERSION = "24.21.0"
 RUNTIME_NODE_ZIP_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
 RUNTIME_INSTALL_LOG_FILENAME = "omniroute_install.log"
+# Documented approximate on-disk size of the npm-installed omniroute
+# package (~2.6 GB / ~164k files on Windows; see TradeBot0.iss). Used
+# during `npm install` to compute an estimated 0-99% progress value from
+# real bytes written into <runtime>/omniroute; 100% is reserved for real
+# success (`done`).
+RUNTIME_OMNIROUTE_EXPECTED_BYTES = int(2.6 * 1024 * 1024 * 1024)
+RUNTIME_OMNIROUTE_PROGRESS_INTERVAL_SEC = 1.0
+RUNTIME_OMNIROUTE_ETA_MIN_ELAPSED_SEC = 10.0
+RUNTIME_OMNIROUTE_ETA_MAX_SEC = 3600.0
+RUNTIME_OMNIROUTE_BASE_MESSAGE = "Installing OmniRoute (about 3-5 min, ~2.6 GB)..."
 
 # Gateway auto-restart watchdog (gateway diagnosis workstream): the
 # frontend polls state once a second; the watchdog probes the gateway
@@ -298,11 +308,13 @@ class GatewaySupervisor:
     def install_runtime_status(self) -> Dict[str, Any]:
         """Current one-click install state for the wizard poll loop.
 
-        progress is a real 0-100 percent only while the Node.js zip is
-        downloading (Content-Length bytes received / total); it is None in
-        every other phase because npm reports no trustworthy percent, so
-        the frontend shows an indeterminate bar there instead of a
-        fabricated number.
+        progress is 0-100 during the Node.js zip download (real
+        Content-Length bytes received / total, or None when the server
+        sends no Content-Length) and an estimated 0-99 during the
+        OmniRoute npm install (real bytes written into
+        <runtime>/omniroute divided by the documented ~2.6 GB expected
+        total, clamped at 99). 100 appears only when the install
+        succeeds ("done").
         """
         with self._install_lock:
             return {
@@ -329,11 +341,14 @@ class GatewaySupervisor:
         except Exception as e:
             logger.debug("Failed to write install log: %s", e)
 
-    def _set_install_progress(self, progress: Optional[int]) -> None:
-        """Updates only the download percent (no log spam: the Node.js zip
-        reports once per MB read)."""
+    def _set_install_progress(
+        self, progress: Optional[int], message: Optional[str] = None
+    ) -> None:
+        """Updates the install percent (and optionally message) without log spam."""
         with self._install_lock:
             self._install_progress = progress
+            if message is not None:
+                self.install_message = message
 
     def start_runtime_install(self) -> Dict[str, Any]:
         """Starts the one-click Node.js + OmniRoute install in a background
@@ -352,7 +367,7 @@ class GatewaySupervisor:
             self._install_cancel_event.clear()
             self.install_status = "downloading-node" if not self.node_available() else "installing-omniroute"
             self.install_message = "Starting installation in the background..."
-            self._install_progress = None
+            self._install_progress = 0 if self.install_status == "installing-omniroute" else None
             self._install_phase = (
                 "Downloading Node.js" if self.install_status == "downloading-node"
                 else "Installing OmniRoute"
@@ -431,7 +446,12 @@ class GatewaySupervisor:
             npm_bin = self._resolve_npm_bin(node_bin)
             if npm_bin is None:
                 raise RuntimeError("npm was not found next to Node.js.")
-            self._set_install_status("installing-omniroute", "Installing OmniRoute (about 3-5 min, ~2.6 GB)...", phase="Installing OmniRoute")
+            self._set_install_status(
+                "installing-omniroute",
+                RUNTIME_OMNIROUTE_BASE_MESSAGE,
+                progress=0,
+                phase="Installing OmniRoute",
+            )
             self._npm_install_omniroute(npm_bin, base)
             if self._install_cancel_event.is_set():
                 raise _InstallCancelledError("Installation cancelled.")
@@ -507,6 +527,68 @@ class GatewaySupervisor:
         self._set_install_progress(100)
         return str(node_exe)
 
+    @staticmethod
+    def _measure_dir_bytes(
+        path: Path, cancel_event: Optional[threading.Event] = None
+    ) -> int:
+        """Measures total bytes of regular files under `path` via os.scandir.
+
+        Skips symlinks so npm .bin junctions cannot loop, tolerates
+        concurrent file/dir churn (OSError) while npm extracts, and checks
+        cancel_event periodically so cancellation is never delayed.
+        """
+        total = 0
+        stack = [os.fspath(path)]
+        dirs_visited = 0
+        while stack:
+            if cancel_event is not None and dirs_visited % 256 == 0 and cancel_event.is_set():
+                break
+            current = stack.pop()
+            dirs_visited += 1
+            try:
+                with os.scandir(current) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_symlink():
+                                continue
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(entry.path)
+                            elif entry.is_file(follow_symlinks=False):
+                                total += entry.stat(follow_symlinks=False).st_size
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+        return total
+
+    @staticmethod
+    def _format_omniroute_progress_message(
+        pct: int,
+        written_bytes: int,
+        total_bytes: int,
+        elapsed_sec: float,
+        expected_bytes: int,
+    ) -> str:
+        """Formats the OmniRoute install status banner message with an ETA
+        once enough elapsed time and real byte throughput exist."""
+        if elapsed_sec < RUNTIME_OMNIROUTE_ETA_MIN_ELAPSED_SEC or pct < 1:
+            return RUNTIME_OMNIROUTE_BASE_MESSAGE
+        remaining_bytes = expected_bytes - total_bytes
+        if written_bytes <= 0 or remaining_bytes <= 0:
+            return f"Installing OmniRoute — {pct}%"
+        throughput = written_bytes / elapsed_sec
+        if throughput <= 0:
+            return f"Installing OmniRoute — {pct}%"
+        remaining_sec = remaining_bytes / throughput
+        if remaining_sec <= 0 or remaining_sec > RUNTIME_OMNIROUTE_ETA_MAX_SEC:
+            return f"Installing OmniRoute — {pct}%"
+        rounded_sec = max(1, int(round(remaining_sec)))
+        if rounded_sec < 60:
+            eta = f"~{rounded_sec} s left"
+        else:
+            eta = f"~{max(1, int(round(remaining_sec / 60.0)))} min left"
+        return f"Installing OmniRoute — {pct}% ({eta})"
+
     def _npm_install_omniroute(self, npm_bin: str, base: Path) -> None:
         """Runs `npm install --prefix <runtime>/omniroute omniroute`.
         npm 11+ blocks postinstall scripts by default, so the documented
@@ -514,6 +596,13 @@ class GatewaySupervisor:
         if npm rejects the flag (older npm), retry once without it."""
         prefix = base / "omniroute"
         prefix.mkdir(parents=True, exist_ok=True)
+        expected_bytes = max(1, int(RUNTIME_OMNIROUTE_EXPECTED_BYTES))
+        phase_start = time.monotonic()
+        initial_bytes = self._measure_dir_bytes(
+            prefix, cancel_event=self._install_cancel_event
+        )
+        best_pct = min(99, int(initial_bytes * 100 / expected_bytes))
+        self._set_install_progress(best_pct)
         allow = "--allow-scripts=omniroute,better-sqlite3,keytar,tls-client-node,onnxruntime-node,sharp,core-js,esbuild,@parcel/watcher,@swc/core,protobufjs,koffi"
         attempts = [
             [npm_bin, "install", "--prefix", str(prefix), allow, "omniroute"],
@@ -544,6 +633,7 @@ class GatewaySupervisor:
                         self._install_proc = proc
                     try:
                         deadline = time.monotonic() + 1800
+                        next_measure = 0.0
                         while True:
                             if self._install_cancel_event.is_set():
                                 self._terminate_install_proc(proc)
@@ -551,9 +641,32 @@ class GatewaySupervisor:
                             rc = proc.poll()
                             if rc is not None:
                                 break
-                            if time.monotonic() > deadline:
+                            now = time.monotonic()
+                            if now > deadline:
                                 self._terminate_install_proc(proc)
                                 raise RuntimeError("npm install timed out after 30 minutes.")
+                            if now >= next_measure:
+                                scan_start = time.monotonic()
+                                size = self._measure_dir_bytes(
+                                    prefix, cancel_event=self._install_cancel_event
+                                )
+                                if self._install_cancel_event.is_set():
+                                    self._terminate_install_proc(proc)
+                                    raise _InstallCancelledError("Installation cancelled.")
+                                scan_done = time.monotonic()
+                                raw_pct = min(99, int(size * 100 / expected_bytes))
+                                best_pct = max(best_pct, raw_pct)
+                                msg = self._format_omniroute_progress_message(
+                                    best_pct,
+                                    max(0, size - initial_bytes),
+                                    size,
+                                    scan_done - phase_start,
+                                    expected_bytes,
+                                )
+                                self._set_install_progress(best_pct, message=msg)
+                                interval = max(0.0, float(RUNTIME_OMNIROUTE_PROGRESS_INTERVAL_SEC))
+                                scan_dur = max(0.0, scan_done - scan_start)
+                                next_measure = scan_done + max(interval, scan_dur * 2.0)
                             time.sleep(0.25)
                     finally:
                         with self._install_lock:

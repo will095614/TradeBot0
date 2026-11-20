@@ -12,7 +12,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
-from src.intelligence.config_manager import ConfigManager, DEFAULT_SYSTEM_CONFIG
+from src.intelligence.config_manager import (
+    ConfigManager,
+    DEFAULT_SYSTEM_CONFIG,
+    PROVIDER_ENV_MAP,
+)
 from src.intelligence.gateway_supervisor import GatewaySupervisor
 
 
@@ -192,12 +196,16 @@ def test_gateway_supervisor_port_and_health_conflict():
 # 3. Stepwise Erroneous-Then-Valid Simulation Tests
 # =============================================================================
 
-def test_bridge_stepwise_simulation_erroneous_then_valid(tmp_path: Path):
+def test_bridge_stepwise_simulation_erroneous_then_valid(tmp_path: Path, monkeypatch):
     """
     Step-by-step interactive simulation:
     Attempts various invalid entries first for each provider, catches defensive feedback,
     and then enters valid keys and confirms seamless transition.
     """
+    for env_var in PROVIDER_ENV_MAP.values():
+        monkeypatch.setenv(env_var, "")
+        monkeypatch.delenv(env_var, raising=False)
+
     # Set up isolated dashboard environment
     dash = ArenaDashboard()
     dash.config_manager = ConfigManager(
@@ -256,12 +264,9 @@ def test_bridge_stepwise_simulation_erroneous_then_valid(tmp_path: Path):
         r_or_ok = bridge.test_api_key("openrouter", "sk-or-v1-correct-key-55555555")
         assert r_or_ok["ok"] is True
 
-    # --- Step 5: Save & Launch Gateway ---
+    # --- Step 5: Save & Launch Gateway (wizard sends Gemini key only) ---
     keys_payload = {
-        "deepseek": "sk-correct-key-22222222",
         "gemini": "AIzaSy-correct-gemini-key-33333333",
-        "groq": "gsk_correct_key_44444444",
-        "openrouter": "sk-or-v1-correct-key-55555555",
     }
     # start_watchdog is mocked: a real watchdog thread must never start in
     # tests — a delayed first tick could outlive these mocks and spawn a real
@@ -277,15 +282,76 @@ def test_bridge_stepwise_simulation_erroneous_then_valid(tmp_path: Path):
     # Verify state after setup completion
     st_final = bridge.get_setup_status()
     assert st_final["onboarding_completed"] is True
-    assert "deepseek" in st_final["configured_providers"]
-    assert "gemini" in st_final["configured_providers"]
-    assert "groq" in st_final["configured_providers"]
-    assert "openrouter" in st_final["configured_providers"]
+    assert st_final["configured_providers"] == ["gemini"]
+    env_map = dash.config_manager.read_omniroute_env()
+    assert env_map["GEMINI_API_KEY"] == "AIzaSy-correct-gemini-key-33333333"
+    assert env_map["INITIAL_PASSWORD"] == "TestAdmin123"
+    for absent_var in ("NVIDIA_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
+        assert absent_var not in env_map
 
     # Gateway diagnosis workstream: save_and_launch_gateway starts the
     # auto-restart watchdog; stop it so no thread outlives the test.
     dash.gateway_supervisor.stop_watchdog()
     dash.engine.stop()
+
+
+def test_gemini_only_save_preserves_preexisting_keys_and_allows_zero_keys(tmp_path: Path, monkeypatch):
+    """Gemini-only wizard saves preserve existing provider keys in ~/.omniroute/.env,
+    and saving with zero keys + admin password still completes onboarding."""
+    for env_var in PROVIDER_ENV_MAP.values():
+        monkeypatch.setenv(env_var, "")
+        monkeypatch.delenv(env_var, raising=False)
+
+    env_path = tmp_path / ".omniroute" / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(
+        "NVIDIA_API_KEY=nvapi-existing-1234\nGROQ_API_KEY=gsk_existing_1234\n",
+        encoding="utf-8",
+    )
+
+    dash = ArenaDashboard()
+    dash.config_manager = ConfigManager(data_dir=tmp_path / "data", omni_env_path=env_path)
+    dash.gateway_supervisor = GatewaySupervisor()
+    bridge = _ArenaBridgeApi(dash)
+    try:
+        with patch.object(dash.gateway_supervisor, "is_port_open", return_value=True), \
+             patch.object(dash.gateway_supervisor, "probe_health", return_value=(True, {"status": "ok"})), \
+             patch.object(dash.gateway_supervisor, "start_watchdog", return_value=True):
+            res = bridge.save_and_launch_gateway(
+                {"gemini": "AIzaSy-test-gemini-9999"}, admin_password="TestAdmin123"
+            )
+        assert res["ok"] is True
+        configured = bridge.get_setup_status()["configured_providers"]
+        assert "gemini" in configured
+        assert "nvidia" in configured
+        assert "groq" in configured
+    finally:
+        dash.gateway_supervisor.stop_watchdog()
+        dash.engine.stop()
+
+    # Zero keys + admin password on a fresh env must still succeed.
+    for env_var in PROVIDER_ENV_MAP.values():
+        monkeypatch.setenv(env_var, "")
+        monkeypatch.delenv(env_var, raising=False)
+    dash2 = ArenaDashboard()
+    dash2.config_manager = ConfigManager(
+        data_dir=tmp_path / "data2",
+        omni_env_path=tmp_path / ".omniroute2" / ".env",
+    )
+    dash2.gateway_supervisor = GatewaySupervisor()
+    bridge2 = _ArenaBridgeApi(dash2)
+    try:
+        with patch.object(dash2.gateway_supervisor, "is_port_open", return_value=True), \
+             patch.object(dash2.gateway_supervisor, "probe_health", return_value=(True, {"status": "ok"})), \
+             patch.object(dash2.gateway_supervisor, "start_watchdog", return_value=True):
+            res2 = bridge2.save_and_launch_gateway({}, admin_password="TestAdmin123")
+        assert res2["ok"] is True
+        st2 = bridge2.get_setup_status()
+        assert st2["onboarding_completed"] is True
+        assert st2["configured_providers"] == []
+    finally:
+        dash2.gateway_supervisor.stop_watchdog()
+        dash2.engine.stop()
 
 
 # =============================================================================

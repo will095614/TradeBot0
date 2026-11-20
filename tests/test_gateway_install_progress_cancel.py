@@ -1,9 +1,10 @@
 """Tests for the setup-wizard install progress bar and cancel path.
 
-Covers gateway_supervisor progress reporting (real percent only for the
-Node.js download; the npm phase is honestly indeterminate) and the
-cancel_runtime_install path (worker stops, partial artifacts removed,
-omniroute_installed() never misreports a half-installed package).
+Covers gateway_supervisor progress reporting (real Content-Length percent
+for the Node.js download, indeterminate when Content-Length is absent, and
+estimated 0-99% from real written bytes during the OmniRoute npm install)
+and the cancel_runtime_install path (worker stops, partial artifacts
+removed, omniroute_installed() never misreports a half-installed package).
 All network/subprocess access is mocked; zero real downloads.
 """
 import io
@@ -314,3 +315,206 @@ def test_wizard_two_column_fixed_layout():
     assert "-webkit-line-clamp: 2" in note_rule
     assert "min-height: 29px" in note_rule
     assert "-webkit-line-clamp: 2" in banner_rule
+
+
+def _setup_npm_only_env(tmp_path, monkeypatch, expected_bytes):
+    import src.intelligence.gateway_supervisor as gs_mod
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(GatewaySupervisor, "_resolve_node_bin",
+                        classmethod(lambda cls: str(tmp_path / "node.exe")))
+    monkeypatch.setattr(GatewaySupervisor, "_resolve_npm_bin",
+                        classmethod(lambda cls, node_bin=None: str(tmp_path / "npm.cmd")))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(gs_mod, "RUNTIME_OMNIROUTE_EXPECTED_BYTES", expected_bytes)
+    monkeypatch.setattr(gs_mod, "RUNTIME_OMNIROUTE_PROGRESS_INTERVAL_SEC", 0.02)
+    return tmp_path / "TradeBot0" / "runtime"
+
+
+def _wait_until(pred, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_npm_install_reports_growing_determinate_progress(tmp_path, monkeypatch):
+    """During installing-omniroute, progress tracks real written bytes in [0, 99],
+    is None-free and non-decreasing, and reaches 100 only at done."""
+    sup = _make_supervisor(tmp_path)
+    runtime = _setup_npm_only_env(tmp_path, monkeypatch, expected_bytes=10_000)
+    prefix = runtime / "omniroute"
+
+    observed_during_npm = []
+    orig_set_progress = sup._set_install_progress
+
+    def spy_set_progress(progress, message=None):
+        orig_set_progress(progress, message=message)
+        st = sup.install_runtime_status()
+        if st["status"] == "installing-omniroute":
+            observed_during_npm.append(st["progress"])
+
+    monkeypatch.setattr(sup, "_set_install_progress", spy_set_progress)
+    monkeypatch.setattr(sup, "start_daemon", lambda max_wait_sec=30.0: (True, "ok"))
+
+    class _StagedNpmProc:
+        def __init__(self, *args, **kwargs):
+            self.returncode = None
+            self.pid = 22345
+            self._worker = threading.Thread(target=self._populate, daemon=True)
+            self._worker.start()
+
+        def _populate(self):
+            (prefix / "pkg_a.bin").write_bytes(b"a" * 2_000)
+            assert _wait_until(lambda: (sup.install_runtime_status()["progress"] or 0) >= 20)
+            (prefix / "pkg_b.bin").write_bytes(b"b" * 3_000)
+            assert _wait_until(lambda: (sup.install_runtime_status()["progress"] or 0) >= 50)
+            (prefix / "pkg_c.bin").write_bytes(b"c" * 3_000)
+            assert _wait_until(lambda: (sup.install_runtime_status()["progress"] or 0) >= 80)
+            mjs = prefix / "node_modules" / "omniroute" / "bin" / "omniroute.mjs"
+            mjs.parent.mkdir(parents=True, exist_ok=True)
+            mjs.write_text("// ready", encoding="utf-8")
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    with patch("subprocess.Popen", _StagedNpmProc):
+        sup._run_runtime_install()
+
+    assert observed_during_npm, "expected progress updates during installing-omniroute"
+    assert all(isinstance(p, int) for p in observed_during_npm)
+    assert all(0 <= p <= 99 for p in observed_during_npm)
+    assert observed_during_npm == sorted(observed_during_npm)
+    assert len(set(observed_during_npm)) >= 3
+    final = sup.install_runtime_status()
+    assert final["status"] == "done"
+    assert final["progress"] == 100
+
+
+def test_npm_install_clamps_at_99_until_exit_zero(tmp_path, monkeypatch):
+    """If written bytes exceed the ~2.6 GB estimate, progress clamps at 99 until
+    npm exits 0; 100 appears only on real success (done)."""
+    sup = _make_supervisor(tmp_path)
+    runtime = _setup_npm_only_env(tmp_path, monkeypatch, expected_bytes=1_000)
+    prefix = runtime / "omniroute"
+    mid_status = {}
+
+    monkeypatch.setattr(sup, "start_daemon", lambda max_wait_sec=30.0: (True, "ok"))
+
+    class _OverflowProc:
+        def __init__(self, *args, **kwargs):
+            self.returncode = None
+            self.pid = 22346
+            threading.Thread(target=self._populate, daemon=True).start()
+
+        def _populate(self):
+            (prefix / "oversize.bin").write_bytes(b"x" * 2_500)
+            assert _wait_until(lambda: sup.install_runtime_status()["progress"] == 99)
+            mid_status.update(sup.install_runtime_status())
+            mjs = prefix / "node_modules" / "omniroute" / "bin" / "omniroute.mjs"
+            mjs.parent.mkdir(parents=True, exist_ok=True)
+            mjs.write_text("// ready", encoding="utf-8")
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    with patch("subprocess.Popen", _OverflowProc):
+        sup._run_runtime_install()
+
+    assert mid_status["status"] == "installing-omniroute"
+    assert mid_status["progress"] == 99
+    final = sup.install_runtime_status()
+    assert final["status"] == "done"
+    assert final["progress"] == 100
+
+
+def test_npm_install_progress_monotonic_if_dir_shrinks(tmp_path, monkeypatch):
+    """Temporary staging deletions by npm must never make progress go backwards."""
+    sup = _make_supervisor(tmp_path)
+    runtime = _setup_npm_only_env(tmp_path, monkeypatch, expected_bytes=1_000)
+    prefix = runtime / "omniroute"
+    after_shrink_samples = []
+
+    monkeypatch.setattr(sup, "start_daemon", lambda max_wait_sec=30.0: (True, "ok"))
+
+    class _ShrinkProc:
+        def __init__(self, *args, **kwargs):
+            self.returncode = None
+            self.pid = 22347
+            threading.Thread(target=self._populate, daemon=True).start()
+
+        def _populate(self):
+            big = prefix / "stage.bin"
+            big.write_bytes(b"z" * 600)
+            assert _wait_until(lambda: (sup.install_runtime_status()["progress"] or 0) >= 60)
+            big.write_bytes(b"z" * 200)
+            # Let at least one more measurement poll tick run while directory is smaller.
+            for _ in range(8):
+                time.sleep(0.05)
+                after_shrink_samples.append(sup.install_runtime_status()["progress"])
+            mjs = prefix / "node_modules" / "omniroute" / "bin" / "omniroute.mjs"
+            mjs.parent.mkdir(parents=True, exist_ok=True)
+            mjs.write_text("// ready", encoding="utf-8")
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    with patch("subprocess.Popen", _ShrinkProc):
+        sup._run_runtime_install()
+
+    assert after_shrink_samples
+    assert all(p >= 60 and p <= 99 for p in after_shrink_samples)
+
+
+def test_omniroute_eta_message_formatting():
+    import src.intelligence.gateway_supervisor as gs_mod
+
+    fmt = GatewaySupervisor._format_omniroute_progress_message
+    base = gs_mod.RUNTIME_OMNIROUTE_BASE_MESSAGE
+
+    # Before 10s or at 0%: show base message with no ETA guess.
+    assert fmt(20, 200, 200, 5.0, 1000) == base
+    assert fmt(0, 0, 0, 15.0, 1000) == base
+
+    # Plausible remaining time in seconds and minutes.
+    assert fmt(40, 400, 400, 20.0, 1000) == "Installing OmniRoute — 40% (~30 s left)"
+    assert fmt(40, 400, 400, 80.0, 1000) == "Installing OmniRoute — 40% (~2 min left)"
+
+    # Zero throughput, exceeded expected total, or >1h ETA: omit ETA cleanly.
+    assert fmt(40, 0, 400, 20.0, 1000) == "Installing OmniRoute — 40%"
+    assert fmt(99, 1200, 1200, 30.0, 1000) == "Installing OmniRoute — 99%"
+    assert fmt(1, 1, 10, 100.0, 10_000) == "Installing OmniRoute — 1%"
+
+
+def test_frontend_banner_does_not_duplicate_embedded_percent():
+    assets = Path(__file__).resolve().parent.parent / "src" / "gui" / "assets"
+    js = (assets / "app.js").read_text(encoding="utf-8")
+    # 5-second poll interval stays unchanged.
+    assert "}, 5000);" in js
+    # Banner formatter checks whether the backend message already carries pct%.
+    fn_block = js.split("function updateRuntimeInstallBanner", 1)[1].split("function stopSaveLaunchPoll", 1)[0]
+    assert "new RegExp('(?:^|\\\\D)' + pct + '%').test(msg)" in fn_block
+
