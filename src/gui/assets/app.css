@@ -83,6 +83,7 @@
   --text-primary:       var(--ss-ink);
   --text-secondary:     var(--ss-ink-2);
   --text-muted:         var(--ss-ink-3);
+  --ss-text-muted:      var(--ss-ink-3);
   --text-dim:           var(--ss-ink-4);
 
   /* --- High-Contrast Bioluminescent Semantic Accents --- */
@@ -975,6 +976,7 @@ body.arena-paused #liveBadge .lg-wave-bars i,
   margin-left: auto;
   box-sizing: border-box;
   padding: 0 10px;
+  overflow: visible;
 }
 
 .auto-evolve-pill {
@@ -2256,7 +2258,7 @@ body.arena-paused #pauseBtn:hover,
   100% {
     opacity: 1;
     transform: translate3d(0, 0, 0) scale(1);
-    filter: blur(0);
+    filter: blur(0px);
   }
 }
 
@@ -2264,7 +2266,7 @@ body.arena-paused #pauseBtn:hover,
   0% {
     opacity: 1;
     transform: translate3d(0, 0, 0) scale(1);
-    filter: blur(0);
+    filter: blur(0px);
   }
   100% {
     opacity: 0;
@@ -2277,12 +2279,10 @@ body.arena-paused #pauseBtn:hover,
   0%, 100% {
     opacity: 1;
     transform: scale(1);
-    box-shadow: 0 0 6px currentColor;
   }
   50% {
     opacity: 0.45;
     transform: scale(0.78);
-    box-shadow: 0 0 2px currentColor;
   }
 }
 
@@ -3738,8 +3738,8 @@ tbody td {
   padding: 12px 14px;
   border-radius: var(--r-md);
   background: var(--lg-fill);
-  backdrop-filter: var(--lg-blur);
-  -webkit-backdrop-filter: var(--lg-blur);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border: 1px solid rgba(255, 255, 255, 0.20);
   box-shadow: var(--ss-shadow-card);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -3808,7 +3808,6 @@ tbody td {
 .intel-article-para {
   margin: 0 0 10px;
   animation: intel-article-fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  will-change: opacity, transform;
 }
 .intel-article-para:last-child {
   margin-bottom: 0;
@@ -4865,6 +4864,11 @@ body:not(.arena-ready) .lg-glass {
   border-radius: 50%;
   border: 1px solid rgba(244, 63, 94, 0.30);
   animation: orbRingPulse 2.4s ease-in-out infinite;
+  animation-play-state: paused;
+}
+
+.ss-modal-overlay.modal-visible .orb-ring {
+  animation-play-state: running;
 }
 
 @keyframes orbRingPulse {
@@ -5629,6 +5633,10 @@ body:not(.arena-ready) .lg-glass {
   .spatial-dock-bar .lg-dock-pod--controls { flex-wrap: wrap; height: auto; min-height: 54px; }
 }
 
+@media (max-width: 1480px) {
+  .spatial-dock-bar .title-sub { display: none; }
+}
+
 
 /* ==========================================================================
    P2 (2026-11-13): classes that were referenced but undefined.
@@ -5758,4 +5766,33 @@ body:not(.arena-ready) .lg-glass {
   background: rgba(192, 132, 252, 0.16);
   color: #DDD6FE;
   border-color: rgba(192, 132, 252, 0.45);
+}
+
+/* Pause ambient GPU animations when window is minimized/hidden */
+body.window-hidden .lg-ambient-blob,
+body.window-hidden .lg-ambient-caustics,
+body.window-hidden .lg-lens-ring,
+body.window-hidden .lg-orbit-ring,
+body.window-hidden .lg-tube-bubbles i,
+body.window-hidden .lg-wave-bars i,
+body.window-hidden .pulse-dot,
+body.window-hidden .live-dot,
+body.window-hidden .catalyst-pulse-orb,
+body.window-hidden .orb-ring {
+  animation-play-state: paused !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lg-ambient-blob,
+  .lg-ambient-caustics,
+  .lg-lens-ring,
+  .lg-orbit-ring,
+  .lg-tube-bubbles i,
+  .lg-wave-bars i,
+  .pulse-dot,
+  .live-dot,
+  .catalyst-pulse-orb,
+  .orb-ring {
+    animation-play-state: paused !important;
+  }
 }

@@ -4,15 +4,18 @@ import asyncio
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+import functools
 import hashlib
 import html
+import inspect
 import json
 import logging
+import math
 import os
 import re
 import time
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple, Union
 import xml.etree.ElementTree as ET
 import aiohttp
 
@@ -101,6 +104,20 @@ class StructuredEvent:
         }
 
 
+_POLY_VOL_PREFIX_RE = re.compile(r"^\[Polymarket 24h Vol \$[^\]]+\]\s*")
+_POLY_ODDS_SUFFIX_RE = re.compile(r"\s*\|\s*Odds:.*$")
+
+
+def _dedup_normalize_title(title: str) -> str:
+    """Normalizes volatile Polymarket volume/odds strings so the same market
+    doesn't bypass deduplication on every volume tick."""
+    s = title.strip()
+    if s.startswith("[Polymarket 24h Vol $"):
+        s = _POLY_VOL_PREFIX_RE.sub("", s)
+        s = _POLY_ODDS_SUFFIX_RE.sub("", s)
+    return s.strip().lower()
+
+
 class DeduplicationBuffer:
     """
     High-performance in-memory ring buffer with SHA-256 Title+URL hashing.
@@ -112,11 +129,15 @@ class DeduplicationBuffer:
         self.seen_hashes: Set[str] = set()
         self.ring: deque[str] = deque(maxlen=capacity)
 
+    @staticmethod
+    def _hash_key(title: str, url: str) -> str:
+        norm = f"{_dedup_normalize_title(title)}|{url.strip().lower()}"
+        return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
     def is_new(self, title: str, url: str) -> bool:
         if not title:
             return False
-        norm = f"{title.strip().lower()}|{url.strip().lower()}"
-        h = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+        h = self._hash_key(title, url)
         if h in self.seen_hashes:
             return False
         if len(self.ring) >= self.capacity:
@@ -125,6 +146,13 @@ class DeduplicationBuffer:
         self.seen_hashes.add(h)
         self.ring.append(h)
         return True
+
+    def forget(self, title: str, url: str) -> None:
+        """Removes a previously marked item so unprocessed overflow can retry later."""
+        if not title:
+            return
+        h = self._hash_key(title, url)
+        self.seen_hashes.discard(h)
 
     def __len__(self) -> int:
         return len(self.seen_hashes)
@@ -138,6 +166,11 @@ def _clean_html_text(raw_html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+@functools.lru_cache(maxsize=256)
+def _compiled_word_re(word_lower: str) -> re.Pattern:
+    return re.compile(r"\b" + re.escape(word_lower) + r"\b")
+
+
 def _contains_word(text: str, word: str) -> bool:
     """Word-boundary keyword match.
 
@@ -148,15 +181,18 @@ def _contains_word(text: str, word: str) -> bool:
     """
     if not text or not word:
         return False
-    return re.search(r"\b" + re.escape(word.strip().lower()) + r"\b", text.lower()) is not None
+    w = word.strip().lower()
+    if not w:
+        return False
+    return _compiled_word_re(w).search(text.lower()) is not None
 
 
-def parse_rss_atom(xml_text: str, source_name: str, domain: str, tier: int = 2) -> List[RawEvent]:
+def parse_rss_atom(xml_text: Union[str, bytes], source_name: str, domain: str, tier: int = 2) -> List[RawEvent]:
     """
     Parses RSS 2.0 and Atom feeds into a standardized list of RawEvent items.
     """
     events: List[RawEvent] = []
-    if not xml_text or not isinstance(xml_text, str):
+    if not xml_text or not isinstance(xml_text, (str, bytes, bytearray)):
         return events
 
     try:
@@ -193,13 +229,15 @@ def parse_rss_atom(xml_text: str, source_name: str, domain: str, tier: int = 2) 
     ns = {"atom": "http://www.w3.org/2005/Atom"}
     entries = root.findall(".//atom:entry", ns) or root.findall(".//entry")
     for entry in entries:
-        title_el = entry.find("atom:title", ns) if "atom" in ns else None
+        title_el = entry.find("atom:title", ns)
         if title_el is None:
             title_el = entry.find("title")
-        link_el = entry.find("atom:link", ns) if "atom" in ns else None
+        link_el = entry.find("atom:link", ns)
         if link_el is None:
             link_el = entry.find("link")
-        sum_el = entry.find("atom:summary", ns) if "atom" in ns else None
+        sum_el = entry.find("atom:summary", ns)
+        if sum_el is None:
+            sum_el = entry.find("atom:content", ns)
         if sum_el is None:
             sum_el = entry.find("summary") or entry.find("content")
 
@@ -245,10 +283,20 @@ def parse_polymarket_events(data: Any) -> List[RawEvent]:
 
         markets = item.get("markets", [])
         odds_str = ""
-        if isinstance(markets, list) and markets:
+        if isinstance(markets, list) and markets and isinstance(markets[0], dict):
             outcomes = markets[0].get("outcomes", [])
             outcome_prices = markets[0].get("outcomePrices", [])
-            if outcomes and outcome_prices:
+            if isinstance(outcomes, str):
+                try:
+                    outcomes = json.loads(outcomes)
+                except Exception:
+                    outcomes = []
+            if isinstance(outcome_prices, str):
+                try:
+                    outcome_prices = json.loads(outcome_prices)
+                except Exception:
+                    outcome_prices = []
+            if isinstance(outcomes, list) and isinstance(outcome_prices, list) and outcomes and outcome_prices:
                 try:
                     pairs = [f"{o}: {float(p)*100:.0f}%" for o, p in zip(outcomes, outcome_prices)]
                     odds_str = " | Odds: " + ", ".join(pairs)
@@ -401,41 +449,46 @@ class InterruptDebouncer:
         self.pending_events: List[StructuredEvent] = []
         self.last_dispatch_ts: float = 0.0
         self.timer_task: Optional[asyncio.Task] = None
+        self._bg_tasks: Set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
-
-    async def trigger(self, event: StructuredEvent) -> None:
-        async with self._lock:
-            now = time.time()
-            self.pending_events.append(event)
-            # If outside active cooldown window, dispatch immediately (<500ms latency)
-            if now - self.last_dispatch_ts >= self.cooldown_sec and self.timer_task is None:
-                to_dispatch = list(self.pending_events)
-                self.pending_events.clear()
-                self.last_dispatch_ts = now
-                asyncio.create_task(self._safe_dispatch(to_dispatch))
-                # Open cooldown window timer to flush any arrivals inside 10s
-                self.timer_task = asyncio.create_task(self._cooldown_timer())
-            else:
-                if self.timer_task is None:
-                    self.timer_task = asyncio.create_task(self._cooldown_timer())
-
-    async def _safe_dispatch(self, events: List[StructuredEvent]) -> None:
-        if not events:
-            return
-        import inspect
-        is_batch = False
+        self._is_batch = False
         try:
-            sig = inspect.signature(self.dispatch_fn)
+            sig = inspect.signature(dispatch_fn)
             params = list(sig.parameters.values())
             if params:
                 p_name = params[0].name.lower()
                 p_ann = str(params[0].annotation).lower()
                 if "batch" in p_name or "events" in p_name or "list" in p_ann:
-                    is_batch = True
+                    self._is_batch = True
         except Exception as e:
             logger.debug("Failed to inspect dispatch function signature, using per-event dispatch: %s", e)
 
-        if is_batch:
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
+
+    async def trigger(self, event: StructuredEvent) -> None:
+        async with self._lock:
+            now = time.time()
+            self.pending_events.append(event)
+            timer_inactive = self.timer_task is None or self.timer_task.done()
+            # If outside active cooldown window, dispatch immediately (<500ms latency)
+            if now - self.last_dispatch_ts >= self.cooldown_sec and timer_inactive:
+                to_dispatch = list(self.pending_events)
+                self.pending_events.clear()
+                self.last_dispatch_ts = now
+                self._spawn(self._safe_dispatch(to_dispatch))
+                # Open cooldown window timer to flush any arrivals inside 10s
+                self.timer_task = self._spawn(self._cooldown_timer())
+            elif timer_inactive:
+                self.timer_task = self._spawn(self._cooldown_timer())
+
+    async def _safe_dispatch(self, events: List[StructuredEvent]) -> None:
+        if not events:
+            return
+        if self._is_batch:
             try:
                 res = self.dispatch_fn(events)
                 if asyncio.iscoroutine(res):
@@ -452,14 +505,18 @@ class InterruptDebouncer:
                     logger.debug("Interrupt dispatch error: %s", ex)
 
     async def _cooldown_timer(self) -> None:
-        await asyncio.sleep(self.cooldown_sec)
-        async with self._lock:
-            self.timer_task = None
-            if self.pending_events:
-                to_dispatch = list(self.pending_events)
-                self.pending_events.clear()
-                self.last_dispatch_ts = time.time()
-                asyncio.create_task(self._safe_dispatch(to_dispatch))
+        try:
+            await asyncio.sleep(self.cooldown_sec)
+            async with self._lock:
+                self.timer_task = None
+                if self.pending_events:
+                    to_dispatch = list(self.pending_events)
+                    self.pending_events.clear()
+                    self.last_dispatch_ts = time.time()
+                    self._spawn(self._safe_dispatch(to_dispatch))
+        finally:
+            if self.timer_task is asyncio.current_task():
+                self.timer_task = None
 
 
 class IntelligenceHarvester:
@@ -486,6 +543,22 @@ class IntelligenceHarvester:
         self.recent_structured_events: deque[StructuredEvent] = deque(maxlen=200)
         self.is_running: bool = False
         self._harvest_task: Optional[asyncio.Task] = None
+        self._interrupt_tasks: Set[asyncio.Task] = set()
+
+    def _spawn_interrupt(self, coro: Coroutine[Any, Any, Any]) -> None:
+        task = asyncio.create_task(coro)
+        self._interrupt_tasks.add(task)
+        task.add_done_callback(self._interrupt_tasks.discard)
+
+    @staticmethod
+    def _event_iso_ts(raw_ts: Any, fallback_iso: str) -> str:
+        try:
+            val = float(raw_ts)
+            if math.isfinite(val) and val > 0.0:
+                return datetime.fromtimestamp(val, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except (TypeError, ValueError, OSError, OverflowError):
+            pass
+        return fallback_iso
 
     @staticmethod
     def _fetch_registry_entry(
@@ -503,6 +576,7 @@ class IntelligenceHarvester:
         import requests
 
         etype = str(entry.get("type", ""))
+        resp = None
         try:
             resp = requests.get(
                 entry["url"], headers={"User-Agent": USER_AGENT}, timeout=timeout_sec
@@ -511,7 +585,8 @@ class IntelligenceHarvester:
                 logger.debug("Registry feed %s returned HTTP %d", entry.get("id"), resp.status_code)
                 return []
             if etype in ("rss", "atom"):
-                parsed = parse_rss_atom(resp.text, entry["name"], entry["domain"], tier=int(entry.get("tier", 2)))
+                raw_xml = resp.content if isinstance(getattr(resp, "content", None), (bytes, bytearray)) else resp.text
+                parsed = parse_rss_atom(raw_xml, entry["name"], entry["domain"], tier=int(entry.get("tier", 2)))
             elif etype == "rest_json":
                 parsed = parse_polymarket_events(resp.json())
             else:
@@ -521,6 +596,12 @@ class IntelligenceHarvester:
         except Exception as ex:
             logger.debug("Registry feed fetch error for %s: %s", entry.get("id"), ex)
             return []
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
 
     def fetch_from_registry(self, max_per_source: int = 5, timeout_sec: float = 3.0) -> List[RawEvent]:
         """
@@ -533,10 +614,9 @@ class IntelligenceHarvester:
         fatal: one dead source must not take down the whole digest.
 
         Phase 2: the 16 fetchable entries are fetched concurrently
-        (ThreadPoolExecutor, 8 workers -- network-bound). Measured on
-        mocked 0.2 s/source: 3.21 s sequential -> 0.40 s. Dedup still
-        runs sequentially below in registry order, so results are
-        identical to the sequential version for the same responses.
+        (ThreadPoolExecutor, 8 workers -- network-bound). Results are
+        interleaved round-robin across sources so a single high-volume feed
+        cannot crowd out other sources in the 6-event micro-batch.
         """
         fetchable = [e for e in FEED_REGISTRY if str(e.get("type", "")) != "stocktwits"]
         if not fetchable:
@@ -551,12 +631,15 @@ class IntelligenceHarvester:
             )
 
         fresh_events: List[RawEvent] = []
-        for parsed in per_entry:
-            for e in parsed:
-                if self.dedup.is_new(e.title, e.url):
-                    fresh_events.append(e)
-                elif hasattr(self.client, "record_dedup_hit"):
-                    self.client.record_dedup_hit()
+        max_len = max((len(p) for p in per_entry), default=0)
+        for slot in range(max_len):
+            for parsed in per_entry:
+                if slot < len(parsed):
+                    e = parsed[slot]
+                    if self.dedup.is_new(e.title, e.url):
+                        fresh_events.append(e)
+                    elif hasattr(self.client, "record_dedup_hit"):
+                        self.client.record_dedup_hit()
         return fresh_events
 
     def fetch_live_feeds(self, max_per_source: int = 5, timeout_sec: float = 3.0) -> List[RawEvent]:
@@ -604,8 +687,9 @@ class IntelligenceHarvester:
             return []
 
         # Build concise extraction prompt including article content snippet
+        batch = events[:6]
         lines = []
-        for idx, e in enumerate(events[:6], start=1):
+        for idx, e in enumerate(batch, start=1):
             snippet = f" | 內容摘要: {e.raw_content[:220]}" if e.raw_content else ""
             lines.append(f"{idx}. [{e.source} | {e.domain}] 標題: {e.title}{snippet}")
         news_block = "\n".join(lines)
@@ -651,16 +735,31 @@ class IntelligenceHarvester:
 
         if parsed_json and "events" in parsed_json and isinstance(parsed_json["events"], list):
             for item in parsed_json["events"]:
+                if not isinstance(item, dict):
+                    continue
                 try:
-                    idx = int(item.get("index", 1)) - 1
-                    raw = events[idx] if (0 <= idx < len(events)) else events[0]
-                    urgency = max(1, min(10, int(item.get("urgency_score", 5))))
-                    sentiment = max(-1.0, min(1.0, float(item.get("sentiment_score", 0.0))))
-                    tickers = [str(t).upper() for t in item.get("entities_tickers", [])]
+                    raw_idx = item.get("index", 1)
+                    idx = (int(raw_idx) - 1) if raw_idx is not None else 0
+                    raw = batch[idx] if (0 <= idx < len(batch)) else batch[0]
+                    raw_urg = item.get("urgency_score")
+                    urg_val = int(float(raw_urg)) if raw_urg is not None else 5
+                    urgency = max(1, min(10, urg_val))
+                    raw_sent = item.get("sentiment_score")
+                    sent_val = float(raw_sent) if raw_sent is not None else 0.0
+                    if not math.isfinite(sent_val):
+                        sent_val = 0.0
+                    sentiment = max(-1.0, min(1.0, sent_val))
+                    raw_tickers = item.get("entities_tickers", [])
+                    if isinstance(raw_tickers, str):
+                        tickers = [raw_tickers.strip().upper()] if raw_tickers.strip() else []
+                    elif isinstance(raw_tickers, list):
+                        tickers = [str(t).strip().upper() for t in raw_tickers if str(t).strip()]
+                    else:
+                        tickers = []
                     consensus = self._parse_consensus(item.get("consensus"))
 
-                    raw_headline_zh = str(item.get("headline_zh", "")).strip()
-                    raw_summary = str(item.get("summary", "")).strip()
+                    raw_headline_zh = str(item.get("headline_zh") or "").strip()
+                    raw_summary = str(item.get("summary") or "").strip()
 
                     fallback_head_zh, fallback_sum_zh = self._build_zh_headline_and_summary(
                         raw.title, raw.raw_content, raw.source, raw.domain, urgency, sentiment, tickers
@@ -670,7 +769,7 @@ class IntelligenceHarvester:
                     summary = raw_summary if self._contains_cjk(raw_summary) else fallback_sum_zh
 
                     se = StructuredEvent(
-                        timestamp=iso_now,
+                        timestamp=self._event_iso_ts(raw.timestamp, iso_now),
                         source=raw.source,
                         domain=raw.domain,
                         entities_tickers=tickers,
@@ -694,15 +793,23 @@ class IntelligenceHarvester:
                             urgency, summary, raw.title[:80]
                         )
                         if self.debouncer:
-                            asyncio.create_task(self.debouncer.trigger(se))
+                            self._spawn_interrupt(self.debouncer.trigger(se))
                         elif self.on_urgent_interrupt:
-                            asyncio.create_task(self.on_urgent_interrupt(se))
+                            self._spawn_interrupt(self.on_urgent_interrupt(se))
 
                 except Exception as ex:
                     logger.debug("Failed parsing individual event extraction: %s", ex)
-        else:
+
+            # Release dedup entries for overflow events not included in this LLM micro-batch
+            # so they are picked up on the next digest instead of being permanently dropped.
+            if structured_results and len(events) > len(batch):
+                for dropped in events[len(batch):]:
+                    self.dedup.forget(dropped.title, dropped.url)
+
+        if not structured_results:
             # Genuine Local Deterministic NLP Extraction on real news headlines & content
-            for raw in events[:15]:
+            fallback_batch = events[:15]
+            for raw in fallback_batch:
                 combined_text = f"{raw.title} {raw.raw_content}".lower()
                 urgency = 5
                 sentiment = 0.0
@@ -761,7 +868,7 @@ class IntelligenceHarvester:
                 } if raw.thread_id else None
 
                 se = StructuredEvent(
-                    timestamp=iso_now,
+                    timestamp=self._event_iso_ts(raw.timestamp, iso_now),
                     source=raw.source,
                     domain=raw.domain,
                     entities_tickers=tickers,
@@ -779,9 +886,13 @@ class IntelligenceHarvester:
                 self.recent_structured_events.append(se)
                 if urgency >= 8:
                     if self.debouncer:
-                        asyncio.create_task(self.debouncer.trigger(se))
+                        self._spawn_interrupt(self.debouncer.trigger(se))
                     elif self.on_urgent_interrupt:
-                        asyncio.create_task(self.on_urgent_interrupt(se))
+                        self._spawn_interrupt(self.on_urgent_interrupt(se))
+
+            if len(events) > len(fallback_batch):
+                for dropped in events[len(fallback_batch):]:
+                    self.dedup.forget(dropped.title, dropped.url)
 
         return structured_results
 

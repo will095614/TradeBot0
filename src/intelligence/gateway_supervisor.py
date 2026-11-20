@@ -17,10 +17,11 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import weakref
 import zipfile
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("tradebot0.gateway_supervisor")
 
@@ -390,6 +391,7 @@ class GatewaySupervisor:
                 return {"ok": False, "message": "No installation is running."}
             self._install_cancel_event.set()
             proc = self._install_proc
+            self._install_proc = None
         if proc is not None and proc.poll() is None:
             self._terminate_install_proc(proc)
         return {"ok": True, "message": "Cancelling installation..."}
@@ -399,11 +401,9 @@ class GatewaySupervisor:
         """Kills an npm child and, on Windows, its whole tree: npm.cmd
         runs under cmd.exe, so killing cmd.exe alone would orphan the
         node.exe actually doing the install."""
-        try:
-            proc.kill()
-        except Exception as e:
-            logger.debug("Failed to kill install process: %s", e)
         if sys.platform == "win32":
+            # Kill the whole process tree BEFORE killing the parent cmd.exe,
+            # otherwise child node.exe processes detach and escape taskkill /T.
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
@@ -412,6 +412,11 @@ class GatewaySupervisor:
                 )
             except Exception as e:
                 logger.debug("taskkill for install process failed: %s", e)
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception as e:
+            logger.debug("Failed to kill install process: %s", e)
         try:
             proc.wait(timeout=10)
         except Exception as e:
@@ -469,6 +474,8 @@ class GatewaySupervisor:
             self._set_install_status("cancelled", "Installation cancelled.", phase="Cancelled")
         except Exception as e:
             logger.error("OmniRoute runtime install failed: %s", e)
+            if not self.omniroute_installed():
+                self._cleanup_cancelled_install(self._runtime_base())
             self._set_install_status("failed", f"Installation failed: {e}", phase="Failed")
 
     def _download_node(self, base: Path) -> str:
@@ -490,7 +497,8 @@ class GatewaySupervisor:
             total = None
             try:
                 raw_total = resp.headers.get("Content-Length")
-                total = int(raw_total) if raw_total else None
+                parsed_total = int(raw_total) if raw_total else 0
+                total = parsed_total if parsed_total > 0 else None
             except Exception:
                 total = None
             downloaded = 0
@@ -549,7 +557,7 @@ class GatewaySupervisor:
                 with os.scandir(current) as it:
                     for entry in it:
                         try:
-                            if entry.is_symlink():
+                            if entry.is_symlink() or (hasattr(entry, "is_junction") and entry.is_junction()):
                                 continue
                             if entry.is_dir(follow_symlinks=False):
                                 stack.append(entry.path)
@@ -615,22 +623,37 @@ class GatewaySupervisor:
                 f"at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
             )
             for i, cmd in enumerate(attempts):
+                if self._install_cancel_event.is_set():
+                    raise _InstallCancelledError("Installation cancelled.")
                 log_file.write(f"--- attempt {i + 1}: {' '.join(cmd)} ---\n")
                 log_file.flush()
+                attempt_start_offset = log_file.tell()
                 # Popen (not run) so a cancel can kill the child: the
                 # poll loop checks the cancel event every 0.25 s and the
                 # 30-minute deadline, mirroring the old run(timeout=1800).
                 try:
                     child_env = os.environ.copy()
-                    for key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME"):
-                        child_env.pop(key, None)
+                    for key in list(child_env):
+                        if (
+                            key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME", "INITIAL_PASSWORD", "LLM_API_KEY")
+                            or key.endswith("_API_KEY")
+                        ):
+                            child_env.pop(key, None)
                     creation_flags = 0x08000000 if sys.platform == "win32" else 0
                     proc = subprocess.Popen(
                         cmd, stdout=log_file, stderr=subprocess.STDOUT,
                         env=child_env, creationflags=creation_flags,
                     )
                     with self._install_lock:
-                        self._install_proc = proc
+                        if self._install_cancel_event.is_set():
+                            self._install_proc = None
+                            _cancel_now = True
+                        else:
+                            self._install_proc = proc
+                            _cancel_now = False
+                    if _cancel_now:
+                        self._terminate_install_proc(proc)
+                        raise _InstallCancelledError("Installation cancelled.")
                     try:
                         deadline = time.monotonic() + 1800
                         next_measure = 0.0
@@ -677,17 +700,24 @@ class GatewaySupervisor:
                 if proc.returncode == 0:
                     return
                 last_error = f"npm install exited with code {proc.returncode} (attempt {i + 1})"
-                tail = self._tail_install_log(2000)
+                tail = self._tail_install_log(2000, min_offset=attempt_start_offset)
                 if i == 0 and ("allow-scripts" in tail or "unknown option" in tail.lower()):
                     continue
                 break
         raise RuntimeError(last_error or "npm install failed.")
 
-    def _tail_install_log(self, n_chars: int) -> str:
-        """Last n_chars of the install log, for failure diagnosis."""
+    def _tail_install_log(self, n_chars: int, min_offset: int = 0) -> str:
+        """Last n_chars of the install log (at or after min_offset), for failure diagnosis."""
         try:
-            text = self.install_log_path.read_text(encoding="utf-8", errors="replace")
-            return text[-n_chars:]
+            with open(self.install_log_path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                start = max(int(min_offset), size - max(1, int(n_chars)) * 4)
+                if start >= size:
+                    return ""
+                f.seek(start)
+                data = f.read()
+            return data.decode("utf-8", errors="replace")[-n_chars:]
         except Exception:
             return ""
 
@@ -706,10 +736,22 @@ class GatewaySupervisor:
         with self._watchdog_lock:
             old = self._watchdog_thread
             if old is not None and old.is_alive():
+                if armed:
+                    self._watchdog_armed = True
+                    self._watchdog_failures = 0
+                    self._watchdog_next_retry_ts = 0.0
+                    if self._watchdog_state == "stopped":
+                        self._watchdog_state = "ok"
                 return False
-            self._watchdog_stop.clear()
+            stop_evt = threading.Event()
+            self._watchdog_stop = stop_evt
             self._watchdog_armed = bool(armed)
-            t = threading.Thread(target=self._watchdog_loop, name="omniroute-gateway-watchdog", daemon=True)
+            t = threading.Thread(
+                target=self._watchdog_loop,
+                args=(stop_evt,),
+                name="omniroute-gateway-watchdog",
+                daemon=True,
+            )
             self._watchdog_thread = t
             t.start()
             return True
@@ -722,9 +764,8 @@ class GatewaySupervisor:
         not spawn a duplicate; the old thread is a daemon and exits on
         its own once its current attempt finishes.
         """
-        self._watchdog_stop.set()
-        t = None
         with self._watchdog_lock:
+            self._watchdog_stop.set()
             t = self._watchdog_thread
         if t is not None and t.is_alive():
             t.join(timeout=2.0)
@@ -759,9 +800,9 @@ class GatewaySupervisor:
             return WATCHDOG_RETRY_BASE_SEC
         return min(WATCHDOG_RETRY_MAX_SEC, WATCHDOG_RETRY_BASE_SEC * (2 ** (failures - 1)))
 
-    def _watchdog_loop(self) -> None:
+    def _watchdog_loop(self, stop_evt: Optional[threading.Event] = None) -> None:
         """Background loop: probe health every WATCHDOG_POLL_SEC and restart a
-        dead gateway. Runs until _watchdog_stop is set. Never raises.
+        dead gateway. Runs until stop_evt is set. Never raises.
 
         Wait-then-tick: the first probe happens one interval after start, not
         immediately, so the probe cadence is uniform from the start. This also
@@ -770,12 +811,13 @@ class GatewaySupervisor:
         own mocks are gone — a tick-then-wait loop could fire a real
         start_daemon once the mocks had exited.
         """
-        while not self._watchdog_stop.is_set():
-            self._watchdog_stop.wait(WATCHDOG_POLL_SEC)
-            if self._watchdog_stop.is_set():
+        evt = stop_evt if stop_evt is not None else self._watchdog_stop
+        while not evt.is_set():
+            evt.wait(WATCHDOG_POLL_SEC)
+            if evt.is_set():
                 break
             try:
-                self._watchdog_tick()
+                self._watchdog_tick(evt)
             except Exception as e:
                 logger.debug("Gateway watchdog tick failed: %s", e)
 
@@ -790,7 +832,7 @@ class GatewaySupervisor:
             logger.debug("Gateway watchdog health probe failed: %s", e)
             return False
 
-    def _watchdog_tick(self) -> None:
+    def _watchdog_tick(self, stop_evt: Optional[threading.Event] = None) -> None:
         """One watchdog iteration: probe health, restart once if dead.
 
         Never restarts while a runtime install is running (the install
@@ -803,6 +845,7 @@ class GatewaySupervisor:
         start_daemon's 30 s wait); the double-spawn guard serializes
         it against any concurrent start_daemon caller.
         """
+        evt = stop_evt if stop_evt is not None else self._watchdog_stop
         # Install in progress: the installer owns the gateway lifecycle.
         try:
             with self._install_lock:
@@ -811,10 +854,12 @@ class GatewaySupervisor:
             installing = False
         if installing:
             return
-        if self._watchdog_stop.is_set():
+        if evt.is_set():
             return
         healthy = self._probe_gateway_healthy()
         with self._watchdog_lock:
+            if evt.is_set():
+                return
             self._watchdog_healthy = healthy
             if healthy:
                 self._watchdog_armed = True
@@ -895,7 +940,7 @@ class GatewaySupervisor:
         Returns a clean dictionary with ok status, latency, and descriptive message.
         """
         norm_prov = provider.lower().strip()
-        key = (raw_key or "").strip()
+        key = "".join(ch for ch in (raw_key or "").strip() if ord(ch) >= 0x20 and ord(ch) != 0x7F)
 
         if not key:
             return {"ok": False, "message": "Key cannot be empty", "latency_ms": 0}
@@ -910,8 +955,8 @@ class GatewaySupervisor:
         t0 = time.perf_counter()
         try:
             if norm_prov == "gemini":
-                # Gemini takes key as URL query parameter
-                req_url = f"{endpoint}?key={key}"
+                # Gemini takes key as URL query parameter (URL-encoded)
+                req_url = f"{endpoint}?key={urllib.parse.quote(key, safe='')}"
                 req = urllib.request.Request(req_url, headers={"User-Agent": "TradeBot0-Validator/2.0"})
             else:
                 # DeepSeek, Groq, NVIDIA NIM, OpenRouter take Bearer token header
@@ -989,8 +1034,8 @@ class GatewaySupervisor:
                 self._daemon_starting_thread = threading.get_ident()
                 _already_starting = False
         if _already_starting:
-            deadline = time.time() + max_wait_sec
-            while time.time() < deadline:
+            deadline = time.monotonic() + max_wait_sec
+            while time.monotonic() < deadline:
                 time.sleep(0.25)
                 if self.is_port_open(timeout=0.2):
                     healthy, _ = self.probe_health(timeout=2.0)
@@ -1041,12 +1086,14 @@ class GatewaySupervisor:
             # Close a stale log handle first (respawn after a previous daemon
             # died), then open the daemon log: output goes to a file, not
             # DEVNULL, so a failed startup leaves something to read (item 8).
-            if self._daemon_log_file is not None:
+            with self._daemon_lock:
+                old_log = self._daemon_log_file
+                self._daemon_log_file = None
+            if old_log is not None:
                 try:
-                    self._daemon_log_file.close()
+                    old_log.close()
                 except Exception as e:
                     logger.debug("Failed to close stale daemon log handle: %s", e)
-                self._daemon_log_file = None
             log_file = self._open_daemon_log()
             try:
                 proc = subprocess.Popen(
@@ -1063,9 +1110,10 @@ class GatewaySupervisor:
             except Exception:
                 log_file.close()
                 raise
-            self.child_process = proc
-            self.is_self_spawned = True
-            self._daemon_log_file = log_file
+            with self._daemon_lock:
+                self.child_process = proc
+                self.is_self_spawned = True
+                self._daemon_log_file = log_file
             try:
                 log_file.write(
                     f"--- OmniRoute daemon spawned (PID {proc.pid}) "
@@ -1078,17 +1126,24 @@ class GatewaySupervisor:
             logger.error("Failed to spawn OmniRoute daemon: %s", e)
             return False, f"Process execution failed: {e}"
 
-        # Step 4: Poll health with strict circuit breaker
-        deadline = time.time() + max_wait_sec
-        while time.time() < deadline:
+        # Step 4: Poll health with strict circuit breaker (and fail fast if child exits)
+        deadline = time.monotonic() + max_wait_sec
+        exited_early_rc: Optional[int] = None
+        while time.monotonic() < deadline:
             time.sleep(0.25)
+            rc = proc.poll()
+            if isinstance(rc, int):
+                exited_early_rc = rc
+                break
             if self.is_port_open(timeout=0.2):
                 healthy, _ = self.probe_health(timeout=2.0)
                 if healthy:
                     return True, f"OmniRoute daemon started and verified on port {self.port}"
 
-        # Step 5: Timed out - tear down child process to prevent orphan leak
+        # Step 5: Timed out or crashed early - tear down child process to prevent orphan leak
         self.shutdown()
+        if exited_early_rc is not None:
+            return False, f"OmniRoute daemon exited early (code {exited_early_rc}). Check {self.daemon_log_path}."
         return False, f"OmniRoute daemon did not respond within {max_wait_sec}s timeout."
 
     def shutdown(self) -> None:
@@ -1102,21 +1157,28 @@ class GatewaySupervisor:
         # assigning child_process (bounded): snapshotting None now would
         # orphan the daemon it is about to spawn. The spawning thread
         # itself never waits (it owns the flag).
-        _spawn_deadline = time.time() + 35.0
+        _spawn_deadline = time.monotonic() + 35.0
         while True:
             with self._daemon_lock:
                 _starting = self._daemon_starting
                 _starter = self._daemon_starting_thread
             if not _starting or _starter == threading.get_ident():
                 break
-            if time.time() > _spawn_deadline:
+            if time.monotonic() > _spawn_deadline:
                 logger.warning("Gateway shutdown timed out waiting for a concurrent spawn")
                 break
             time.sleep(0.1)
 
+        with self._daemon_lock:
+            proc = self.child_process if self.is_self_spawned else None
+            self.child_process = None
+            self.is_self_spawned = False
+            log_file = self._daemon_log_file
+            self._daemon_log_file = None
+
         owned_pid: Optional[int] = None
-        if self.child_process and self.is_self_spawned:
-            owned_pid = self.child_process.pid
+        if proc is not None:
+            owned_pid = proc.pid
             pid = owned_pid
             try:
                 logger.info("Terminating self-spawned OmniRoute daemon (PID %d)", pid)
@@ -1125,25 +1187,23 @@ class GatewaySupervisor:
                         ["taskkill", "/F", "/T", "/PID", str(pid)],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        timeout=15,
                         creationflags=0x08000000,
                         close_fds=True,
                         check=False,
                     )
                     try:
-                        self.child_process.wait(timeout=1.5)
+                        proc.wait(timeout=1.5)
                     except Exception as e:
                         logger.debug("Daemon did not exit within wait timeout during shutdown: %s", e)
                 else:
-                    self.child_process.terminate()
-                    self.child_process.wait(timeout=1.0)
+                    proc.terminate()
+                    proc.wait(timeout=1.0)
             except Exception:
                 try:
-                    self.child_process.kill()
+                    proc.kill()
                 except Exception as e:
                     logger.debug("Failed to kill daemon process during shutdown: %s", e)
-            finally:
-                self.child_process = None
-                self.is_self_spawned = False
 
         # Fail-safe cleanup: only if OUR OWN child is somehow still holding
         # the port after termination. A foreign listener is never killed.
@@ -1153,12 +1213,11 @@ class GatewaySupervisor:
         # Close the daemon log handle opened by start_daemon (if any). This
         # also runs on the timeout path, which calls shutdown() after the
         # daemon failed to become healthy.
-        if self._daemon_log_file is not None:
+        if log_file is not None:
             try:
-                self._daemon_log_file.close()
+                log_file.close()
             except Exception as e:
                 logger.debug("Failed to close daemon log handle during shutdown: %s", e)
-            self._daemon_log_file = None
 
     def _kill_port_owner(self, port: int, owned_pid: Optional[int] = None) -> None:
         """Terminates a lingering listener on the port ONLY if it is our own
@@ -1173,6 +1232,7 @@ class GatewaySupervisor:
                     f"netstat -ano | findstr :{port}",
                     shell=True,
                     text=True,
+                    timeout=15,
                     stderr=subprocess.DEVNULL,
                     creationflags=0x08000000,
                 )
@@ -1186,6 +1246,7 @@ class GatewaySupervisor:
                                 ["taskkill", "/F", "/T", "/PID", target_pid],
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
+                                timeout=15,
                                 creationflags=0x08000000,
                                 close_fds=True,
                                 check=False,

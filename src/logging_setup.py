@@ -50,6 +50,7 @@ def configure_logging(log_dir: Optional[Path] = None) -> Path:
     """
     resolved = Path(log_dir) if log_dir is not None else get_log_dir()
     handlers: list = []
+    file_handler_attached = False
     try:
         resolved.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
@@ -57,14 +58,19 @@ def configure_logging(log_dir: Optional[Path] = None) -> Path:
             maxBytes=LOG_MAX_BYTES,
             backupCount=LOG_BACKUP_COUNT,
             encoding="utf-8",
+            errors="replace",
         )
         handlers.append(file_handler)
+        file_handler_attached = True
     except Exception:
         # No file logging possible (read-only dir, etc.): keep going with
         # the stream handler if one exists; logging must never kill startup.
         pass
     if sys.stdout is not None:
         handlers.append(logging.StreamHandler(sys.stdout))
+    if not handlers:
+        handlers.append(logging.NullHandler())
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT, handlers=handlers, force=True)
-    logging.getLogger("TradeBot0").info("Logging to %s", resolved / LOG_FILENAME)
+    if file_handler_attached:
+        logging.getLogger("TradeBot0").info("Logging to %s", resolved / LOG_FILENAME)
     return resolved

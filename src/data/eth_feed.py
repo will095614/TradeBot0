@@ -98,7 +98,7 @@ class ETHFeed:
         high_s = df["High"].astype(float)
         low_s = df["Low"].astype(float)
         open_s = df["Open"].astype(float)
-        vol_s = df["Volume"].astype(float)
+        vol_s = df["Volume"].astype(float).fillna(0.0)
 
         # EMA 20, EMA 50, EMA 200 (Macro Regime Filter)
         ema_fast_s = close_s.ewm(span=20, adjust=False).mean()
@@ -112,14 +112,22 @@ class ETHFeed:
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         atr_s = tr.ewm(alpha=1 / 14, adjust=False).mean()
 
-        # Wilder's RSI 14
+        # Wilder's RSI 14 (flat windows -> neutral 50.0, matching IndicatorEngineMixin)
         delta = close_s.diff()
         gain = delta.clip(lower=0.0)
         loss = -delta.clip(upper=0.0)
         avg_gain = gain.ewm(alpha=1 / 14, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1 / 14, adjust=False).mean()
-        rs = avg_gain / (avg_loss + 1e-9)
-        rsi_s = 100.0 - (100.0 / (1.0 + rs))
+        ag_np = avg_gain.to_numpy(dtype=float)
+        al_np = avg_loss.to_numpy(dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            raw_rsi = 100.0 - (100.0 / (1.0 + (ag_np / al_np)))
+        rsi_vals = np.where(
+            (ag_np == 0.0) & (al_np == 0.0),
+            50.0,
+            np.where(al_np == 0.0, 100.0, raw_rsi),
+        )
+        rsi_s = pd.Series(rsi_vals, index=df.index)
 
         # Bollinger Bands (20, 2.0)
         bb_mid = close_s.rolling(window=20).mean()
@@ -134,7 +142,21 @@ class ETHFeed:
         macd_sig = macd_line.ewm(span=9, adjust=False).mean()
         macd_hist_s = macd_line - macd_sig
 
-        valid_mask = ~(ema_fast_s.isna() | ema_slow_s.isna() | atr_s.isna() | rsi_s.isna() | bb_upper_s.isna())
+        valid_mask = (
+            np.isfinite(open_s) & (open_s > 0.0)
+            & np.isfinite(high_s) & (high_s > 0.0)
+            & np.isfinite(low_s) & (low_s > 0.0)
+            & np.isfinite(close_s) & (close_s > 0.0)
+            & np.isfinite(vol_s) & (vol_s >= 0.0)
+            & np.isfinite(ema_fast_s)
+            & np.isfinite(ema_slow_s)
+            & np.isfinite(ema_macro_s)
+            & np.isfinite(atr_s)
+            & np.isfinite(rsi_s)
+            & np.isfinite(bb_upper_s)
+            & np.isfinite(bb_lower_s)
+            & np.isfinite(macd_hist_s)
+        )
         indices = df.index[valid_mask]
 
         opens = np.round(open_s[valid_mask].to_numpy(), 2)

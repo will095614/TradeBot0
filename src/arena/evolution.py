@@ -7,6 +7,8 @@ import logging
 import os
 import random
 import sys
+import tempfile
+import threading
 import time
 
 from src.arena.leaderboard import CompetitorStats, Leaderboard
@@ -35,6 +37,7 @@ class GeneticEvolver:
     # before any evolution has run (an early return with < 2 rankings
     # used to leave the attribute unset and raise AttributeError).
     _last_records: Optional[Tuple[int, List[Dict[str, Any]]]] = None
+    _history_lock: threading.Lock = threading.Lock()
 
     @classmethod
     def _generation_seed(cls, next_gen: int, seed_entropy: int = 0) -> int:
@@ -290,17 +293,22 @@ class GeneticEvolver:
         directly so callers never have to rely solely on class state ``_last_records``.
         """
         comp_map: Dict[str, BaseCompetitor] = {c.portfolio_id: c for c in competitors}
-        if len(rankings) < 2:
+        valid_rankings = [r for r in rankings if r.portfolio_id in comp_map]
+        if len(valid_rankings) < 2:
             return [], None
 
         # Audit 3.9: parents are picked by fitness, not by the equity
         # order of the display rankings. parent_order returns a new list;
         # the caller's rankings (and the leaderboard display) are untouched.
-        parent_order = cls.parent_order(rankings)
+        parent_order = cls.parent_order(valid_rankings)
         champion_stats = parent_order[0]
         runner_up_stats = parent_order[1]
         champ_comp = comp_map[champion_stats.portfolio_id]
         runner_comp = comp_map[runner_up_stats.portfolio_id]
+        # Snapshot evaluated parent genomes BEFORE idx==1 fine-tunes runner_comp in place,
+        # so children breed from the tested runner-up rather than an untested mutant.
+        champ_genome = champ_comp.genome
+        runner_genome = runner_comp.genome
 
         current_gen = max(c.genome.generation for c in competitors)
         next_gen = current_gen + 1
@@ -335,8 +343,8 @@ class GeneticEvolver:
             else:
                 # Bottom performers: Crossover from Champion + Runner-up with Mutation
                 new_g = cls.crossover_and_mutate(
-                    champ_comp.genome,
-                    runner_comp.genome,
+                    champ_genome,
+                    runner_genome,
                     next_gen=next_gen,
                     seed_offset=idx * 31,
                     seed_entropy=seed_entropy,
@@ -388,31 +396,57 @@ class GeneticEvolver:
             mem_dir = os.environ.get("ARENA_MEMORY_DIR", "memory")
         os.makedirs(mem_dir, exist_ok=True)
         hist_path = os.path.join(mem_dir, "arena_history.json")
-        history: List[Dict[str, Any]] = []
-        if os.path.exists(hist_path):
-            try:
-                with open(hist_path, "r", encoding="utf-8") as f:
-                    history = json.load(f)
-            except Exception as e:
-                logger.debug("Failed to load arena history, starting fresh: %s", e)
-                history = []
 
         if evolution_seed is None:
             evolution_seed = records[0].get("evolution_seed") if records else None
         if evolution_seed is None:
             evolution_seed = cls._generation_seed(generation)
-        history.append({
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "generation": generation,
-            "evolution_seed": int(evolution_seed),
-            "competitors": records
-        })
-        if len(history) > 500:
-            history = history[-500:]
-        tmp_path = hist_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, hist_path)
+
+        with cls._history_lock:
+            history: List[Dict[str, Any]] = []
+            if os.path.exists(hist_path):
+                try:
+                    with open(hist_path, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, list):
+                        history = loaded
+                except Exception as e:
+                    logger.debug("Failed to load arena history, starting fresh: %s", e)
+                    history = []
+
+            history.append({
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "generation": generation,
+                "evolution_seed": int(evolution_seed),
+                "competitors": records
+            })
+            if len(history) > 500:
+                history = history[-500:]
+            tmp_path: Optional[str] = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=mem_dir,
+                    prefix="arena_history_",
+                    suffix=".tmp",
+                    delete=False,
+                ) as f:
+                    tmp_path = f.name
+                    json.dump(history, f, indent=2, ensure_ascii=False)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
+                os.replace(tmp_path, hist_path)
+            except Exception:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                raise
 
         if records:
             # Audit 3.20: reuse a caller-owned storage when given (the

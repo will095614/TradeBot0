@@ -4,6 +4,7 @@ Implements Phase 4 (P2) & Phase 6 (P3): 1m / 5m / 15m / 1h bar aggregation and 1
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List
 from src.arena.order import OrderSide
 
@@ -29,6 +30,8 @@ class MultiTimeframeEngine:
         self.htf_ema_50: float = 0.0
         self.htf_ema_200: float = 0.0
         self.htf_bias: str = "NEUTRAL"
+        self._last_1m_ts: float = -1.0
+        self._last_1m_vol: float = 0.0
 
     @staticmethod
     def calc_ema(closes: List[float], period: int) -> float:
@@ -48,12 +51,20 @@ class MultiTimeframeEngine:
         max_len: int,
     ) -> None:
         ts = float(bar_1m["t"])
-        slot = float(int(ts // bucket_seconds) * bucket_seconds)
         o = float(bar_1m["o"])
         h = float(bar_1m["h"])
         lo = float(bar_1m["l"])
         c = float(bar_1m["c"])
         v = float(bar_1m.get("v", 0.0))
+        if not (
+            math.isfinite(ts) and math.isfinite(o) and math.isfinite(h)
+            and math.isfinite(lo) and math.isfinite(c) and math.isfinite(v)
+        ):
+            return
+        if o <= 0.0 or h <= 0.0 or lo <= 0.0 or c <= 0.0:
+            return
+        v = max(0.0, v)
+        slot = float(int(ts // bucket_seconds) * bucket_seconds)
 
         if bucket_list and bucket_list[-1]["t"] == slot:
             cur = bucket_list[-1]
@@ -70,9 +81,30 @@ class MultiTimeframeEngine:
         """
         Aggregates a 1m bar into 5m, 15m, and 1h buckets and updates the 1h EMA trend regime.
         """
-        self._upsert_bucket(self.candles_5m, 300, new_1m_bar, self.max_htf_bars)
-        self._upsert_bucket(self.candles_15m, 900, new_1m_bar, self.max_htf_bars)
-        self._upsert_bucket(self.candles_1h, 3600, new_1m_bar, self.max_htf_bars)
+        try:
+            ts = float(new_1m_bar["t"])
+            v = max(0.0, float(new_1m_bar.get("v", 0.0)))
+        except (KeyError, TypeError, ValueError):
+            return self.htf_bias
+        if not (math.isfinite(ts) and math.isfinite(v)):
+            return self.htf_bias
+
+        # Repeated 1s updates for the same 1m bar carry cumulative 1m volume; add only the delta.
+        if ts == self._last_1m_ts:
+            delta_v = max(0.0, v - self._last_1m_vol)
+            self._last_1m_vol = max(self._last_1m_vol, v)
+            bar_for_agg = dict(new_1m_bar, v=delta_v)
+        elif ts > self._last_1m_ts:
+            self._last_1m_ts = ts
+            self._last_1m_vol = v
+            bar_for_agg = new_1m_bar
+        else:
+            # Ignore out-of-order older 1m bars if we already have higher buckets past them.
+            return self.htf_bias
+
+        self._upsert_bucket(self.candles_5m, 300, bar_for_agg, self.max_htf_bars)
+        self._upsert_bucket(self.candles_15m, 900, bar_for_agg, self.max_htf_bars)
+        self._upsert_bucket(self.candles_1h, 3600, bar_for_agg, self.max_htf_bars)
         return self.recompute_regime()
 
     def recompute_regime(self) -> str:
@@ -86,7 +118,7 @@ class MultiTimeframeEngine:
             elif last_close < self.htf_ema_50 and self.htf_ema_50 <= self.htf_ema_200:
                 self.htf_bias = "BEARISH"
             else:
-                self.htf_bias = "BULLISH" if last_close > self.htf_ema_50 else "BEARISH"
+                self.htf_bias = "NEUTRAL"
         else:
             self.htf_bias = "NEUTRAL"
         return self.htf_bias
@@ -102,7 +134,7 @@ class MultiTimeframeEngine:
 
         Validation -- any failure leaves the current buckets and bias
         untouched and returns the current bias:
-        - malformed rows (missing / non-positive o/h/l/c, bad timestamp)
+        - malformed rows (missing / non-positive / non-finite o/h/l/c, bad timestamp)
           are dropped;
         - the median inter-bar gap must be >= MIN_SEED_MEDIAN_GAP_SEC,
           so 1m-spaced bars can never pose as 1h history;
@@ -110,8 +142,8 @@ class MultiTimeframeEngine:
           recompute_regime.
 
         The list is replaced in place (clear + extend) so aliases held by
-        the engine stay valid, and only the most recent max_htf_bars are
-        kept.
+        the engine stay valid, any newer live 1h buckets are preserved, and
+        only the most recent max_htf_bars are kept.
         """
         clean: List[Dict[str, float]] = []
         for b in buckets or []:
@@ -124,7 +156,12 @@ class MultiTimeframeEngine:
                 v = float(b.get("v", 0.0))
             except (KeyError, TypeError, ValueError):
                 continue
-            if t <= 0.0 or o <= 0.0 or h <= 0.0 or lo <= 0.0 or c <= 0.0:
+            if not (
+                math.isfinite(t) and math.isfinite(o) and math.isfinite(h)
+                and math.isfinite(lo) and math.isfinite(c) and math.isfinite(v)
+            ):
+                continue
+            if t <= 0.0 or o <= 0.0 or h <= 0.0 or lo <= 0.0 or c <= 0.0 or v < 0.0:
                 continue
             clean.append({"t": t, "o": o, "h": h, "l": lo, "c": c, "v": v})
         clean.sort(key=lambda b: b["t"])
@@ -141,8 +178,33 @@ class MultiTimeframeEngine:
             median_gap = gaps[len(gaps) // 2]
             if median_gap < self.MIN_SEED_MEDIAN_GAP_SEC:
                 return self.htf_bias
+
+        # Quantize timestamps to 3600s slots so subsequent live 1m updates merge cleanly.
+        slotted: List[Dict[str, float]] = []
+        for b in dedup:
+            slot = float(int(b["t"] // 3600) * 3600)
+            entry = {"t": slot, "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b["v"]}
+            if slotted and slotted[-1]["t"] == slot:
+                slotted[-1] = entry
+            else:
+                slotted.append(entry)
+        if len(slotted) < self.MIN_HTF_BARS:
+            return self.htf_bias
+
+        # Preserve any live-aggregated 1h buckets newer than or matching the seed tail.
+        seed_last_t = slotted[-1]["t"]
+        for existing in self.candles_1h:
+            ex_t = float(existing["t"])
+            if ex_t == seed_last_t:
+                cur = slotted[-1]
+                cur["h"] = max(cur["h"], float(existing["h"]))
+                cur["l"] = min(cur["l"], float(existing["l"]))
+                cur["c"] = float(existing["c"])
+            elif ex_t > seed_last_t:
+                slotted.append(dict(existing))
+
         self.candles_1h.clear()
-        self.candles_1h.extend(dedup[-self.max_htf_bars:])
+        self.candles_1h.extend(slotted[-self.max_htf_bars:])
         return self.recompute_regime()
 
     def is_entry_permitted(self, side: OrderSide) -> bool:

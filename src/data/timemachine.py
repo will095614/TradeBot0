@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -55,13 +56,21 @@ CHOP_GATE_WINDOW_BARS = 20
 CHOP_GATE_ER_THRESHOLD = 0.25
 
 
-def efficiency_ratio(closes: List[float]) -> float:
+def efficiency_ratio(closes: Any) -> float:
     """Kaufman efficiency ratio over the given closes (oldest first)."""
-    if len(closes) < 2:
+    n = len(closes)
+    if n < 2:
         return 1.0
-    net = abs(closes[-1] - closes[0])
-    path = sum(abs(closes[i] - closes[i - 1]) for i in range(1, len(closes)))
-    return (net / path) if path > 0 else 1.0
+    it = iter(closes)
+    first = float(next(it))
+    prev = first
+    path = 0.0
+    for val in it:
+        cur = float(val)
+        path += abs(cur - prev)
+        prev = cur
+    net = abs(prev - first)
+    return (net / path) if path > 0.0 else 1.0
 
 
 class TimeMachineArena:
@@ -111,16 +120,25 @@ class TimeMachineArena:
         cum_pv = Decimal("0")
         # Audit 3.4 / V2.8.0: the opening range is anchored to the FIRST
         # 15 closed bars of each UTC trading day and frozen for the rest
-        # of that day. The old single bars[:15] anchor froze the range at
-        # the start of the whole dataset, so a multi-day backtest traded
-        # day 1's range forever. A rolling 14-bar window (the older bug)
-        # made backtest ORB a rolling-channel breakout instead.
-        orb_bars_by_day: Dict[Any, List[CandleBar]] = {}
-        closes: List[float] = []
+        # of that day. Tracked in O(1) per bar and reset at UTC midnight
+        # alongside session VWAP accumulators.
+        current_day: Any = None
+        orb_bar_count = 0
+        orb_day_high = Decimal("0")
+        orb_day_low = Decimal("0")
+        closes: deque[float] = deque(maxlen=CHOP_GATE_WINDOW_BARS + 1)
         # Rolling true ranges for the measured backtest ATR (F3).
-        true_ranges: List[Decimal] = []
+        true_ranges: deque[Decimal] = deque(maxlen=14)
 
         for i, bar in enumerate(bars):
+            orb_day = datetime.fromtimestamp(float(bar.timestamp), timezone.utc).date()
+            if orb_day != current_day:
+                current_day = orb_day
+                cum_vol = Decimal("0")
+                cum_pv = Decimal("0")
+                orb_bar_count = 0
+                orb_day_high = Decimal("0")
+                orb_day_low = Decimal("0")
 
             typ_price = (bar.high + bar.low + bar.close) / Decimal("3")
             # P0-B / F2: a zero-volume bar weighs 0 in the VWAP -- the old
@@ -138,17 +156,20 @@ class TimeMachineArena:
             # almost never trigger (ORB was dead in backtest). While the
             # day's first 15 bars are still forming the range uses that
             # day's closed bars so far; from bar 15 on it is the frozen
-            # first 15 of the day. The UTC day key rebuilds the range when
-            # the replayed tape crosses midnight.
-            orb_day = datetime.fromtimestamp(float(bar.timestamp), timezone.utc).date()
-            orb_day_bars = orb_bars_by_day.setdefault(orb_day, [])
-            if orb_day_bars:
-                orb_high = max(b.high for b in orb_day_bars)
-                orb_low = min(b.low for b in orb_day_bars)
+            # first 15 of the day.
+            if orb_bar_count > 0:
+                orb_high, orb_low = orb_day_high, orb_day_low
             else:
                 orb_high, orb_low = bar.high, bar.low
-            if len(orb_day_bars) < 15:
-                orb_day_bars.append(bar)
+            if orb_bar_count < 15:
+                if orb_bar_count == 0:
+                    orb_day_high, orb_day_low = bar.high, bar.low
+                else:
+                    if bar.high > orb_day_high:
+                        orb_day_high = bar.high
+                    if bar.low < orb_day_low:
+                        orb_day_low = bar.low
+                orb_bar_count += 1
             orb_mid = (orb_high + orb_low) / Decimal("2")
 
             # P0-B / F3: the backtest ATR is measured from the bars being
@@ -162,8 +183,6 @@ class TimeMachineArena:
             if prev_bar is not None:
                 tr = max(tr, abs(bar.high - prev_bar.close), abs(bar.low - prev_bar.close))
             true_ranges.append(tr)
-            if len(true_ranges) > 14:
-                true_ranges.pop(0)
             self.broker.current_atr = sum(true_ranges, Decimal("0")) / Decimal(len(true_ranges))
 
             # 1. Advance exchange venue with full OHLC candle prices (checks intra-bar stops & targets)
@@ -183,11 +202,10 @@ class TimeMachineArena:
             chop = (
                 chop_gate
                 and len(closes) > CHOP_GATE_WINDOW_BARS
-                and efficiency_ratio(closes[-CHOP_GATE_WINDOW_BARS - 1:])
-                < CHOP_GATE_ER_THRESHOLD
+                and efficiency_ratio(closes) < CHOP_GATE_ER_THRESHOLD
             )
             indicators = {
-                "atr": bar.atr,
+                "atr": bar.atr if (bar.atr is not None and bar.atr > Decimal("0")) else self.broker.current_atr,
                 "high": bar.high,
                 "low": bar.low,
                 "mean_ref": vwap,
@@ -390,6 +408,23 @@ class MonteCarloOddsEvaluator:
     def __init__(self, seed: Optional[int] = 19):
         self.seed = seed
         self._rng = np.random.default_rng(seed) if np is not None else None
+        self._ret_cache_key: Optional[tuple] = None
+        self._ret_cache_val: Optional[tuple] = None
+
+    @staticmethod
+    def _reject_bracket(verdict: str) -> MonteCarloBracketOdds:
+        return MonteCarloBracketOdds(
+            passed=False,
+            target_prob=0.0,
+            stop_prob=1.0,
+            neither_prob=0.0,
+            decided_win_rate=0.0,
+            expected_r=-1.0,
+            r_multiple=0.0,
+            breakeven_prob=1.0,
+            verdict=verdict,
+            green_prob=0.0,
+        )
 
     def evaluate_bracket(
         self,
@@ -402,70 +437,98 @@ class MonteCarloOddsEvaluator:
         n_steps: int = 120,
         min_ev_threshold: float = -0.05,
     ) -> MonteCarloBracketOdds:
-        entry_f = float(entry_price)
-        sl_f = float(stop_loss)
-        if entry_f <= 0.0 or sl_f <= 0.0 or sl_f == entry_f:
-            return MonteCarloBracketOdds(
-                passed=False,
-                target_prob=0.0,
-                stop_prob=1.0,
-                neither_prob=0.0,
-                decided_win_rate=0.0,
-                expected_r=-1.0,
-                r_multiple=0.0,
-                breakeven_prob=1.0,
-                verdict="Rejected (Invalid SL/Entry)",
-                green_prob=0.0,
-            )
+        try:
+            entry_f = float(entry_price)
+            sl_f = float(stop_loss)
+        except (TypeError, ValueError):
+            return self._reject_bracket("Rejected (Invalid SL/Entry)")
+        if (
+            not (math.isfinite(entry_f) and math.isfinite(sl_f))
+            or entry_f <= 0.0
+            or sl_f <= 0.0
+            or sl_f == entry_f
+        ):
+            return self._reject_bracket("Rejected (Invalid SL/Entry)")
 
         is_short = (sl_f > entry_f)
         stop_dist = abs(entry_f - sl_f)
         r_assumed = False  # A2: set True when the 1.8R assumption is used below.
 
-        if is_short:
-            # SHORT bracket: Stop-Loss is above entry, Take-Profit is below entry
-            if take_profit is not None and float(take_profit) < entry_f:
+        if take_profit is not None:
+            try:
                 tp_f = float(take_profit)
+            except (TypeError, ValueError):
+                return self._reject_bracket("Rejected (Invalid TP)")
+            if not math.isfinite(tp_f) or tp_f <= 0.0:
+                return self._reject_bracket("Rejected (Invalid TP)")
+            if is_short:
+                if tp_f >= entry_f:
+                    return self._reject_bracket("Rejected (TP on wrong side of entry)")
                 target_dist = entry_f - tp_f
-                r_mult = max(0.5, target_dist / stop_dist)
             else:
-                # Uncapped short runner: no TP was given, so the target
-                # is ASSUMED at UNCAPPED_RUNNER_R_MULTIPLE (1.8R) downward
-                # (A2: model assumption, not a measured exit).
-                r_mult = UNCAPPED_RUNNER_R_MULTIPLE
-                r_assumed = True
-                tp_f = entry_f - (stop_dist * r_mult)
-        else:
-            # LONG bracket: Stop-Loss is below entry, Take-Profit is above entry
-            if take_profit is not None and float(take_profit) > entry_f:
-                tp_f = float(take_profit)
+                if tp_f <= entry_f:
+                    return self._reject_bracket("Rejected (TP on wrong side of entry)")
                 target_dist = tp_f - entry_f
-                r_mult = max(0.5, target_dist / stop_dist)
-            else:
-                # Uncapped trend runner: no TP was given, so the target
-                # is ASSUMED at UNCAPPED_RUNNER_R_MULTIPLE (1.8R) upward
-                # (A2: model assumption, not a measured exit).
-                r_mult = UNCAPPED_RUNNER_R_MULTIPLE
-                r_assumed = True
-                tp_f = entry_f + (stop_dist * r_mult)
+            r_mult = target_dist / stop_dist
+        else:
+            # Uncapped trend runner: no TP was given, so the target
+            # is ASSUMED at UNCAPPED_RUNNER_R_MULTIPLE (1.8R)
+            # (A2: model assumption, not a measured exit).
+            r_mult = UNCAPPED_RUNNER_R_MULTIPLE
+            r_assumed = True
+            tp_f = (entry_f - (stop_dist * r_mult)) if is_short else (entry_f + (stop_dist * r_mult))
 
         breakeven_win_rate = 1.0 / (1.0 + r_mult)
 
         # Estimate empirical volatility, drift & return history from recent candles or ATR
         sigma = 0.0015
         drift = 0.0
-        empirical_rets: List[float] = []
+        empirical_ret_arr = None
+        empirical_mean = 0.0
+        used_empirical = False
         if recent_candles and len(recent_candles) >= 5:
-            closes = [float(c["c"]) for c in recent_candles if "c" in c]
-            if len(closes) >= 5:
-                empirical_rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
-                if len(empirical_rets) >= 4:
-                    std_val = float(np.std(empirical_rets)) if np is not None else 0.0015
-                    sigma = max(0.0006, min(0.008, std_val))
-                    mean_val = float(np.mean(empirical_rets)) if np is not None else 0.0
-                    drift = max(-0.001, min(0.001, mean_val * 0.5))
-        elif atr is not None and float(atr) > 0:
-            sigma = max(0.0006, min(0.008, (float(atr) / entry_f) * 0.85))
+            cache_key = (
+                len(recent_candles),
+                recent_candles[0].get("t"),
+                recent_candles[-1].get("t"),
+                recent_candles[-1].get("c"),
+            )
+            if self._ret_cache_key == cache_key and self._ret_cache_val is not None:
+                empirical_ret_arr, empirical_mean, sigma, drift, used_empirical = self._ret_cache_val
+            else:
+                closes: List[float] = []
+                for c in recent_candles:
+                    if "c" not in c:
+                        continue
+                    try:
+                        cv = float(c["c"])
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(cv) and cv > 0.0:
+                        closes.append(cv)
+                if len(closes) >= 5:
+                    emp_rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
+                    if len(emp_rets) >= 4:
+                        if np is not None:
+                            empirical_ret_arr = np.asarray(emp_rets, dtype=float)
+                            std_val = float(np.std(empirical_ret_arr))
+                            empirical_mean = float(np.mean(empirical_ret_arr))
+                        else:
+                            std_val = 0.0015
+                            empirical_mean = 0.0
+                        sigma = max(0.0006, min(0.008, std_val))
+                        drift = max(-0.001, min(0.001, empirical_mean * 0.5))
+                        used_empirical = True
+                self._ret_cache_key = cache_key
+                self._ret_cache_val = (empirical_ret_arr, empirical_mean, sigma, drift, used_empirical)
+
+        if not used_empirical and atr is not None:
+            try:
+                atr_f = float(atr)
+            except (TypeError, ValueError):
+                atr_f = 0.0
+            if math.isfinite(atr_f) and atr_f > 0.0:
+                sigma = max(0.0006, min(0.008, (atr_f / entry_f) * 0.85))
 
         # Risk-neutral Ito convexity adjustment keeps E[S_t] = S_0 * exp(drift*t)
         # symmetric between LONG and SHORT brackets under log-return compounding.
@@ -473,10 +536,9 @@ class MonteCarloOddsEvaluator:
 
         # Vectorized path simulation via NumPy (fat-tailed bootstrap + antithetic variance reduction)
         if np is not None and self._rng is not None:
-            if len(empirical_rets) >= 20:
-                ret_arr = np.asarray(empirical_rets, dtype=float)
-                shocks = self._rng.choice(ret_arr, size=(n_sims, n_steps), replace=True)
-                shocks = shocks - float(np.mean(ret_arr)) + eff_drift
+            if empirical_ret_arr is not None and len(empirical_ret_arr) >= 20:
+                shifted_rets = empirical_ret_arr - empirical_mean + eff_drift
+                shocks = self._rng.choice(shifted_rets, size=(n_sims, n_steps), replace=True)
             else:
                 # Heavy-tailed Student-t(df=6) shocks variance-matched to sigma
                 # Paired with antithetic variates [-z, +z] to eliminate small-sample drift noise.
@@ -488,21 +550,40 @@ class MonteCarloOddsEvaluator:
                 if len(shocks) < n_sims:
                     extra = eff_drift + self._rng.standard_t(df=df, size=(1, n_steps)) * scale_t
                     shocks = np.concatenate([shocks, extra], axis=0)
-            paths = entry_f * np.exp(np.cumsum(shocks, axis=1))
-            # Intra-step wick excursion envelope models high/low touches between closes
+
+            # Evaluate barrier hits directly in log-return space (avoids full 2D exp + 3 extra arrays).
+            log_paths = np.cumsum(shocks, axis=1, out=shocks)
             wick_env = 0.25 * sigma
-            step_highs = paths * (1.0 + wick_env)
-            step_lows = paths * max(0.0, 1.0 - wick_env)
+            hi_factor = 1.0 + wick_env
+            lo_factor = max(0.0, 1.0 - wick_env)
 
             if is_short:
-                stop_hit = step_highs >= sl_f
-                target_hit = step_lows <= tp_f
+                sl_log_thr = math.log(sl_f / (entry_f * hi_factor))
+                stop_hit = log_paths >= sl_log_thr
+                if tp_f <= 0.0:
+                    target_hit = np.zeros_like(stop_hit)
+                elif lo_factor <= 0.0:
+                    target_hit = np.ones_like(stop_hit)
+                else:
+                    tp_log_thr = math.log(tp_f / (entry_f * lo_factor))
+                    target_hit = log_paths <= tp_log_thr
             else:
-                stop_hit = step_lows <= sl_f
-                target_hit = step_highs >= tp_f
+                if lo_factor <= 0.0:
+                    stop_hit = np.ones((n_sims, n_steps), dtype=bool)
+                else:
+                    sl_log_thr = math.log(sl_f / (entry_f * lo_factor))
+                    stop_hit = log_paths <= sl_log_thr
+                if tp_f <= 0.0:
+                    target_hit = np.ones_like(stop_hit)
+                else:
+                    tp_log_thr = math.log(tp_f / (entry_f * hi_factor))
+                    target_hit = log_paths >= tp_log_thr
 
-            first_stop = np.where(stop_hit.any(axis=1), np.argmax(stop_hit, axis=1), 999999)
-            first_target = np.where(target_hit.any(axis=1), np.argmax(target_hit, axis=1), 999999)
+            rows = np.arange(n_sims)
+            stop_idx = np.argmax(stop_hit, axis=1)
+            target_idx = np.argmax(target_hit, axis=1)
+            first_stop = np.where(stop_hit[rows, stop_idx], stop_idx, 999999)
+            first_target = np.where(target_hit[rows, target_idx], target_idx, 999999)
 
             # Conservative tie-breaker matching BrokerSim.on_tick: stop wins equal-step touches
             stop_first = (first_stop <= first_target) & (first_stop < 999999)
@@ -513,10 +594,11 @@ class MonteCarloOddsEvaluator:
             payoffs[stop_first] = -1.0
             payoffs[target_first] = r_mult
             if neither.any():
+                term_prices = entry_f * np.exp(log_paths[neither, -1])
                 if is_short:
-                    payoffs[neither] = (entry_f - paths[neither, -1]) / stop_dist
+                    payoffs[neither] = (entry_f - term_prices) / stop_dist
                 else:
-                    payoffs[neither] = (paths[neither, -1] - entry_f) / stop_dist
+                    payoffs[neither] = (term_prices - entry_f) / stop_dist
 
             target_prob = float(np.mean(target_first))
             stop_prob = float(np.mean(stop_first))
@@ -526,9 +608,9 @@ class MonteCarloOddsEvaluator:
             # trader-timemachine specification:
             # Green paths: Target first, or finished in profit at simulation horizon
             if is_short:
-                green_paths = target_first | (neither & (paths[:, -1] <= entry_f))
+                green_paths = target_first | (neither & (log_paths[:, -1] <= 0.0))
             else:
-                green_paths = target_first | (neither & (paths[:, -1] >= entry_f))
+                green_paths = target_first | (neither & (log_paths[:, -1] >= 0.0))
             green_prob = float(np.mean(green_paths))
         else:
             # A1: NumPy is missing, so no Monte Carlo paths ran at all.

@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import math
+import threading
 import time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,14 +27,18 @@ class ViewModelPublisher:
     """
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self.last_candle_sig: Optional[str] = None
         self.last_fill_seq: int = -1
+        self.last_fill_sig: Optional[Tuple[int, int, bool, str]] = None
         self.last_history_sig: Optional[Tuple[int, float]] = None
 
     def reset(self) -> None:
-        self.last_candle_sig = None
-        self.last_fill_seq = -1
-        self.last_history_sig = None
+        with self._lock:
+            self.last_candle_sig = None
+            self.last_fill_seq = -1
+            self.last_fill_sig = None
+            self.last_history_sig = None
 
     @staticmethod
     def finite(val: Any, default: float = 0.0) -> float:
@@ -53,6 +58,18 @@ class ViewModelPublisher:
         raw = f"{len(candles)}:{first_t}:{last.get('t')}:{last.get('o')}:{last.get('h')}:{last.get('l')}:{last.get('c')}"
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def compute_fill_signature(fills: List[Dict[str, Any]]) -> Tuple[int, int, bool, str]:
+        if not fills:
+            return (0, 0, False, "")
+        top = fills[0]
+        return (
+            len(fills),
+            int(top.get("seq", 0) or 0),
+            bool(top.get("is_live", False)),
+            str(top.get("time", "")),
+        )
+
     def compute_delta_payload(
         self, full_state: Dict[str, Any], force_full: bool = False
     ) -> Dict[str, Any]:
@@ -67,21 +84,25 @@ class ViewModelPublisher:
         fills = full_state.get("fills") or []
 
         candle_sig = self.compute_candle_signature(candles)
-        top_fill_seq = int(fills[0]["seq"]) if fills and "seq" in fills[0] else 0
+        fill_sig = self.compute_fill_signature(fills)
+        top_fill_seq = fill_sig[1]
 
-        if force_full or self.last_candle_sig is None:
+        with self._lock:
+            if force_full or self.last_candle_sig is None:
+                self.last_candle_sig = candle_sig
+                self.last_fill_seq = top_fill_seq
+                self.last_fill_sig = fill_sig
+                delta["is_delta"] = False
+                delta["candles_unchanged"] = False
+                delta["fills_unchanged"] = False
+                return delta
+
+            candles_same = candle_sig == self.last_candle_sig
+            fills_same = fill_sig == self.last_fill_sig
+
             self.last_candle_sig = candle_sig
             self.last_fill_seq = top_fill_seq
-            delta["is_delta"] = False
-            delta["candles_unchanged"] = False
-            delta["fills_unchanged"] = False
-            return delta
-
-        candles_same = candle_sig == self.last_candle_sig
-        fills_same = top_fill_seq == self.last_fill_seq
-
-        self.last_candle_sig = candle_sig
-        self.last_fill_seq = top_fill_seq
+            self.last_fill_sig = fill_sig
 
         delta["is_delta"] = bool(candles_same or fills_same)
         delta["candles_unchanged"] = candles_same
@@ -98,54 +119,52 @@ class ViewModelPublisher:
         self, snapshot: Dict[str, Any], force_full: bool = False
     ) -> Dict[str, Any]:
         """
-        Audit §5.2: same output as compute_delta_payload, but the heavy
-        arrays are dropped BEFORE the deepcopy instead of after it.
-
-        The old path deepcopied the whole snapshot (150 candles + 60
-        fills + price histories) on every 1 Hz poll and only then popped
-        the unchanged arrays. This method peeks at the candle/fill
-        signatures first: when both are unchanged it deepcopies
-        everything EXCEPT candles/fills, so the copy cost is the small
-        remainder. When either changed (or on the first poll / force
-        full) it deepcopies the whole snapshot, exactly like before.
-        The snapshot itself is never mutated.
+        Audit §5.2: same output as compute_delta_payload, but any unchanged
+        heavy arrays (`candles` and/or `fills`) are excluded BEFORE the
+        deepcopy instead of popped after it. The snapshot itself is never mutated.
         """
         candles = snapshot.get("candles") or []
         fills = snapshot.get("fills") or []
         candle_sig = self.compute_candle_signature(candles)
-        top_fill_seq = int(fills[0]["seq"]) if fills and "seq" in fills[0] else 0
+        fill_sig = self.compute_fill_signature(fills)
+        top_fill_seq = fill_sig[1]
 
-        if force_full or self.last_candle_sig is None:
-            self.last_candle_sig = candle_sig
-            self.last_fill_seq = top_fill_seq
+        with self._lock:
+            if force_full or self.last_candle_sig is None:
+                self.last_candle_sig = candle_sig
+                self.last_fill_seq = top_fill_seq
+                self.last_fill_sig = fill_sig
+                is_first = True
+                candles_same = False
+                fills_same = False
+            else:
+                is_first = False
+                candles_same = candle_sig == self.last_candle_sig
+                fills_same = fill_sig == self.last_fill_sig
+                self.last_candle_sig = candle_sig
+                self.last_fill_seq = top_fill_seq
+                self.last_fill_sig = fill_sig
+
+        if is_first:
             delta = copy.deepcopy(snapshot)
             delta["is_delta"] = False
             delta["candles_unchanged"] = False
             delta["fills_unchanged"] = False
             return delta
 
-        candles_same = candle_sig == self.last_candle_sig
-        fills_same = top_fill_seq == self.last_fill_seq
-        self.last_candle_sig = candle_sig
-        self.last_fill_seq = top_fill_seq
+        omit = set()
+        if candles_same:
+            omit.add("candles")
+        if fills_same:
+            omit.add("fills")
+        if omit:
+            delta = copy.deepcopy({k: v for k, v in snapshot.items() if k not in omit})
+        else:
+            delta = copy.deepcopy(snapshot)
 
-        if candles_same and fills_same:
-            delta = copy.deepcopy(
-                {k: v for k, v in snapshot.items() if k not in ("candles", "fills")}
-            )
-            delta["is_delta"] = True
-            delta["candles_unchanged"] = True
-            delta["fills_unchanged"] = True
-            return delta
-
-        delta = copy.deepcopy(snapshot)
         delta["is_delta"] = bool(candles_same or fills_same)
         delta["candles_unchanged"] = candles_same
         delta["fills_unchanged"] = fills_same
-        if candles_same:
-            delta.pop("candles", None)
-        if fills_same:
-            delta.pop("fills", None)
         return delta
 
 
@@ -361,7 +380,7 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
             "status": "Hourly Leader (Active Dispatch)",
         }
     else:
-        active_tv_champ = engine.tv_champion
+        active_tv_champ = dict(engine.tv_champion)
 
     champ_id = active_tv_champ.get("strategy_id", "comp_agg")
     tv_payloads = []
@@ -378,6 +397,15 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
                     "status": "SIM_EXECUTED",
                 }
             )
+            if len(tv_payloads) >= 6:
+                break
+
+    intel_hub = engine.macro_commander.get_intel_hub_telemetry()
+    macro_state_safe = (
+        dict(intel_hub["macro_state"])
+        if isinstance(intel_hub, dict) and isinstance(intel_hub.get("macro_state"), dict)
+        else engine.macro_commander.current_state.to_dict()
+    )
 
     return {
         "paused": engine.paused,
@@ -390,9 +418,9 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         "closed_trades_to_next_evolve": int(trades_remaining),
         "next_evolve_sec_note": next_evolve_note,
         "next_evolve_trades_label": next_evolve_trades_label,
-        "evolution_events": engine.evolution_events,
-        "macro_commander": engine.macro_commander.current_state.to_dict(),
-        "intel_hub": engine.macro_commander.get_intel_hub_telemetry(),
+        "evolution_events": [dict(e) for e in engine.evolution_events],
+        "macro_commander": macro_state_safe,
+        "intel_hub": intel_hub,
         "mtf": {
             "htf_bias": getattr(engine, "htf_bias", "NEUTRAL"),
             "htf_ema_50": fz(getattr(engine, "htf_ema_50", 0.0)),

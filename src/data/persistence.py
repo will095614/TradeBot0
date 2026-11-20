@@ -80,9 +80,13 @@ class ArenaStorage:
         with self._db_lock:
             if self._conn is None:
                 conn = sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False)
-                conn.execute("PRAGMA journal_mode=WAL;")
-                conn.execute("PRAGMA synchronous=NORMAL;")
-                conn.execute("PRAGMA temp_store=MEMORY;")
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    conn.execute("PRAGMA synchronous=NORMAL;")
+                    conn.execute("PRAGMA temp_store=MEMORY;")
+                except Exception:
+                    conn.close()
+                    raise
                 self._conn = conn
             return self._conn
 
@@ -161,7 +165,6 @@ class ArenaStorage:
                         data TEXT NOT NULL
                     );
 
-                    CREATE INDEX IF NOT EXISTS idx_candles_ts ON candles_1m(timestamp);
                     CREATE INDEX IF NOT EXISTS idx_ledger_ts ON execution_ledger(timestamp);
                     """
                 )
@@ -271,6 +274,51 @@ class ArenaStorage:
                         1 if fill_data.get("is_live") else 0,
                     ),
                 )
+
+    @_retry_on_db_error
+    def record_fills_batch(self, fills: List[Dict[str, Any]]) -> None:
+        if not fills:
+            return
+        now = time.time()
+        rows = [
+            (
+                int(f.get("seq", 0)),
+                float(f.get("timestamp", now)),
+                str(f.get("portfolio_id", "")),
+                str(f.get("strategy", "")),
+                str(f.get("symbol", "ETH/USD")),
+                str(f.get("side", "")),
+                str(f.get("action_label", "")),
+                float(f.get("qty", 0.0)),
+                float(f.get("price", 0.0)),
+                float(f["entry_price"]) if f.get("entry_price") is not None else None,
+                float(f["pnl"]) if f.get("pnl") is not None else None,
+                float(f.get("fee", 0.0)),
+                str(f.get("reason", "")),
+                1 if f.get("is_live") else 0,
+            )
+            for f in fills
+        ]
+        with self._db_lock:
+            with self._get_connection() as conn:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO execution_ledger (
+                        fill_seq, timestamp, portfolio_id, strategy, symbol,
+                        side, action_label, qty, price, entry_price, realized_pnl, fee, reason, is_live
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+
+    @_retry_on_db_error
+    def prune_old_candles(self, max_age_sec: float = 30 * 86400.0) -> int:
+        """Delete 1-minute candles older than max_age_sec to bound SQLite growth."""
+        cutoff = int(time.time() - max(60.0, float(max_age_sec)))
+        with self._db_lock:
+            with self._get_connection() as conn:
+                cur = conn.execute("DELETE FROM candles_1m WHERE timestamp < ?", (cutoff,))
+                return int(cur.rowcount or 0)
 
     @_retry_on_db_error
     def load_recent_fills(self, limit: int = 60) -> List[Dict[str, Any]]:

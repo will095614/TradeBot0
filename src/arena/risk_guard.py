@@ -23,12 +23,18 @@ class RiskGuard:
         market_price: Decimal,
         slippage_pct: Decimal = Decimal("0.0002")
     ) -> Tuple[bool, str]:
-        if ticket.qty <= Decimal("0"):
+        if not ticket.qty.is_finite() or ticket.qty <= Decimal("0"):
             return False, "Order quantity must be positive."
 
-        base_price = ticket.price if (ticket.price is not None and ticket.order_type == OrderType.LIMIT) else market_price
-        if base_price <= Decimal("0"):
+        base_price = (
+            ticket.price
+            if (ticket.price is not None and ticket.order_type in (OrderType.LIMIT, OrderType.STOP_MARKET))
+            else market_price
+        )
+        if not base_price.is_finite() or base_price <= Decimal("0"):
             return False, "Market price or order price must be positive."
+        if not market_price.is_finite() or not slippage_pct.is_finite():
+            return False, "Market price and slippage must be finite."
 
         # 1. Closing / Reducing Position Checks (Never blocked by drawdown/breaker)
         if portfolio.position_side == PositionSide.LONG and ticket.side == OrderSide.SELL:
@@ -48,11 +54,12 @@ class RiskGuard:
         if portfolio.max_drawdown_pct >= MAX_DRAWDOWN_LIMIT_PCT:
             return False, f"Max drawdown exceeded ({portfolio.max_drawdown_pct}% >= {MAX_DRAWDOWN_LIMIT_PCT}%). Circuit breaker condition."
 
-        # Factor in slippage for market orders
-        if ticket.order_type == OrderType.MARKET:
+        # Factor in slippage for market and stop-market orders
+        if ticket.order_type in (OrderType.MARKET, OrderType.STOP_MARKET):
             mult = (Decimal("1") + slippage_pct) if ticket.side == OrderSide.BUY else (Decimal("1") - slippage_pct)
-            effective_order_price = (market_price * mult).quantize(
-                PRECISION_CASH, rounding=ROUND_HALF_UP
+            effective_order_price = max(
+                PRECISION_CASH,
+                (base_price * mult).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP),
             )
         else:
             effective_order_price = base_price
@@ -69,9 +76,11 @@ class RiskGuard:
         if (current_pos_val + order_val) > max_allowed_val:
             return False, f"Order exceeds max position cap ({max_position_ratio * Decimal('100')}% of equity)"
 
-        # Check cash margin sufficiency including fee buffer
+        # Check cash margin sufficiency including fee buffer (matches BrokerSim fee formula)
         required_margin = (order_val / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-        estimated_fee = (order_val * portfolio.fee_rate).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        estimated_fee = (ticket.qty * effective_order_price * portfolio.fee_rate).quantize(
+            PRECISION_CASH, rounding=ROUND_HALF_UP
+        )
         if (required_margin + estimated_fee) > portfolio.cash:
             return False, f"Insufficient margin: requires {required_margin + estimated_fee}, available cash {portfolio.cash}"
 

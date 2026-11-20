@@ -56,6 +56,7 @@ import logging
 import os
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -152,6 +153,12 @@ def check_for_updates(
     url = get_manifest_url(manifest_url)
     if not url:
         return result
+    parsed_url = urlparse(url)
+    if parsed_url.scheme.lower() != "https" or not parsed_url.netloc:
+        logger.debug("Update check rejected non-HTTPS manifest URL: %r", url)
+        result["status"] = "check_failed"
+        return result
+    response = None
     try:
         response = requests.get(url, timeout=timeout)
         response.raise_for_status()
@@ -165,15 +172,27 @@ def check_for_updates(
         logger.debug("Update check failed: %s", exc)
         result["status"] = "check_failed"
         return result
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
     result["latest_version"] = latest
-    download_url = manifest.get("download_url")
-    result["download_url"] = str(download_url).strip() if download_url else None
-    notes = manifest.get("notes")
-    if notes:
-        result["notes"] = str(notes)
-    result["status"] = (
+    status = (
         "update_available"
         if compare_versions(latest, current_version) > 0
         else "up_to_date"
     )
+    result["status"] = status
+    raw_dl = manifest.get("download_url")
+    dl_str = str(raw_dl).strip() if raw_dl else ""
+    if status == "update_available" and dl_str:
+        dl_parsed = urlparse(dl_str)
+        result["download_url"] = dl_str if (dl_parsed.scheme.lower() == "https" and dl_parsed.netloc) else None
+    else:
+        result["download_url"] = None
+    notes = manifest.get("notes")
+    if notes:
+        result["notes"] = str(notes)
     return result

@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 import logging
+import math
 import time
 from typing import Any, Dict, List, Optional
 
@@ -96,11 +97,15 @@ class IndicatorEngineMixin:
         return fed
 
     def _seed_mtf_1h_history(self) -> None:
+        if self._stop_event.is_set() or not self._is_current_generation():
+            return
         ticker = parse_symbol_pairs(getattr(self, "symbol", "ETH/USD"))["yahoo"]
         try:
-            bars = self._fetch_historical_bars(ticker=ticker, period="7d", interval="1h")
+            bars = self._fetch_historical_bars(ticker=ticker, period="14d", interval="1h")
         except Exception as e:
             logger.debug("MTF 1h history seed skipped (fetch failed): %s", e)
+            return
+        if self._stop_event.is_set() or not self._is_current_generation():
             return
         if not bars:
             logger.debug("MTF 1h history seed skipped (no bars returned).")
@@ -124,6 +129,8 @@ class IndicatorEngineMixin:
             logger.debug("MTF 1h history seed skipped (%d bars < %d).", len(buckets), MultiTimeframeEngine.MIN_HTF_BARS)
             return
         with self.lock:
+            if self._stop_event.is_set() or not self._is_current_generation():
+                return
             bias = self.mtf_engine.seed_1h_buckets(buckets)
             self.candles_1h = self.mtf_engine.candles_1h
             self.htf_ema_50 = self.mtf_engine.htf_ema_50
@@ -140,20 +147,26 @@ class IndicatorEngineMixin:
         open_: Optional[Decimal] = None,
     ) -> None:
         """Aggregates a bar or tick into its 1m candle, updates MTF regimes, and queues/persists closed bars."""
-        minute = float(int(ts // 60) * 60)
         c = float(close)
         h = float(high) if high is not None else c
         lo = float(low) if low is not None else c
+        if not (math.isfinite(ts) and math.isfinite(c) and math.isfinite(h) and math.isfinite(lo)):
+            return
+        if c <= 0.0 or h <= 0.0 or lo <= 0.0:
+            return
+        minute = float(int(ts // 60) * 60)
+        if self.candles and minute < self.candles[-1]["t"]:
+            return
         if self.candles and self.candles[-1]["t"] == minute:
             cur = self.candles[-1]
             cur["h"] = max(cur["h"], h)
             cur["l"] = min(cur["l"], lo)
             cur["c"] = c
         elif not self.candles or minute > self.candles[-1]["t"]:
-            o = float(open_) if open_ is not None else (self.candles[-1]["c"] if self.candles else c)
+            o = float(open_) if (open_ is not None and math.isfinite(float(open_)) and float(open_) > 0.0) else (self.candles[-1]["c"] if self.candles else c)
             self.candles.append({"t": minute, "o": o, "h": max(h, o), "l": min(lo, o), "c": c})
             if len(self.candles) > self.max_candles:
-                self.candles = self.candles[-self.max_candles:]
+                del self.candles[:-self.max_candles]
 
         if self.candles:
             self._update_mtf_regimes(self.candles[-1])
@@ -193,8 +206,22 @@ class IndicatorEngineMixin:
     def _recompute_candle_indicators(self, period: int = 14) -> None:
         """Wilder RSI(14), ATR(14), ORB range, and session typical-price mean."""
         cs = self.candles
+        if not cs:
+            return
+        self._recompute_orb_range(cs)
+        cum_p = sum((x["h"] + x["l"] + x["c"]) / 3.0 for x in cs)
+        mean_val = cum_p / len(cs)
+        if math.isfinite(mean_val) and mean_val > 0.0:
+            self.live_typical_mean = Decimal(str(round(mean_val, 2)))
+
         if len(cs) < period + 1:
             return
+
+        trs = [
+            max(cs[i]["h"] - cs[i]["l"], abs(cs[i]["h"] - cs[i - 1]["c"]), abs(cs[i]["l"] - cs[i - 1]["c"]))
+            for i in range(1, len(cs))
+        ]
+
         closes = [x["c"] for x in cs]
         avg_g = sum(max(0.0, closes[i] - closes[i - 1]) for i in range(1, period + 1)) / period
         avg_l = sum(max(0.0, closes[i - 1] - closes[i]) for i in range(1, period + 1)) / period
@@ -212,19 +239,12 @@ class IndicatorEngineMixin:
             rs = avg_g / avg_l
             rsi = 100.0 - (100.0 / (1.0 + rs))
 
-        trs = [
-            max(cs[i]["h"] - cs[i]["l"], abs(cs[i]["h"] - cs[i - 1]["c"]), abs(cs[i]["l"] - cs[i - 1]["c"]))
-            for i in range(1, len(cs))
-        ]
         atr = sum(trs[:period]) / period
         for tr in trs[period:]:
             atr = (atr * (period - 1) + tr) / period
 
-        self.live_rsi = Decimal(str(round(rsi, 2)))
-        self.live_atr = max(Decimal("1.50"), Decimal(str(round(atr, 2))))
-        self.broker.current_atr = self.live_atr
-        self._recompute_orb_range(cs)
-
-        if cs:
-            cum_p = sum((x["h"] + x["l"] + x["c"]) / 3.0 for x in cs)
-            self.live_typical_mean = Decimal(str(round(cum_p / len(cs), 2)))
+        if math.isfinite(rsi):
+            self.live_rsi = Decimal(str(round(rsi, 2)))
+        if math.isfinite(atr):
+            self.live_atr = max(Decimal("1.50"), Decimal(str(round(atr, 2))))
+            self.broker.current_atr = self.live_atr

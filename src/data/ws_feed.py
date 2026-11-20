@@ -14,8 +14,11 @@ from decimal import Decimal
 from typing import Any, Callable, Dict, Optional
 
 import websockets
+from src.data.quote_feeds import LiveQuote, parse_symbol_pairs
 
 logger = logging.getLogger(__name__)
+_ZERO = Decimal("0")
+_QUANT_2 = Decimal("0.01")
 
 
 class StreamingCryptoFeed:
@@ -34,8 +37,6 @@ class StreamingCryptoFeed:
         stale_threshold_sec: float = 3.0,
         symbol: str = "ETH/USD",
     ) -> None:
-        from src.data.quote_feeds import parse_symbol_pairs
-
         stream_name = parse_symbol_pairs(symbol)["ws_stream"]
         self.symbol = symbol
         self.on_quote = on_quote_callback
@@ -49,6 +50,7 @@ class StreamingCryptoFeed:
         self.reconnect_count: int = 0
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._stream_task: Optional[asyncio.Task] = None
         self._active_ws: Optional[Any] = None
 
     def is_fresh(self, now: Optional[float] = None) -> bool:
@@ -76,30 +78,41 @@ class StreamingCryptoFeed:
         self.running = False
         self.connected = False
         loop = self._loop
+        task = self._stream_task
         ws = self._active_ws
         if loop and loop.is_running():
-            if ws is not None:
+            if task is not None:
+                try:
+                    loop.call_soon_threadsafe(task.cancel)
+                except Exception as e:
+                    logger.debug("WebSocket task cancel failed during stop: %s", e)
+            elif ws is not None:
                 try:
                     asyncio.run_coroutine_threadsafe(ws.close(), loop)
                 except Exception as e:
                     logger.debug("WebSocket close failed during stop: %s", e)
-            try:
-                loop.call_soon_threadsafe(loop.stop)
-            except Exception as e:
-                logger.debug("WebSocket loop stop failed: %s", e)
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=2.0)
         self._thread = None
 
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
-            self._loop.run_until_complete(self._connect_and_stream())
+            self._stream_task = self._loop.create_task(self._connect_and_stream())
+            self._loop.run_until_complete(self._stream_task)
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
             logger.debug("WebSocket event loop terminated: %s", e)
         finally:
+            self._stream_task = None
             try:
+                pending = asyncio.all_tasks(self._loop)
+                for p in pending:
+                    p.cancel()
+                if pending:
+                    self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                 self._loop.close()
             except Exception as e:
                 logger.debug("WebSocket event loop close failed: %s", e)
@@ -119,6 +132,8 @@ class StreamingCryptoFeed:
                     ping_timeout=10,
                     close_timeout=5,
                 ) as ws:
+                    if not self.running:
+                        break
                     self._active_ws = ws
                     self.connected = True
                     backoff = 1.0
@@ -151,13 +166,17 @@ class StreamingCryptoFeed:
                         break
                     await asyncio.sleep(0.1)
                 backoff = min(15.0, backoff * 1.5)
+            except asyncio.CancelledError:
+                self.connected = False
+                self._active_ws = None
+                break
             except Exception as e:
                 self.connected = False
                 self._active_ws = None
-                self.reconnect_count += 1
-                url_idx += 1
                 if not self.running:
                     break
+                self.reconnect_count += 1
+                url_idx += 1
                 logger.warning("WebSocket disconnected: %s. Reconnecting in %.1fs...", e, backoff)
                 for _ in range(int(backoff * 10)):
                     if not self.running:
@@ -170,24 +189,30 @@ class StreamingCryptoFeed:
         Parses Binance 24hr miniTicker/ticker payload into a LiveQuote instance.
         Fields: c (last price), b (best bid), a (best ask), h (24h high), l (24h low), v (24h vol), P (24h change %).
         """
-        from src.data.live_engine import LiveQuote
-
         try:
             if "c" not in d:
                 return None
-            price = Decimal(str(d["c"])).quantize(Decimal("0.01"))
-            if price <= Decimal("0"):
+            price = Decimal(str(d["c"])).quantize(_QUANT_2)
+            if not price.is_finite() or price <= _ZERO:
                 return None
-            bid = Decimal(str(d.get("b", price))).quantize(Decimal("0.01"))
-            ask = Decimal(str(d.get("a", price))).quantize(Decimal("0.01"))
-            if bid <= Decimal("0"):
+            bid = Decimal(str(d.get("b", price))).quantize(_QUANT_2)
+            ask = Decimal(str(d.get("a", price))).quantize(_QUANT_2)
+            if not bid.is_finite() or bid <= _ZERO:
                 bid = price
-            if ask <= Decimal("0"):
+            if not ask.is_finite() or ask <= _ZERO:
                 ask = price
-            high = Decimal(str(d.get("h", price))).quantize(Decimal("0.01"))
-            low = Decimal(str(d.get("l", price))).quantize(Decimal("0.01"))
-            vol = Decimal(str(d.get("v", "0"))).quantize(Decimal("0.01"))
-            chg = Decimal(str(d.get("P", "0.00"))).quantize(Decimal("0.01"))
+            high = Decimal(str(d.get("h", price))).quantize(_QUANT_2)
+            low = Decimal(str(d.get("l", price))).quantize(_QUANT_2)
+            vol = Decimal(str(d.get("v", "0"))).quantize(_QUANT_2)
+            chg = Decimal(str(d.get("P", "0.00"))).quantize(_QUANT_2)
+            if not high.is_finite() or high <= _ZERO:
+                high = price
+            if not low.is_finite() or low <= _ZERO:
+                low = price
+            if not vol.is_finite() or vol < _ZERO:
+                vol = _ZERO
+            if not chg.is_finite():
+                chg = _ZERO
 
             return LiveQuote(
                 price=price,

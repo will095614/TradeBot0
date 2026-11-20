@@ -13,6 +13,7 @@ let hasFirstChartDrawn = false;
 let hasFirstTableRendered = false;
 let splashLoop = null;
 let splashSafetyTimer = null;
+let splashTimers = [];
 let currentSplashSteps = [];
 // Exit-gate timing, hoisted so setSplashTarget() can tell whether the
 // gate is open: 100% is only ever shown once the first chart frame and
@@ -30,6 +31,7 @@ let isWizardOpen = false;
 // Global Arena Data & Polling States
 let latestState = null;
 let isPolling = false;
+let stateApplyEpoch = 0;
 let scaleMode = 'auto';    // 'auto' or 'full'
 
 // Position tracking states
@@ -94,6 +96,29 @@ function setLgWallpaper(wall) {
   if (latestState) drawPriceChart(latestState);
 }
 
+function sanitizeCssColor(val, fallback) {
+  const s = String(val || '').trim();
+  if (/^#[0-9a-fA-F]{3,8}$/.test(s) || /^rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+(?:\s*,\s*[\d.]+)?\s*\)$/.test(s)) {
+    return s;
+  }
+  return fallback || '#F59E0B';
+}
+
+function clearSplashTimers() {
+  splashTimers.forEach((id) => clearTimeout(id));
+  splashTimers.length = 0;
+}
+
+function scheduleSplashTimer(fn, delayMs) {
+  const id = setTimeout(() => {
+    const idx = splashTimers.indexOf(id);
+    if (idx !== -1) splashTimers.splice(idx, 1);
+    fn();
+  }, delayMs);
+  splashTimers.push(id);
+  return id;
+}
+
 let isStartingLiveTrading = false;
 async function ensureLiveTradingStarted() {
   if (isStartingLiveTrading) return;
@@ -102,9 +127,10 @@ async function ensureLiveTradingStarted() {
   if (latestState.live_orders_enabled) return;
 
   isStartingLiveTrading = true;
+  const myEpoch = ++stateApplyEpoch;
   try {
     const res = await window.pywebview.api.start_live_trading();
-    if (res) {
+    if (res && res.status !== 'blocked' && Array.isArray(res.strategies) && myEpoch === stateApplyEpoch) {
       latestState = res;
       renderAll(res);
     }
@@ -117,6 +143,7 @@ async function ensureLiveTradingStarted() {
 
 function startSplashSequence(isReset = false) {
   try {
+    clearSplashTimers();
     if (splashLoop) {
       clearInterval(splashLoop);
       splashLoop = null;
@@ -156,7 +183,15 @@ function startSplashSequence(isReset = false) {
       toastStaggerTimer = null;
     }
     const toastContainer = document.getElementById('chartNotificationContainer');
-    if (toastContainer) toastContainer.innerHTML = '';
+    if (toastContainer) {
+      Array.from(toastContainer.children).forEach((el) => {
+        if (el._countdownInterval) {
+          clearInterval(el._countdownInterval);
+          el._countdownInterval = null;
+        }
+      });
+      toastContainer.innerHTML = '';
+    }
 
     const overlay = document.getElementById('splashOverlay');
     const bar = document.getElementById('splashProgressBar');
@@ -185,11 +220,11 @@ function startSplashSequence(isReset = false) {
     // really rendered), so the bar can never claim 100% early. The 2350ms
     // jump below only tops the target up to the 90% cap.
     if (latestState && latestState.is_bootstrapped) {
-      setTimeout(() => setSplashTarget(35), 350);
-      setTimeout(() => setSplashTarget(55), 800);
-      setTimeout(() => setSplashTarget(75), 1300);
-      setTimeout(() => setSplashTarget(90), 1800);
-      setTimeout(() => setSplashTarget(100), 2350);
+      scheduleSplashTimer(() => setSplashTarget(35), 350);
+      scheduleSplashTimer(() => setSplashTarget(55), 800);
+      scheduleSplashTimer(() => setSplashTarget(75), 1300);
+      scheduleSplashTimer(() => setSplashTarget(90), 1800);
+      scheduleSplashTimer(() => setSplashTarget(100), 2350);
     }
 
     // Smooth animation loop for progress bar
@@ -237,7 +272,7 @@ function startSplashSequence(isReset = false) {
         clearInterval(splashLoop);
         splashLoop = null;
 
-        setTimeout(() => {
+        scheduleSplashTimer(() => {
           // Reveal the workspace smoothly once everything is 100% ready
           if (document.body) {
             document.body.classList.add('arena-ready');
@@ -260,10 +295,13 @@ function startSplashSequence(isReset = false) {
           locateMouseAndRefreshChart();
 
           // Second refresh and final live order activation after overlay transition
-          setTimeout(() => {
+          scheduleSplashTimer(() => {
             if (overlayEl) {
               overlayEl.style.display = 'none';
               overlayEl.classList.remove('fade-out');
+            }
+            if (appShell) {
+              appShell.classList.remove('arena-entering');
             }
             locateMouseAndRefreshChart();
             hasInitializedPositions = true;
@@ -296,9 +334,10 @@ function startSplashSequence(isReset = false) {
         const overlayEl = document.getElementById('splashOverlay');
         if (overlayEl) {
           overlayEl.classList.add('fade-out');
-          setTimeout(() => {
+          scheduleSplashTimer(() => {
             overlayEl.style.display = 'none';
             overlayEl.classList.remove('fade-out');
+            if (appShell) appShell.classList.remove('arena-entering');
           }, 1200);
         }
         locateMouseAndRefreshChart();
@@ -587,8 +626,8 @@ function createPositionToastElement(strat) {
     'comp_orb': 'ORB Breakout (15m)',
     'comp_vwap': 'Session Mean'
   };
-  const stratName = tagMap[strat.id] || strat.name || 'Quant Strategy';
-  const sColor = strat.color || '#F59E0B';
+  const stratName = escapeHtml(tagMap[strat.id] || strat.name || 'Quant Strategy');
+  const sColor = sanitizeCssColor(strat.color, '#F59E0B');
   const entryP = Number(strat.entry_price || 0);
   const tpP = Number(strat.take_profit || 0);
   const slP = Number(strat.stop_loss || 0);
@@ -669,9 +708,10 @@ function showPositionToast(strat) {
 }
 
 function showChartToast(opts = {}) {
-  const title = opts.triggerReason || 'Arena Event';
+  const title = escapeHtml(opts.triggerReason || 'Arena Event');
   const priceStr = opts.price ? `$${Number(opts.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '';
-  const action = opts.action || 'SYNC';
+  const action = escapeHtml(opts.action || 'SYNC');
+  const symStr = escapeHtml(opts.symbol || 'ETH/USD');
   const color = '#10F5A0';
 
   enqueueToast({
@@ -703,7 +743,7 @@ function showChartToast(opts = {}) {
           </div>
           <div class="toast-main-row" style="margin-top:6px;">
             <div class="toast-qty-col">
-              <span class="side-verb up">${opts.symbol || 'ETH/USD'}</span>
+              <span class="side-verb up">${symStr}</span>
             </div>
             <div class="toast-price-col">
               <span class="price-value" style="font-size:12px;">${priceStr}</span>
@@ -711,13 +751,6 @@ function showChartToast(opts = {}) {
           </div>
         </div>
       `;
-      const closeBtn = toast.querySelector('.toast-close');
-      if (closeBtn) {
-        closeBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          toast.remove();
-        });
-      }
       return toast;
     }
   });
@@ -731,10 +764,12 @@ function createPositionClosedToastElement(strat, fill, prevPos) {
     'comp_orb': 'ORB Breakout (15m)',
     'comp_vwap': 'Session Mean'
   };
-  const stratName = tagMap[strat.id] || strat.name || 'Quant Strategy';
-  const trigger = (fill && fill.trigger) ? fill.trigger : 'Strategy Exit';
-  const isTP = trigger.toLowerCase().includes('profit') || trigger.toLowerCase().includes('take profit');
-  const isSL = trigger.toLowerCase().includes('loss') || trigger.toLowerCase().includes('stop loss');
+  const stratName = escapeHtml(tagMap[strat.id] || strat.name || 'Quant Strategy');
+  const rawTrigger = (fill && (fill.trigger || fill.reason)) ? String(fill.trigger || fill.reason) : 'Strategy Exit';
+  const trigger = escapeHtml(rawTrigger);
+  const trigLower = rawTrigger.toLowerCase();
+  const isTP = trigLower.includes('profit') || trigLower.includes('take profit');
+  const isSL = trigLower.includes('loss') || trigLower.includes('stop loss') || trigLower.includes('trailing stop') || trigLower.includes('liquidation') || trigLower.includes('circuit breaker');
 
   let pnlVal = 0;
   if (fill && fill.pnl !== null && fill.pnl !== undefined) {
@@ -760,7 +795,7 @@ function createPositionClosedToastElement(strat, fill, prevPos) {
   toast.style.setProperty('--toast-color', sColor);
   toast.style.setProperty('--toast-glow', hexToRgba(sColor, 0.32));
 
-  const timeStr = (fill && fill.time) ? fill.time : new Date().toTimeString().split(' ')[0];
+  const timeStr = escapeHtml((fill && fill.time) ? fill.time : new Date().toTimeString().split(' ')[0]);
 
   toast.innerHTML = `
     <div class="toast-ambient-glow"></div>
@@ -799,7 +834,7 @@ function createPositionClosedToastElement(strat, fill, prevPos) {
       </div>
       <div class="toast-bracket-row">
         <div class="toast-pnl-pill ${pnlCls}">
-          <span>Realized PnL: <strong>${pnlVal >= 0 ? '+' : ''}$${Math.abs(pnlVal).toFixed(2)}</strong></span>
+          <span>Realized PnL: <strong>${pnlVal >= 0 ? '+' : '-'}$${Math.abs(pnlVal).toFixed(2)}</strong></span>
           <span class="toast-pnl-trigger">${trigger}</span>
         </div>
       </div>
@@ -906,14 +941,15 @@ async function pollBackend() {
     return;
   }
   isPolling = true;
+  const pollEpoch = ++stateApplyEpoch;
   try {
     if (window.pywebview && window.pywebview.api) {
       checkOnboardingBoot();
-      const useDelta = Boolean(latestState && typeof window.pywebview.api.get_state_delta === 'function');
+      const useDelta = Boolean(latestState && Array.isArray(latestState.candles) && typeof window.pywebview.api.get_state_delta === 'function');
       const state = useDelta
         ? await window.pywebview.api.get_state_delta(false)
         : await window.pywebview.api.get_state();
-      if (state) {
+      if (state && pollEpoch === stateApplyEpoch) {
         if (state.candles_unchanged && latestState && latestState.candles) {
           state.candles = latestState.candles;
         }
@@ -1033,8 +1069,13 @@ async function pollBackend() {
 
 async function triggerEvolution() {
   if (!window.pywebview || !window.pywebview.api) return;
-  const state = await window.pywebview.api.evolve_now();
-  if (state) { latestState = state; renderAll(state); }
+  const myEpoch = ++stateApplyEpoch;
+  try {
+    const state = await window.pywebview.api.evolve_now();
+    if (state && myEpoch === stateApplyEpoch) { latestState = state; renderAll(state); }
+  } catch (err) {
+    console.warn('evolve_now error:', err);
+  }
 }
 
 async function togglePause() {
@@ -1045,6 +1086,7 @@ async function togglePause() {
   const pauseBtn = document.getElementById('pauseBtn');
   if (pauseBtn) {
     const nextLbl = willPause ? 'Resume Feed' : 'Pause Feed';
+    pauseBtn._lastLabel = nextLbl;
     pauseBtn.innerHTML = `<span>${nextLbl}</span>`;
     pauseBtn.classList.toggle('btn-paused-active', willPause);
     pauseBtn.title = willPause ? 'Resume Live Feed (Press Space)' : 'Pause Live Feed (Press Space)';
@@ -1057,31 +1099,44 @@ async function togglePause() {
   }
   if (latestState) {
     latestState.paused = willPause;
-  } else {
-    latestState = { paused: willPause };
   }
   updateUiClockDisplay();
 
-  const state = await window.pywebview.api.toggle_pause();
-  if (state) {
-    latestState = state;
-    document.body.classList.toggle('arena-paused', Boolean(state.paused));
-    renderAll(state);
+  const myEpoch = ++stateApplyEpoch;
+  try {
+    const state = await window.pywebview.api.toggle_pause();
+    if (state && myEpoch === stateApplyEpoch) {
+      latestState = state;
+      document.body.classList.toggle('arena-paused', Boolean(state.paused));
+      renderAll(state);
+    }
+  } catch (err) {
+    console.warn('toggle_pause error:', err);
   }
 }
 
 async function toggleAutoEvolve() {
   if (!window.pywebview || !window.pywebview.api) return;
-  const state = await window.pywebview.api.toggle_auto_evolve();
-  if (state) { latestState = state; renderAll(state); }
+  const myEpoch = ++stateApplyEpoch;
+  try {
+    const state = await window.pywebview.api.toggle_auto_evolve();
+    if (state && myEpoch === stateApplyEpoch) { latestState = state; renderAll(state); }
+  } catch (err) {
+    console.warn('toggle_auto_evolve error:', err);
+  }
 }
 
 async function changeEvolveInterval(seconds) {
   if (!window.pywebview || !window.pywebview.api) return;
   const sec = parseInt(seconds, 10);
   if (isNaN(sec) || sec <= 0) return;
-  const state = await window.pywebview.api.set_evolve_interval(sec);
-  if (state) { latestState = state; renderAll(state); }
+  const myEpoch = ++stateApplyEpoch;
+  try {
+    const state = await window.pywebview.api.set_evolve_interval(sec);
+    if (state && myEpoch === stateApplyEpoch) { latestState = state; renderAll(state); }
+  } catch (err) {
+    console.warn('set_evolve_interval error:', err);
+  }
 }
 
 // Custom Gen interval dropdown (2026-11-13): replaces the native <select>.
@@ -1104,9 +1159,10 @@ const EVOLVE_INTERVAL_OPTIONS = [
 function syncEvolveIntervalUI(valueStr) {
   const labelEl = document.getElementById('evolveIntervalLabel');
   const opt = EVOLVE_INTERVAL_OPTIONS.find((o) => o.seconds === valueStr);
-  if (labelEl && opt) labelEl.textContent = opt.label;
+  if (labelEl && opt && labelEl.textContent !== opt.label) labelEl.textContent = opt.label;
   const menu = document.getElementById('evolveIntervalMenu');
-  if (!menu) return;
+  if (!menu || menu._lastVal === valueStr) return;
+  menu._lastVal = valueStr;
   menu.querySelectorAll('.lg-dropdown__item').forEach((item) => {
     const selected = item.dataset.seconds === valueStr;
     item.classList.toggle('is-selected', selected);
@@ -1800,9 +1856,12 @@ function renderTacticalHud(state) {
     const tube = document.getElementById(id);
     if (!tube) return;
     const clamped = Math.max(0.14, Math.min(0.94, Number(level) || 0.5));
-    tube.style.setProperty('--lv', clamped.toFixed(2));
-    const card = tube.closest('.lg-vessel-card');
-    if (card) card.style.setProperty('--lv', clamped.toFixed(2));
+    const nextLv = clamped.toFixed(2);
+    if (tube._lastLv === nextLv) return;
+    tube._lastLv = nextLv;
+    tube.style.setProperty('--lv', nextLv);
+    const card = tube._vesselCard || (tube._vesselCard = tube.closest('.lg-vessel-card'));
+    if (card) card.style.setProperty('--lv', nextLv);
   };
 
   const champRoi = Number(champ.roi_pct || 0);
@@ -1822,15 +1881,17 @@ function renderLeaderboard(state) {
   if (!tbody) return;
   const strategies = (state.strategies || []).slice().sort((a, b) => (b.equity - a.equity) || (a.rank - b.rank));
 
-  const firstTops = new Map();
-  strategies.forEach(s => {
-    const el = leaderRowDomMap.get(s.id);
-    if (el) firstTops.set(s.id, el.getBoundingClientRect().top);
-  });
-
   const currentRowOrder = Array.from(tbody.children).map(el => el.dataset.stratId).join(',');
   const nextRowOrder = strategies.map(s => String(s.id)).join(',');
   const orderChanged = currentRowOrder !== nextRowOrder;
+
+  const firstTops = new Map();
+  if (orderChanged) {
+    strategies.forEach(s => {
+      const el = leaderRowDomMap.get(s.id);
+      if (el) firstTops.set(s.id, el.getBoundingClientRect().top);
+    });
+  }
 
   const leadShortCodes = {
     'comp_agg': 'AGG',
@@ -1983,7 +2044,7 @@ function renderFills(state) {
       } else if (f.action_label === 'COVER SHORT') {
         actionBadge = '<span class="badge-buy">COVER SHORT</span>';
       } else {
-        actionBadge = `<span class="${isBuy ? 'badge-buy' : 'badge-sell'}">${f.action_label}</span>`;
+        actionBadge = `<span class="${isBuy ? 'badge-buy' : 'badge-sell'}">${escapeHtml(f.action_label)}</span>`;
       }
     } else {
       actionBadge = isBuy
@@ -1992,7 +2053,7 @@ function renderFills(state) {
     }
 
     const displaySeq = (f.seq !== undefined && f.seq !== null && f.seq > 0)
-      ? (f.seq <= liveCount ? f.seq : (liveCount - idx))
+      ? f.seq
       : (liveCount - idx);
     const seqStr = `#${displaySeq}`;
     const priceSubHtml = (!f.is_entry && f.entry_price)
@@ -2000,33 +2061,50 @@ function renderFills(state) {
       : '';
 
     const animCls = (idx === 0 && isNewTop) ? ' new-fill-row' : '';
-    const sShort = stratShortMap[f.strategy] || (f.strategy ? f.strategy.slice(0, 5) : 'STRAT');
+    const sShort = escapeHtml(stratShortMap[f.strategy] || (f.strategy ? f.strategy.slice(0, 5) : 'STRAT'));
+    const stratTitle = escapeHtml(f.strategy || '');
+    const timeEsc = escapeHtml(f.time || '');
+    const reasonEsc = escapeHtml(f.trigger || f.reason || '—');
     const qtyStr = Number(f.qty) ? Number(f.qty).toFixed(2) : '0.00';
 
     return `
       <tr class="num${animCls}">
         <td style="color:var(--ss-text-faint);font-size:9.5px;">${seqStr}</td>
-        <td style="color:var(--ss-text);white-space:nowrap;font-family:var(--font-mono);">${f.time}</td>
-        <td style="font-weight:700;color:var(--ss-text-strong);white-space:nowrap;" title="${f.strategy}">${sShort}</td>
+        <td style="color:var(--ss-text);white-space:nowrap;font-family:var(--font-mono);">${timeEsc}</td>
+        <td style="font-weight:700;color:var(--ss-text-strong);white-space:nowrap;" title="${stratTitle}">${sShort}</td>
         <td style="white-space:nowrap;">${actionBadge}</td>
         <td class="text-right">${qtyStr}</td>
         <td class="text-right">${fmtUsd(f.price, 2)}${priceSubHtml}</td>
         <td class="text-right ${pnlCls}" style="font-weight:650;">${pnlStr}</td>
-        <td style="color:var(--ss-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${f.trigger || f.reason || ''}">${f.trigger || f.reason || '—'}</td>
+        <td style="color:var(--ss-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${reasonEsc}">${reasonEsc}</td>
       </tr>
     `;
   }).join('');
 }
 
 /* HiDPI Vector Canvas Helpers */
+let cachedCanvasSize = null;
+
+function invalidateCanvasSizeCache() {
+  cachedCanvasSize = null;
+}
+
 function setupHiDPICanvas(canvas) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2.0);
-  const rect = (canvas.parentElement || canvas).getBoundingClientRect();
-  const w = Math.max(200, Math.floor(rect.width));
-  const h = Math.max(100, Math.floor(rect.height));
-  if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
-    canvas.width = Math.floor(w * dpr);
-    canvas.height = Math.floor(h * dpr);
+  if (!cachedCanvasSize || cachedCanvasSize.dpr !== dpr) {
+    const rect = (canvas.parentElement || canvas).getBoundingClientRect();
+    cachedCanvasSize = {
+      w: Math.max(200, Math.floor(rect.width)),
+      h: Math.max(100, Math.floor(rect.height)),
+      dpr: dpr
+    };
+  }
+  const { w, h } = cachedCanvasSize;
+  const targetW = Math.floor(w * dpr);
+  const targetH = Math.floor(h * dpr);
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
   }
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -2217,7 +2295,7 @@ function startChartAnimLoop() {
 
 function stepChartAnimLoop() {
   chartAnimRaf = null;
-  if (!latestState) return;
+  if (!latestState || document.hidden || currentMainView !== 'arena') return;
   if (latestState.paused) {
     renderPriceCanvas(latestState, animCandles, animSpot, animMinP, animMaxP);
     return;
@@ -2318,7 +2396,6 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
   if (!canvas || !state) return;
   const { ctx, w, h } = setupHiDPICanvas(canvas);
   if (w <= 0 || h <= 0) return;
-  ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = '#080c13';
   ctx.fillRect(0, 0, w, h);
 
@@ -2335,7 +2412,8 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
   const candleRightOffset = 80;
   const candlePlotW = Math.max(50, plotW - candleRightOffset);
 
-  const toY = (v) => padTop + (1 - (v - minP) / (maxP - minP)) * plotH;
+  const priceSpan = (maxP - minP) || 1;
+  const toY = (v) => padTop + (1 - (v - minP) / priceSpan) * plotH;
 
   // 1. Precision Hairline Grid & Tabular Price Axis (Pure Monochrome on Pure Black)
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
@@ -2397,35 +2475,48 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     let maxC = visibleCandles[0], minC = visibleCandles[0];
     let maxIdx = 0, minIdx = 0;
 
-    visibleCandles.forEach((c, i) => {
+    // Pass 1: Batch candle wicks into 2 paths (up / down) instead of N stroke calls
+    ctx.lineWidth = 1.25;
+    ctx.strokeStyle = 'rgba(0, 230, 118, 0.85)';
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const c = visibleCandles[i];
       if (c.h > maxC.h) { maxC = c; maxIdx = i; }
       if (c.l < minC.l) { minC = c; minIdx = i; }
+      if (c.c >= c.o) {
+        const cx = startX + (i + 0.5) * step + shiftX;
+        ctx.moveTo(cx, toY(c.h));
+        ctx.lineTo(cx, toY(c.l));
+      }
+    }
+    ctx.stroke();
 
+    ctx.strokeStyle = 'rgba(255, 51, 75, 0.85)';
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const c = visibleCandles[i];
+      if (c.c < c.o) {
+        const cx = startX + (i + 0.5) * step + shiftX;
+        ctx.moveTo(cx, toY(c.h));
+        ctx.lineTo(cx, toY(c.l));
+      }
+    }
+    ctx.stroke();
+
+    // Pass 2: Rounded Candle Bodies
+    for (let i = 0; i < n; i++) {
+      const c = visibleCandles[i];
       const cx = startX + (i + 0.5) * step + shiftX;
       if (i === n - 1) activeHeadX = cx;
 
       const isUp = c.c >= c.o;
-      const bodyColor = isUp ? '#00E676' : '#FF334B';
-      const wickColor = isUp ? 'rgba(0, 230, 118, 0.85)' : 'rgba(255, 51, 75, 0.85)';
+      ctx.fillStyle = isUp ? '#00E676' : '#FF334B';
       const yOpen = toY(c.o);
       const yClose = toY(c.c);
-      const yHigh = toY(c.h);
-      const yLow = toY(c.l);
-
-      // Wick
-      ctx.strokeStyle = wickColor;
-      ctx.lineWidth = 1.25;
-      ctx.beginPath();
-      ctx.moveTo(cx, yHigh);
-      ctx.lineTo(cx, yLow);
-      ctx.stroke();
-
-      // Rounded Candle Body
-      ctx.fillStyle = bodyColor;
       const topY = Math.min(yOpen, yClose);
       const bHeight = Math.max(2.5, Math.abs(yClose - yOpen));
       fillRoundRect(ctx, cx - bodyW / 2, topY, bodyW, bHeight, 1.5);
-    });
+    }
 
 
     // Session High / Low Callout Pills
@@ -2926,12 +3017,9 @@ let spotlightRaf = null;
 function trackLgSpotlight(e) {
   const evt = e || latestPointerEvent;
   if (!evt) return;
-  let target = null;
-  if (evt.clientX !== undefined && evt.clientY !== undefined) {
+  let target = (evt.target && typeof evt.target.closest === 'function') ? evt.target : null;
+  if (!target && evt.clientX !== undefined && evt.clientY !== undefined) {
     target = document.elementFromPoint(evt.clientX, evt.clientY);
-  }
-  if (!target && evt.target) {
-    target = evt.target;
   }
   if (!target || typeof target.closest !== 'function') return;
 
@@ -3123,8 +3211,10 @@ function setupChartInteraction() {
 // Fluid ResizeObserver with 60 FPS requestAnimationFrame throttling
 let resizeRaf = null;
 const triggerSmoothResize = () => {
+  invalidateCanvasSizeCache();
   if (resizeRaf) cancelAnimationFrame(resizeRaf);
   resizeRaf = requestAnimationFrame(() => {
+    resizeRaf = null;
     if (latestState) drawPriceChart(latestState);
   });
 };
@@ -3154,6 +3244,16 @@ function toggleDomFullscreen() {
   }
 }
 
+function isAnyModalBlockingShortcuts() {
+  if (isWizardOpen) return true;
+  const ids = ['shutdownModal', 'resetConfirmModal', 'installCancelConfirmModal', 'networkOfflineOverlay'];
+  for (let i = 0; i < ids.length; i++) {
+    const el = document.getElementById(ids[i]);
+    if (el && el.classList.contains('modal-visible')) return true;
+  }
+  return false;
+}
+
 window.addEventListener('keydown', function (e) {
   if (e.key === 'F11' || e.code === 'F11' || e.keyCode === 122) {
     e.preventDefault();
@@ -3161,11 +3261,21 @@ window.addEventListener('keydown', function (e) {
     toggleFullscreen();
     return;
   }
-  const tag = (e.target && e.target.tagName) ? e.target.tagName.toUpperCase() : '';
+  const target = e.target;
+  const tag = (target && target.tagName) ? target.tagName.toUpperCase() : '';
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.ctrlKey || e.altKey || e.metaKey) {
     return;
   }
+  if (target && target.getAttribute && target.getAttribute('role') === 'button' && (e.key === 'Enter' || e.code === 'Space')) {
+    e.preventDefault();
+    target.click();
+    return;
+  }
+  if (isAnyModalBlockingShortcuts()) {
+    return;
+  }
   if (e.code === 'Space') {
+    if (tag === 'BUTTON' || tag === 'A') return;
     e.preventDefault();
     togglePause();
   } else if (e.code === 'Digit1' || e.key === '1') {
@@ -3215,54 +3325,51 @@ function updateUiClockDisplay() {
     const ss = String(now.getSeconds()).padStart(2, '0');
     const timeStr = `${hh}:${mm}:${ss}`;
     if (clockEl) {
-      clockEl.textContent = timeStr;
+      if (clockEl.textContent !== timeStr) clockEl.textContent = timeStr;
       clockEl._frozenTimeStr = timeStr;
     }
   } else {
     // When paused: strictly freeze the clock at the paused moment
-      if (clockEl) {
-        if (!clockEl._frozenTimeStr) {
-          const now = new Date();
-          const hh = String(now.getHours()).padStart(2, '0');
-          const mm = String(now.getMinutes()).padStart(2, '0');
-          const ss = String(now.getSeconds()).padStart(2, '0');
-          clockEl._frozenTimeStr = `${hh}:${mm}:${ss}`;
-        }
-        clockEl.textContent = clockEl._frozenTimeStr;
+    if (clockEl) {
+      if (!clockEl._frozenTimeStr) {
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        const ss = String(now.getSeconds()).padStart(2, '0');
+        clockEl._frozenTimeStr = `${hh}:${mm}:${ss}`;
       }
-    }
-
-    const badgeEl = document.querySelector('.clock-cadence-badge');
-    if (badgeEl) {
-      if (isPaused) {
-        badgeEl.textContent = 'PAUSED';
-        badgeEl.style.background = 'rgba(255, 51, 75, 0.22)';
-        badgeEl.style.color = '#FF334B';
-        badgeEl.style.borderColor = 'rgba(255, 51, 75, 0.55)';
-      } else if (isOffline) {
-        badgeEl.textContent = 'OFFLINE';
-        badgeEl.style.background = 'rgba(255, 170, 0, 0.22)';
-        badgeEl.style.color = '#FFAA00';
-        badgeEl.style.borderColor = 'rgba(255, 170, 0, 0.55)';
-      } else {
-        badgeEl.textContent = 'LIVE';
-        badgeEl.style.background = 'rgba(16, 245, 160, 0.22)';
-        badgeEl.style.color = '#10F5A0';
-        badgeEl.style.borderColor = 'rgba(16, 245, 160, 0.45)';
-      }
-    }
-
-    const subEl = document.getElementById('sourceSubtitle');
-    if (subEl) {
-      if (isPaused) {
-        subEl.textContent = 'Feed Simulation Paused · Standing By';
-      } else if (isOffline) {
-        subEl.textContent = 'Exchange Feed Offline · Reconnecting...';
-      } else {
-        subEl.textContent = 'Realtime Stream · $500,000 Arena Pool';
-      }
+      if (clockEl.textContent !== clockEl._frozenTimeStr) clockEl.textContent = clockEl._frozenTimeStr;
     }
   }
+
+  const clockMode = isPaused ? 'PAUSED' : (isOffline ? 'OFFLINE' : 'LIVE');
+  const badgeEl = document.querySelector('.clock-cadence-badge');
+  if (badgeEl && badgeEl._lastMode !== clockMode) {
+    badgeEl._lastMode = clockMode;
+    badgeEl.textContent = clockMode;
+    if (isPaused) {
+      badgeEl.style.background = 'rgba(255, 51, 75, 0.22)';
+      badgeEl.style.color = '#FF334B';
+      badgeEl.style.borderColor = 'rgba(255, 51, 75, 0.55)';
+    } else if (isOffline) {
+      badgeEl.style.background = 'rgba(255, 170, 0, 0.22)';
+      badgeEl.style.color = '#FFAA00';
+      badgeEl.style.borderColor = 'rgba(255, 170, 0, 0.55)';
+    } else {
+      badgeEl.style.background = 'rgba(16, 245, 160, 0.22)';
+      badgeEl.style.color = '#10F5A0';
+      badgeEl.style.borderColor = 'rgba(16, 245, 160, 0.45)';
+    }
+  }
+
+  const subEl = document.getElementById('sourceSubtitle');
+  if (subEl) {
+    const nextSub = isPaused
+      ? 'Feed Simulation Paused · Standing By'
+      : (isOffline ? 'Exchange Feed Offline · Reconnecting...' : 'Realtime Stream · $500,000 Arena Pool');
+    if (subEl.textContent !== nextSub) subEl.textContent = nextSub;
+  }
+}
 
   function startUiClock() {
     updateUiClockDisplay();
@@ -3326,8 +3433,11 @@ function updateUiClockDisplay() {
         intelEl.classList.remove('view-entering');
         void intelEl.offsetWidth;
         intelEl.classList.add('view-entering');
+        if (intelEl._enterTimer) clearTimeout(intelEl._enterTimer);
+        intelEl._enterTimer = setTimeout(() => intelEl.classList.remove('view-entering'), 500);
       }
       if (latestState) renderIntelHub(latestState);
+      pumpIntelArticlePreload();
     } else {
       if (intelEl) intelEl.style.display = 'none';
       if (arenaEl) {
@@ -3335,6 +3445,8 @@ function updateUiClockDisplay() {
         arenaEl.classList.remove('view-entering');
         void arenaEl.offsetWidth;
         arenaEl.classList.add('view-entering');
+        if (arenaEl._enterTimer) clearTimeout(arenaEl._enterTimer);
+        arenaEl._enterTimer = setTimeout(() => arenaEl.classList.remove('view-entering'), 500);
       }
       triggerSmoothResize();
     }
@@ -3480,9 +3592,7 @@ function updateUiClockDisplay() {
   }
 
   function intelArticleBodyEl(eventId) {
-    // Event ids are generated as evt_<ts>_<n> (alphanumeric + '_'), so
-    // the attribute selector needs no escaping.
-    const card = document.querySelector('.intel-event-card[data-event-id="' + eventId + '"]');
+    const card = intelEventNodes[eventId] || null;
     return card ? card.querySelector('.intel-article-body') : null;
   }
 
@@ -3580,6 +3690,9 @@ function updateUiClockDisplay() {
 
   function pumpIntelArticlePreload() {
     if (intelArticlePreloadRunning) return;
+    if (currentMainView !== 'intel' || document.hidden) return;
+    const omniStatus = latestState && latestState.intel_hub && latestState.intel_hub.omniroute && latestState.intel_hub.omniroute.status;
+    if (omniStatus && omniStatus !== 'ONLINE') return;
     let id;
     while ((id = intelArticlePreloadQueue.shift()) !== undefined) {
       // The event may have left the list, or an expand may have already
@@ -3949,6 +4062,8 @@ function updateUiClockDisplay() {
             const stale = intelEventNodes[key];
             if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
             delete intelEventNodes[key];
+            delete intelArticleCache[key];
+            intelExpandedIds.delete(key);
           }
         });
         const nextOrder = sorted.map(intelEventKey).join('|');
@@ -3977,20 +4092,6 @@ function updateUiClockDisplay() {
 
     const iList = document.getElementById('intelEventsList');
     if (iList) {
-      const updateIntelCardSpotlight = (e) => {
-        const card = e.target.closest('.intel-event-card');
-        if (card) {
-          const r = card.getBoundingClientRect();
-          const lx = Math.round(e.clientX - r.left);
-          const ly = Math.round(e.clientY - r.top);
-          card.style.setProperty('--x', `${lx}px`);
-          card.style.setProperty('--y', `${ly}px`);
-          card.style.setProperty('--mx', `${lx}px`);
-          card.style.setProperty('--my', `${ly}px`);
-        }
-      };
-      iList.addEventListener('pointermove', updateIntelCardSpotlight, { passive: true });
-      iList.addEventListener('pointerenter', updateIntelCardSpotlight, true);
       // Stream redesign (Phase B): clicking anywhere on an event row
       // expands / collapses it; the "<" chevron is only the visual cue.
       iList.addEventListener('click', (e) => {
@@ -4009,24 +4110,6 @@ function updateUiClockDisplay() {
       });
     }
 
-    const bentoDock = document.getElementById('tabCardsView');
-    if (bentoDock) {
-      const updateBentoSpotlight = (e) => {
-        const card = e.target.closest('.strat-card-mini');
-        if (card) {
-          const r = card.getBoundingClientRect();
-          const lx = Math.round(e.clientX - r.left);
-          const ly = Math.round(e.clientY - r.top);
-          card.style.setProperty('--x', `${lx}px`);
-          card.style.setProperty('--y', `${ly}px`);
-          card.style.setProperty('--mx', `${lx}px`);
-          card.style.setProperty('--my', `${ly}px`);
-        }
-      };
-      bentoDock.addEventListener('pointermove', updateBentoSpotlight, { passive: true });
-      bentoDock.addEventListener('pointerenter', updateBentoSpotlight, true);
-    }
-
     window.addEventListener('resize', triggerSmoothResize);
 
     setTimeout(pollBackend, 120);
@@ -4034,15 +4117,25 @@ function updateUiClockDisplay() {
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && !isPolling) {
-      pollBackend();
+    if (document.body) {
+      document.body.classList.toggle('window-hidden', document.hidden);
+    }
+    if (!document.hidden) {
+      if (!isPolling) pollBackend();
+      if (currentMainView === 'intel') pumpIntelArticlePreload();
     }
   });
 
   /* ==========================================================================
      SHUTDOWN & PROGRESS PERSISTENCE MODAL CONTROLLERS
      ========================================================================== */
+  let shutdownCloseTimer = null;
+  let resetCloseTimer = null;
+  let installCancelCloseTimer = null;
+  let wizardCloseTimer = null;
+
   function requestShutdown() {
+    if (shutdownCloseTimer) { clearTimeout(shutdownCloseTimer); shutdownCloseTimer = null; }
     const modal = document.getElementById('shutdownModal');
     if (modal) {
       modal.style.display = 'flex';
@@ -4057,9 +4150,13 @@ function updateUiClockDisplay() {
     if (modal) {
       modal.classList.remove('modal-visible');
       modal.classList.add('modal-closing');
-      setTimeout(() => {
-        modal.style.display = 'none';
-        modal.classList.remove('modal-closing');
+      if (shutdownCloseTimer) clearTimeout(shutdownCloseTimer);
+      shutdownCloseTimer = setTimeout(() => {
+        shutdownCloseTimer = null;
+        if (!modal.classList.contains('modal-visible')) {
+          modal.style.display = 'none';
+          modal.classList.remove('modal-closing');
+        }
       }, 1250);
     }
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.cancel_shutdown_prompt === 'function') {
@@ -4116,10 +4213,21 @@ function updateUiClockDisplay() {
   }
 
   function openSetupWizardModal(canDismiss = true) {
+    if (wizardCloseTimer) { clearTimeout(wizardCloseTimer); wizardCloseTimer = null; }
     const modal = document.getElementById('setupWizardModal');
     const closeBtn = document.getElementById('btnWizardClose');
     if (closeBtn) {
       closeBtn.style.display = canDismiss ? 'flex' : 'none';
+    }
+    // Reset transient save progress & sensitive password fields on reopen
+    updateSaveLaunchProgress({ status: 'idle', message: '', progress: null, phase: '' });
+    const pwInput = document.getElementById('keyAdminPassword');
+    const pwConfirm = document.getElementById('keyAdminPasswordConfirm');
+    if (pwInput) pwInput.value = '';
+    if (pwConfirm) pwConfirm.value = '';
+    const curInst = window.__runtimeInstallStatus && window.__runtimeInstallStatus.status;
+    if (curInst !== 'downloading-node' && curInst !== 'installing-omniroute') {
+      setWizardBanner('');
     }
     if (modal) {
       modal.style.display = 'flex';
@@ -4189,7 +4297,9 @@ function updateUiClockDisplay() {
       modal.classList.remove('wizard-visible');
       modal.classList.add('wizard-closing');
       isWizardOpen = false;
-      setTimeout(() => {
+      if (wizardCloseTimer) clearTimeout(wizardCloseTimer);
+      wizardCloseTimer = setTimeout(() => {
+        wizardCloseTimer = null;
         if (!isWizardOpen) {
           modal.style.display = 'none';
           modal.classList.remove('wizard-closing');
@@ -4307,6 +4417,7 @@ function updateUiClockDisplay() {
   }
 
   function openInstallCancelConfirm() {
+    if (installCancelCloseTimer) { clearTimeout(installCancelCloseTimer); installCancelCloseTimer = null; }
     const modal = document.getElementById('installCancelConfirmModal');
     if (modal) {
       modal.style.display = 'flex';
@@ -4321,9 +4432,13 @@ function updateUiClockDisplay() {
     if (modal) {
       modal.classList.remove('modal-visible');
       modal.classList.add('modal-closing');
-      setTimeout(() => {
-        modal.style.display = 'none';
-        modal.classList.remove('modal-closing');
+      if (installCancelCloseTimer) clearTimeout(installCancelCloseTimer);
+      installCancelCloseTimer = setTimeout(() => {
+        installCancelCloseTimer = null;
+        if (!modal.classList.contains('modal-visible')) {
+          modal.style.display = 'none';
+          modal.classList.remove('modal-closing');
+        }
       }, 1250);
     }
   }
@@ -4343,6 +4458,14 @@ function updateUiClockDisplay() {
       console.debug('cancel install err:', err);
     }
     if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+    runtimeInstallPollInFlight = false;
+    window.__runtimeInstallStatus = { status: 'cancelled', message: '', progress: null, phase: '' };
+    const btn = document.getElementById('btnInstallGatewayRuntime');
+    if (btn) btn.disabled = false;
+    const prog = document.getElementById('setupInstallProgress');
+    const fill = document.getElementById('setupInstallProgressFill');
+    if (prog) { prog.style.visibility = 'hidden'; prog.style.opacity = '0'; }
+    if (fill) fill.classList.remove('indeterminate');
     closeInstallCancelConfirm();
     closeSetupWizardModal();
   }
@@ -4365,7 +4488,24 @@ function updateUiClockDisplay() {
   }
 
   let runtimeInstallPollTimer = null;
+  let runtimeInstallPollInFlight = false;
   let saveLaunchPollTimer = null;
+  let saveLaunchPollGen = 0;
+  let saveLaunchPollInFlight = false;
+
+  function ensureRuntimeInstallPoll() {
+    if (runtimeInstallPollTimer) return;
+    runtimeInstallPollTimer = setInterval(() => {
+      if (runtimeInstallPollInFlight) return;
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
+        runtimeInstallPollInFlight = true;
+        window.pywebview.api.get_setup_status().then((r) => {
+          if (r && r.status === 'ok') updateRuntimeInstallBanner(r.runtime_install_status);
+        }).catch((e) => console.debug('install poll err:', e))
+          .finally(() => { runtimeInstallPollInFlight = false; });
+      }
+    }, 5000);
+  }
 
   // Gateway availability (item 10 A4): show the reason + one-click install
   // button when Node.js / OmniRoute is missing; hide both when available.
@@ -4423,7 +4563,14 @@ function updateUiClockDisplay() {
           fill.style.width = '40%';
           prog.removeAttribute('aria-valuenow');
         }
+      } else if (!showBar && fill) {
+        fill.classList.remove('indeterminate');
       }
+    }
+    if (showBar) {
+      const btn = document.getElementById('btnInstallGatewayRuntime');
+      if (btn) btn.disabled = true;
+      ensureRuntimeInstallPoll();
     }
     if (st === 'idle') return;
     if (st === 'done') {
@@ -4454,6 +4601,8 @@ function updateUiClockDisplay() {
   }
 
   function stopSaveLaunchPoll() {
+    saveLaunchPollGen += 1;
+    saveLaunchPollInFlight = false;
     if (saveLaunchPollTimer) { clearInterval(saveLaunchPollTimer); saveLaunchPollTimer = null; }
   }
 
@@ -4508,14 +4657,8 @@ function updateUiClockDisplay() {
         const res = await window.pywebview.api.install_gateway_runtime();
         if (res && res.ok) {
           setWizardBanner(res.message || 'Installation started in the background.', 'info');
-          if (runtimeInstallPollTimer) clearInterval(runtimeInstallPollTimer);
-          runtimeInstallPollTimer = setInterval(() => {
-            if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
-              window.pywebview.api.get_setup_status().then((r) => {
-                if (r && r.status === 'ok') updateRuntimeInstallBanner(r.runtime_install_status);
-              }).catch((e) => console.debug('install poll err:', e));
-            }
-          }, 5000);
+          if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
+          ensureRuntimeInstallPoll();
         } else {
           setWizardBanner((res && res.message) ? res.message : 'Could not start the installation.', 'error');
           if (btn) btn.disabled = false;
@@ -4604,11 +4747,16 @@ function updateUiClockDisplay() {
     // the call actually returns ok.
     updateSaveLaunchProgress({ status: 'saving-password', message: 'Saving password...', progress: 0, phase: 'password' });
     if (saveLaunchPollTimer) clearInterval(saveLaunchPollTimer);
+    const pollGen = ++saveLaunchPollGen;
+    saveLaunchPollInFlight = false;
     saveLaunchPollTimer = setInterval(() => {
+      if (saveLaunchPollInFlight || pollGen !== saveLaunchPollGen) return;
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_save_launch_status === 'function') {
+        saveLaunchPollInFlight = true;
         window.pywebview.api.get_save_launch_status().then((r) => {
-          if (r) updateSaveLaunchProgress(r);
-        }).catch((e) => console.debug('save launch poll err:', e));
+          if (r && pollGen === saveLaunchPollGen) updateSaveLaunchProgress(r);
+        }).catch((e) => console.debug('save launch poll err:', e))
+          .finally(() => { saveLaunchPollInFlight = false; });
       }
     }, 500);
 
@@ -4690,15 +4838,25 @@ function updateUiClockDisplay() {
       // A confirm dialog open on top swallows Escape: dismiss the dialog
       // and stay on the wizard instead of closing the wizard behind it.
       const cancelModal = document.getElementById('installCancelConfirmModal');
-      if (cancelModal && cancelModal.style.display !== 'none') {
+      if (cancelModal && cancelModal.classList.contains('modal-visible')) {
         closeInstallCancelConfirm();
         return;
       }
-      closeShutdownModal();
-      closeResetModal();
-      const closeBtn = document.getElementById('btnWizardClose');
-      if (closeBtn && closeBtn.style.display !== 'none') {
-        requestCloseSetupWizardModal();
+      const shutdownModal = document.getElementById('shutdownModal');
+      if (shutdownModal && shutdownModal.classList.contains('modal-visible')) {
+        closeShutdownModal();
+        return;
+      }
+      const resetModal = document.getElementById('resetConfirmModal');
+      if (resetModal && resetModal.classList.contains('modal-visible')) {
+        closeResetModal();
+        return;
+      }
+      if (isWizardOpen) {
+        const closeBtn = document.getElementById('btnWizardClose');
+        if (closeBtn && closeBtn.style.display !== 'none') {
+          requestCloseSetupWizardModal();
+        }
       }
     }
   });
@@ -4707,6 +4865,7 @@ function updateUiClockDisplay() {
      RESET CONFIRMATION MODAL CONTROLLERS
      ========================================================================== */
   function requestResetArena() {
+    if (resetCloseTimer) { clearTimeout(resetCloseTimer); resetCloseTimer = null; }
     const modal = document.getElementById('resetConfirmModal');
     if (modal) {
       modal.style.display = 'flex';
@@ -4721,9 +4880,13 @@ function updateUiClockDisplay() {
     if (modal) {
       modal.classList.remove('modal-visible');
       modal.classList.add('modal-closing');
-      setTimeout(() => {
-        modal.style.display = 'none';
-        modal.classList.remove('modal-closing');
+      if (resetCloseTimer) clearTimeout(resetCloseTimer);
+      resetCloseTimer = setTimeout(() => {
+        resetCloseTimer = null;
+        if (!modal.classList.contains('modal-visible')) {
+          modal.style.display = 'none';
+          modal.classList.remove('modal-closing');
+        }
       }, 1250);
     }
   }

@@ -148,7 +148,7 @@ class LiveStrategyRunnerMixin:
                 tp = (price + base_dist * sizing_mult).quantize(Decimal("0.01"))
             elif side == OrderSide.SELL and self.macro_commander.current_state.directional_bias == "SHORT_ONLY":
                 base_dist = max(max(Decimal("0"), price - tp), risk_dist * Decimal("2.0"))
-                tp = (price - base_dist * sizing_mult).quantize(Decimal("0.01"))
+                tp = max(Decimal("0.01"), (price - base_dist * sizing_mult).quantize(Decimal("0.01")))
 
         # Gate 4: TimeMachine Monte Carlo EV Gate
         mc_odds = self.mc_evaluator.evaluate_bracket(price, sl, tp, atr=self.live_atr, recent_candles=self.candles)
@@ -223,7 +223,10 @@ class LiveStrategyRunnerMixin:
                 self.comp_d.trailing_active = True
             if self.comp_d.trailing_active:
                 new_sl = (self.comp_d.lowest_price_since_entry * (Decimal("1") + g_trail.trailing_distance_pct)).quantize(Decimal("0.01"))
-                if curr_stop and (curr_stop.price is None or new_sl < curr_stop.price):
+                if gain_pct >= Decimal("1.0"):
+                    be_sl = (entry_p * Decimal("0.9995")).quantize(Decimal("0.01"))
+                    new_sl = min(new_sl, be_sl)
+                if curr_stop is None or curr_stop.price is None or new_sl < curr_stop.price:
                     self.broker.active_stops["comp_trail"] = OrderTicket(
                         portfolio_id="comp_trail", symbol=self.symbol, side=OrderSide.BUY,
                         order_type=OrderType.STOP_MARKET, qty=p_trail.position_qty,
@@ -232,7 +235,7 @@ class LiveStrategyRunnerMixin:
                     self.log_event("TRAIL_RATCHET", f"Trailing Guard lowered stop -> ${new_sl:,.2f} (Trough ${self.comp_d.lowest_price_since_entry:,.2f})", "info")
             elif gain_pct >= Decimal("1.0"):
                 be_sl = (entry_p * Decimal("0.9995")).quantize(Decimal("0.01"))
-                if curr_stop and (curr_stop.price is None or be_sl < curr_stop.price):
+                if curr_stop is None or curr_stop.price is None or be_sl < curr_stop.price:
                     self.broker.active_stops["comp_trail"] = OrderTicket(
                         portfolio_id="comp_trail", symbol=self.symbol, side=OrderSide.BUY,
                         order_type=OrderType.STOP_MARKET, qty=p_trail.position_qty,
@@ -246,7 +249,10 @@ class LiveStrategyRunnerMixin:
                 self.comp_d.trailing_active = True
             if self.comp_d.trailing_active:
                 new_sl = (self.comp_d.highest_price_since_entry * (Decimal("1") - g_trail.trailing_distance_pct)).quantize(Decimal("0.01"))
-                if curr_stop and (curr_stop.price is None or new_sl > curr_stop.price):
+                if gain_pct >= Decimal("1.0"):
+                    be_sl = (entry_p * Decimal("1.0005")).quantize(Decimal("0.01"))
+                    new_sl = max(new_sl, be_sl)
+                if curr_stop is None or curr_stop.price is None or new_sl > curr_stop.price:
                     self.broker.active_stops["comp_trail"] = OrderTicket(
                         portfolio_id="comp_trail", symbol=self.symbol, side=OrderSide.SELL,
                         order_type=OrderType.STOP_MARKET, qty=p_trail.position_qty,
@@ -255,7 +261,7 @@ class LiveStrategyRunnerMixin:
                     self.log_event("TRAIL_RATCHET", f"Trailing Guard raised stop -> ${new_sl:,.2f} (Peak ${self.comp_d.highest_price_since_entry:,.2f})", "info")
             elif gain_pct >= Decimal("1.0"):
                 be_sl = (entry_p * Decimal("1.0005")).quantize(Decimal("0.01"))
-                if curr_stop and (curr_stop.price is None or be_sl > curr_stop.price):
+                if curr_stop is None or curr_stop.price is None or be_sl > curr_stop.price:
                     self.broker.active_stops["comp_trail"] = OrderTicket(
                         portfolio_id="comp_trail", symbol=self.symbol, side=OrderSide.SELL,
                         order_type=OrderType.STOP_MARKET, qty=p_trail.position_qty,
@@ -289,6 +295,15 @@ class LiveStrategyRunnerMixin:
                         self.position_entry_ts.pop(pid, None)
                         self.log_event("STAGNATION_EXIT", f"{c.base_name.split(' ')[0]} closed after 40m stagnation timeout", "info")
 
+        _veto_prefixes = ("EV Gate", "Macro Veto", "Chop Gate", "MTF Veto")
+
+        def _preserve_veto_intent(pid_key: str) -> bool:
+            intent_str = str(self.strategy_telemetry.get(pid_key, {}).get("intent", ""))
+            if not intent_str.startswith(_veto_prefixes):
+                return False
+            cd = self.strategy_cooldown.get(pid_key)
+            return cd is None or ts < cd
+
         # 1. Aggressive Momentum Breakout
         p_agg = self.comp_a.portfolio
         if p_agg.position_qty == Decimal("0"):
@@ -296,7 +311,7 @@ class LiveStrategyRunnerMixin:
                 self._enter_via_strategy(self.comp_a, price, ts, "BREAKOUT_LONG", side=OrderSide.BUY)
             elif ((not is_uptrend) and vel < Decimal("0") and self.live_rsi > Decimal("32")) or (vel < -self.live_atr * Decimal("0.25")):
                 self._enter_via_strategy(self.comp_a, price, ts, "BREAKDOWN_SHORT", side=OrderSide.SELL)
-            if p_agg.position_qty == Decimal("0") and not self.strategy_telemetry["comp_agg"]["intent"].startswith(("EV Gate", "Macro Veto")):
+            if p_agg.position_qty == Decimal("0") and not _preserve_veto_intent("comp_agg"):
                 self.strategy_telemetry["comp_agg"]["intent"] = f"Scanning breakout / breakdown near ${self.live_ema_fast:,.2f}"
         elif p_agg.avg_entry_price > Decimal("0"):
             entry_p = p_agg.avg_entry_price
@@ -374,19 +389,19 @@ class LiveStrategyRunnerMixin:
                 self._enter_via_strategy(self.comp_e, price, ts, "ORB_LONG", side=OrderSide.BUY)
             elif is_breakdown and self.live_rsi > Decimal("28"):
                 self._enter_via_strategy(self.comp_e, price, ts, "ORB_SHORT", side=OrderSide.SELL)
-            if p_orb.position_qty == Decimal("0") and not self.strategy_telemetry["comp_orb"]["intent"].startswith(("EV Gate", "Macro Veto")):
+            if p_orb.position_qty == Decimal("0") and not _preserve_veto_intent("comp_orb"):
                 self.strategy_telemetry["comp_orb"]["intent"] = f"Watching ORB High ${orb_high:,.2f} / Low ${orb_low:,.2f} (Mid ${orb_mid:,.2f})"
         elif p_orb.avg_entry_price > Decimal("0"):
             entry_p = p_orb.avg_entry_price
             if p_orb.position_side == PositionSide.SHORT:
-                if price > orb_mid and (entry_p - price) >= (self.live_atr * Decimal("0.5")):
+                if is_uptrend and self.live_rsi > Decimal("55") and (entry_p - price) >= (self.live_atr * Decimal("0.8")):
                     fill = self.broker.submit_order(OrderTicket(portfolio_id="comp_orb", symbol=self.symbol, side=OrderSide.BUY, order_type=OrderType.MARKET, qty=p_orb.position_qty, reason=ExecutionReason.TAKE_PROFIT, timestamp=ts))
                     if fill:
                         self.strategy_cooldown["comp_orb"] = ts + 60.0
                         self.position_entry_ts.pop("comp_orb", None)
                         self.log_event("ORB_TP", f"ORB locked short target {fill.qty} {asset} @ ${fill.price:,.2f} (+${fill.realized_pnl:+.2f})", "profit")
             else:
-                if price < orb_mid and (price - entry_p) >= (self.live_atr * Decimal("0.5")):
+                if (not is_uptrend) and self.live_rsi < Decimal("45") and (price - entry_p) >= (self.live_atr * Decimal("0.8")):
                     fill = self.broker.submit_order(OrderTicket(portfolio_id="comp_orb", symbol=self.symbol, side=OrderSide.SELL, order_type=OrderType.MARKET, qty=p_orb.position_qty, reason=ExecutionReason.TAKE_PROFIT, timestamp=ts))
                     if fill:
                         self.strategy_cooldown["comp_orb"] = ts + 60.0
@@ -404,7 +419,7 @@ class LiveStrategyRunnerMixin:
                 self._enter_via_strategy(self.comp_f, price, ts, "MEAN_LONG", side=OrderSide.BUY)
             elif near_mean and is_rejection:
                 self._enter_via_strategy(self.comp_f, price, ts, "MEAN_SHORT", side=OrderSide.SELL)
-            if p_vwap.position_qty == Decimal("0") and not self.strategy_telemetry["comp_vwap"]["intent"].startswith(("EV Gate", "Macro Veto")):
+            if p_vwap.position_qty == Decimal("0") and not _preserve_veto_intent("comp_vwap"):
                 self.strategy_telemetry["comp_vwap"]["intent"] = f"Awaiting session-mean bounce / rejection near ${mean_ref:,.2f}"
         elif p_vwap.avg_entry_price > Decimal("0"):
             entry_p = p_vwap.avg_entry_price

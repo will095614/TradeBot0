@@ -447,11 +447,18 @@ def test_npm_install_omniroute_runs_expected_command(tmp_path):
 
 
 def test_npm_install_omniroute_failure_reports_status(tmp_path):
-    """兩次 npm 都失敗（rc=1）：先帶 --allow-scripts 試一次、再不帶重試一次，然後報錯。"""
+    """兩次 npm 都失敗（rc=1，且首次報 unknown option）：先帶 --allow-scripts 試一次、再不帶重試一次，然後報錯。"""
     base = tmp_path / "runtime"
     sup = _node_supervisor(tmp_path)
     npm_bin = str(base / "node" / "npm.cmd")
-    with patch("subprocess.Popen", return_value=_FakeNpmProcFail()) as mock_popen:
+
+    def _fake_popen_flag_err(cmd, stdout=None, **kwargs):
+        if stdout is not None and any("--allow-scripts" in str(a) for a in cmd):
+            stdout.write("npm error unknown option --allow-scripts\n")
+            stdout.flush()
+        return _FakeNpmProcFail()
+
+    with patch("subprocess.Popen", side_effect=_fake_popen_flag_err) as mock_popen:
         with pytest.raises(RuntimeError, match="npm install exited with code 1"):
             sup._npm_install_omniroute(npm_bin, base)
     assert mock_popen.call_count == 2

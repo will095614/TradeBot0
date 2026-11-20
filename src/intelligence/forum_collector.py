@@ -46,7 +46,7 @@ def _symbols_from_registry() -> List[str]:
         if entry.get("type") != "stocktwits":
             continue
         url = str(entry.get("url", ""))
-        m = re.search(r"/symbol/([^/.]+)\.json", url)
+        m = re.search(r"/symbol/([^/]+)\.json", url)
         if m and m.group(1) not in syms:
             syms.append(m.group(1))
     return syms or list(_DEFAULT_SYMBOLS)
@@ -75,6 +75,7 @@ class ForumCollector:
         import requests
 
         url = f"https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
+        resp = None
         try:
             resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout_sec)
             if resp.status_code != 200:
@@ -85,6 +86,12 @@ class ForumCollector:
         except Exception as ex:
             logger.debug("StockTwits stream fetch failed for %s: %s", symbol, ex)
             return None
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
 
     def _hourly_cap_reached(self, now: float) -> bool:
         if now - self._summary_window_start >= 3600.0:

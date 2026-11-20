@@ -40,7 +40,7 @@ class CompetitorGenome:
         rejected at construction instead of silently trading on nonsense genes.
         """
         def _range(name: str, value: Decimal, low: Decimal, high: Decimal) -> None:
-            if value < low or value > high:
+            if not isinstance(value, Decimal) or not value.is_finite() or value < low or value > high:
                 raise ValueError(f"CompetitorGenome.{name}={value} out of range [{low}, {high}]")
 
         _range("position_ratio", self.position_ratio, Decimal("0.20"), Decimal("0.75"))
@@ -176,16 +176,33 @@ class BaseCompetitor(ABC):
         Computes whole-precision crypto quantity that fits within both target_val
         and available margin/cash after slippage and exchange fee buffers.
         """
-        if market_price <= Decimal("0"):
+        if not market_price.is_finite() or market_price <= Decimal("0") or self.portfolio.cash <= Decimal("0"):
+            return Decimal("0")
+        if not target_val.is_finite() or target_val <= Decimal("0"):
             return Decimal("0")
         raw_qty = (target_val / market_price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
-        cost_mult = (Decimal("1") + broker.slippage_pct) * (Decimal("1") + self.portfolio.fee_rate)
+        if raw_qty <= Decimal("0"):
+            return Decimal("0")
+        if broker.slippage_pct > Decimal("0"):
+            est_price = broker.compute_execution_slippage(
+                side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                qty=raw_qty,
+                mid_price=market_price,
+                atr=broker.current_atr,
+            )
+        else:
+            est_price = market_price
         eff_lev = self.genome.leverage if self.genome.leverage_enabled and self.genome.leverage > Decimal("0") else Decimal("1.0")
-        max_purchasing_power = self.portfolio.cash * eff_lev
-        max_affordable_qty = (max_purchasing_power / (market_price * cost_mult)).quantize(
+        # Fee is paid 100% in cash while margin is divided by leverage:
+        # required_cash = qty * est_price * (1 / eff_lev + fee_rate)
+        cash_per_unit = est_price * ((Decimal("1") / eff_lev) + self.portfolio.fee_rate)
+        if cash_per_unit <= Decimal("0"):
+            return Decimal("0")
+        max_affordable_qty = (self.portfolio.cash / cash_per_unit).quantize(
             Decimal("0.0001"), rounding=ROUND_DOWN
         )
-        return min(raw_qty, max_affordable_qty)
+        return max(Decimal("0"), min(raw_qty, max_affordable_qty))
 
     def compute_r_multiple_qty(
         self,
@@ -203,24 +220,29 @@ class BaseCompetitor(ABC):
         never the amount of equity risked or the notional cap.
         Strictly bounded by genome.position_ratio (unleveraged equity basis) and broker available margin.
         """
-        if entry_price <= Decimal("0"):
+        if not entry_price.is_finite() or entry_price <= Decimal("0") or not stop_price.is_finite():
+            return Decimal("0")
+        equity = self.portfolio.total_equity
+        if equity <= Decimal("0"):
             return Decimal("0")
         # For ETH/Crypto, minimum stop distance is $2.00
         stop_dist = max(Decimal("2.00"), abs(entry_price - stop_price))
         budget = (
             risk_budget
             if risk_budget is not None
-            else (self.portfolio.total_equity * self.genome.risk_per_trade_pct)
+            else (equity * self.genome.risk_per_trade_pct)
         )
+        if budget <= Decimal("0"):
+            return Decimal("0")
         # News sizing (item 12C): scale the risk budget by the news factor.
         # The position-ratio cap below is NOT scaled: it stays the safety
         # max, so an optimistic regime can never push size past the cap.
         sizing_multiplier = max(Decimal("0.5"), min(Decimal("1.5"), sizing_multiplier))
         budget = budget * sizing_multiplier
         risk_qty = (budget / stop_dist).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
-        max_cap_val = self.portfolio.total_equity * self.genome.position_ratio
+        max_cap_val = equity * self.genome.position_ratio
         safe_cap_qty = self.compute_safe_buy_qty(max_cap_val, entry_price, broker)
-        return min(risk_qty, safe_cap_qty)
+        return max(Decimal("0"), min(risk_qty, safe_cap_qty))
 
     @abstractmethod
     def evaluate_signal(

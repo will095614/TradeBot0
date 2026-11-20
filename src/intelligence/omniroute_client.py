@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ import re
 import threading
 import time
 from typing import Any, Dict, Optional
+import weakref
 import aiohttp
 
 logger = logging.getLogger(__name__)
@@ -87,6 +89,19 @@ def extract_json(text: Optional[str]) -> Optional[Dict[str, Any]]:
                 return {"events": arr}
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
+
+    # Fallback: scan individual `{` offsets with JSONDecoder.raw_decode so
+    # prose containing trailing `{...}` after a valid JSON object still parses.
+    decoder = json.JSONDecoder()
+    pos = start
+    while pos != -1 and pos < len(s):
+        try:
+            obj, _ = decoder.raw_decode(s, pos)
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+        pos = s.find("{", pos + 1)
 
     return None
 
@@ -353,18 +368,13 @@ class OmniRouteClient:
 
         self._sem = asyncio.Semaphore(self.max_concurrent)
         self._sem_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._sems: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
         # Session lifecycle (V2.8.0 repair): one ClientSession PER EVENT
-        # LOOP. Lazy article expansion runs asyncio.run on a pywebview
-        # worker thread -- a fresh loop per call -- and the old single
-        # shared session was closed by whichever call started the next
-        # loop, while another call was still using it (reproduced: the
-        # second thread closed the first thread's in-flight session).
-        # Per-loop ownership means a call can only ever close its own
-        # session; close_loop_session() closes it from inside that same
-        # loop before the loop ends, so nothing is left for the GC.
+        # LOOP. Keyed weakly by the loop object itself so closed loop ids
+        # can never collide after GC.
         self._session = session              # shared/injected, or latest
         self._session_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._sessions: Dict[int, Any] = {}
+        self._sessions: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
         self._sessions_lock = threading.Lock()
         self._owns_session = session is None
         # JSON-mode negotiation (V2.8.0 repair): a provider that rejects
@@ -380,6 +390,7 @@ class OmniRouteClient:
         self.failed_requests: int = 0
         self.retried_requests: int = 0
         self.total_tokens_used: int = 0
+        self._quota_day: date = date.today()
         self.total_tokens_saved: int = 0
         # Dedup hits, counted (item 12 / A4-3). No token figure is derived
         # from them: the old record_tokens_saved(420) wrote a fixed estimate
@@ -402,9 +413,16 @@ class OmniRouteClient:
         # failed with a quota/credit signal. Quota records expire after
         # one daily cycle (see _QUOTA_RECORD_TTL_SEC): a failure from a
         # previous day is not evidence for today.
+        self._quota_lock = threading.Lock()
         self.last_failure: Optional[Dict[str, Any]] = None
         self._quota_failures: Dict[str, float] = {}
         self._unattributed_quota_ts: Optional[float] = None
+
+    def _maybe_rollover_daily_quota(self) -> None:
+        today = date.today()
+        if today != self._quota_day:
+            self._quota_day = today
+            self.total_tokens_used = 0
 
     def record_dedup_hit(self) -> None:
         """Records one deduplication hit (a duplicate title+URL skipped).
@@ -439,11 +457,13 @@ class OmniRouteClient:
                     cooldown = max(cooldown, val)
             except (TypeError, ValueError):
                 pass
-        self._rate_limit_until = time.monotonic() + cooldown
+        with self._quota_lock:
+            self._rate_limit_until = max(self._rate_limit_until, time.monotonic() + cooldown)
 
     def is_rate_limited(self) -> bool:
         """True while the cooldown from an observed 429 is still running."""
-        return time.monotonic() < self._rate_limit_until
+        with self._quota_lock:
+            return time.monotonic() < self._rate_limit_until
 
     def is_over_quota(self) -> bool:
         """True once measured token usage reaches the daily quota, or while
@@ -454,6 +474,7 @@ class OmniRouteClient:
         single request. With no DAILY_TOKEN_QUOTA set there is no usage
         threshold at all -- only the 429 signal can trip this (F4).
         """
+        self._maybe_rollover_daily_quota()
         if self.daily_quota_limit is not None and self.daily_quota_limit > 0:
             if self.total_tokens_used >= self.daily_quota_limit:
                 return True
@@ -475,19 +496,20 @@ class OmniRouteClient:
                 return
             kind = classification.get("kind") or "unknown"
             provider = classification.get("provider")
-            self.last_failure = {
-                "kind": kind,
-                "provider": provider,
-                "status": classification.get("status"),
-                "detail": (classification.get("detail") or "")[:200],
-                "ts": time.monotonic(),
-            }
-            if kind == "quota":
-                now = time.monotonic()
-                if isinstance(provider, str) and provider in _KNOWN_PROVIDERS:
-                    self._quota_failures[provider] = now
-                else:
-                    self._unattributed_quota_ts = now
+            now = time.monotonic()
+            with self._quota_lock:
+                self.last_failure = {
+                    "kind": kind,
+                    "provider": provider,
+                    "status": classification.get("status"),
+                    "detail": (classification.get("detail") or "")[:200],
+                    "ts": now,
+                }
+                if kind == "quota":
+                    if isinstance(provider, str) and provider in _KNOWN_PROVIDERS:
+                        self._quota_failures[provider] = now
+                    else:
+                        self._unattributed_quota_ts = now
         except Exception as e:
             logger.debug("Failed to record LLM failure classification: %s", e)
 
@@ -496,14 +518,16 @@ class OmniRouteClient:
         right now, so all per-provider quota records are dropped. The
         records are current evidence, not a latch."""
         try:
-            self._quota_failures.clear()
-            self._unattributed_quota_ts = None
+            with self._quota_lock:
+                self._quota_failures.clear()
+                self._unattributed_quota_ts = None
         except Exception as e:
             logger.debug("Failed to clear quota records on success: %s", e)
 
     def is_daily_budget_exhausted(self) -> bool:
         """True only when the user's own DAILY_TOKEN_QUOTA budget is used
         up. Unset budget means unknown, never exhausted."""
+        self._maybe_rollover_daily_quota()
         limit = self.daily_quota_limit
         return limit is not None and limit > 0 and self.total_tokens_used >= limit
 
@@ -524,19 +548,18 @@ class OmniRouteClient:
             if not configured:
                 return False
             now = time.monotonic()
-            fresh = {
-                p: ts
-                for p, ts in self._quota_failures.items()
-                if now - ts <= _QUOTA_RECORD_TTL_SEC
-            }
+            with self._quota_lock:
+                fresh = {
+                    p: ts
+                    for p, ts in self._quota_failures.items()
+                    if now - ts <= _QUOTA_RECORD_TTL_SEC
+                }
+                unattr_ts = self._unattributed_quota_ts
             if len(configured) == 1:
                 only = configured[0]
                 if only in fresh:
                     return True
-                return (
-                    self._unattributed_quota_ts is not None
-                    and now - self._unattributed_quota_ts <= _QUOTA_RECORD_TTL_SEC
-                )
+                return unattr_ts is not None and now - unattr_ts <= _QUOTA_RECORD_TTL_SEC
             return all(p in fresh for p in configured)
         except Exception as e:
             logger.debug("Quota-exhaustion check failed: %s", e)
@@ -567,6 +590,7 @@ class OmniRouteClient:
         reports a daily free allowance, so any % would invent a
         denominator (F4). Only a user-set budget yields a real %.
         """
+        self._maybe_rollover_daily_quota()
         if self.daily_quota_limit is None or self.daily_quota_limit <= 0:
             return None
         remaining = max(0, self.daily_quota_limit - self.total_tokens_used)
@@ -575,12 +599,16 @@ class OmniRouteClient:
     def _get_semaphore(self) -> asyncio.Semaphore:
         try:
             current_loop = asyncio.get_running_loop()
-            if self._sem_loop is not current_loop:
-                self._sem = asyncio.Semaphore(self.max_concurrent)
+            with self._sessions_lock:
+                sem = self._sems.get(current_loop)
+                if sem is None:
+                    sem = asyncio.Semaphore(self.max_concurrent)
+                    self._sems[current_loop] = sem
                 self._sem_loop = current_loop
+                self._sem = sem
+                return sem
         except RuntimeError:
-            pass
-        return self._sem
+            return self._sem
 
     async def get_session(self) -> aiohttp.ClientSession:
         """Return the aiohttp session owned by the CALLING event loop.
@@ -592,20 +620,20 @@ class OmniRouteClient:
         session can therefore never interrupt a request running on a
         different loop or thread.
         """
-        if self._session is not None and not self._session.closed and self._session_loop is None:
-            return self._session
         current_loop = asyncio.get_running_loop()
-        key = id(current_loop)
-        sess = self._sessions.get(key)
-        if sess is None or sess.closed:
+        with self._sessions_lock:
+            if self._session is not None and not self._session.closed and self._session_loop is None:
+                return self._session
+            sess = self._sessions.get(current_loop)
+            if sess is not None and not sess.closed:
+                return sess
             timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
             sess = aiohttp.ClientSession(timeout=timeout)
-            with self._sessions_lock:
-                self._sessions[key] = sess
-            self._session = sess            # latest, for observability
+            self._sessions[current_loop] = sess
             self._session_loop = current_loop
+            self._session = sess            # latest, for observability
             self._owns_session = True
-        return sess
+            return sess
 
     async def close_loop_session(self) -> None:
         """Close and forget the session owned by the current event loop.
@@ -620,9 +648,11 @@ class OmniRouteClient:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        key = id(loop)
         with self._sessions_lock:
-            sess = self._sessions.pop(key, None)
+            sess = self._sessions.pop(loop, None)
+            if sess is not None and self._session is sess:
+                self._session = None
+                self._session_loop = None
         if sess is None:
             return
         try:
@@ -630,9 +660,6 @@ class OmniRouteClient:
                 await sess.close()
         except Exception as e:
             logger.debug("Failed to close loop session: %s", e)
-        if self._session is sess:
-            self._session = None
-            self._session_loop = None
 
     async def check_health(self) -> bool:
         """
@@ -704,8 +731,13 @@ class OmniRouteClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         endpoint = f"{self.base_url}/chat/completions"
         self.total_requests += 1
+        format_retried = False
+        attempt = 0
 
-        for attempt in range(self.max_retries + 1):
+        while attempt <= self.max_retries:
+            need_repair = False
+            retry_delay: Optional[float] = None
+            retry_format = False
             try:
                 async with self._get_semaphore():
                     async with sess.post(
@@ -716,97 +748,86 @@ class OmniRouteClient:
                     ) as resp:
                         status = resp.status
                         retry_after = resp.headers.get("Retry-After")
+                        err_body = None
                         if status != 200:
-                            # Diagnosis (gateway failure workstream): read
-                            # the error body once and classify it. Only
-                            # failure paths read the body; success paths
-                            # never touch it. A body that cannot be read
-                            # classifies from the status code alone.
                             err_body = await self._read_error_body(resp)
                         if status == 429:
-                            # Observed rate-limit signal (F4): start the
-                            # cooldown even if the retry later succeeds.
                             self.note_rate_limit(retry_after)
 
                         if status == 200:
                             body = await resp.json()
                             self.is_gateway_online = True
-                            # A 200 proves a provider has quota right now.
                             self.note_success()
                             usage = body.get("usage", {})
                             if isinstance(usage, dict):
                                 try:
+                                    self._maybe_rollover_daily_quota()
                                     self.total_tokens_used += int(usage.get("total_tokens", 0))
                                 except (TypeError, ValueError):
                                     logger.debug("OmniRoute usage.total_tokens not numeric: %r", usage.get("total_tokens"))
                             choices = body.get("choices", [])
-                            if choices and "message" in choices[0]:
-                                content = choices[0]["message"].get("content", "")
+                            if choices and isinstance(choices[0], dict) and "message" in choices[0]:
+                                msg = choices[0].get("message") or {}
+                                raw_content = msg.get("content") if isinstance(msg, dict) else ""
+                                content = raw_content if isinstance(raw_content, str) else ""
                                 parsed = extract_json(content)
                                 if parsed is not None:
-                                    # Count a success only once usable JSON is
-                                    # actually in hand: a 200 with unparseable
-                                    # content is not a successful request
-                                    # (item 6).
                                     self.successful_requests += 1
                                     return parsed
                                 logger.warning("OmniRoute 200 OK returned unparseable content: %s", content[:150])
-                                # Repair retry (2026-11-15): the routed
-                                # model ignores both the JSON-only system
-                                # instruction and response_format, and
-                                # answers in prose. Ask once more for
-                                # JSON only; if that also fails, fall
-                                # back exactly as before.
-                                repaired = await self._repair_json_once(
-                                    sess, endpoint, headers, payload, call_timeout
-                                )
-                                if repaired is not None:
-                                    self.successful_requests += 1
-                                    return repaired
-                            return None
-
-                        # JSON-mode negotiation (V2.8.0 repair): some
-                        # providers reject response_format outright with
-                        # 400/422 instead of ignoring it. Retry once
-                        # without the field (this attempt is not counted
-                        # as a provider failure) and remember the model,
-                        # so a rejected format never loses the signal.
-                        if (
+                                need_repair = True
+                            else:
+                                return None
+                        elif (
                             status in (400, 422)
                             and "response_format" in payload
-                            and attempt < self.max_retries
+                            and not format_retried
                             and _looks_like_format_rejection(err_body)
                         ):
                             payload.pop("response_format", None)
                             self._json_mode_unsupported.add(str(model))
                             self.retried_requests += 1
+                            format_retried = True
+                            retry_format = True
                             logger.info(
                                 "Provider rejected response_format (HTTP %d); retrying without JSON mode",
                                 status,
                             )
-                            continue
-
-                        if status != 200:
+                        else:
                             self.note_failure(classify_llm_error(
                                 status, err_body,
                                 headers=dict(resp.headers),
                                 retry_after=retry_after,
                             ))
+                            if status in _RETRY_STATUSES and attempt < self.max_retries:
+                                self.retried_requests += 1
+                                retry_delay = compute_backoff(attempt, retry_after)
+                                logger.info(
+                                    "OmniRoute status %d on attempt %d/%d. Backoff %.2fs",
+                                    status, attempt + 1, self.max_retries, retry_delay
+                                )
+                            else:
+                                self.failed_requests += 1
+                                logger.warning("OmniRoute request terminated with HTTP %d (attempt %d)", status, attempt)
+                                return None
 
-                        if status in _RETRY_STATUSES and attempt < self.max_retries:
-                            self.retried_requests += 1
-                            delay = compute_backoff(attempt, retry_after)
-                            logger.info(
-                                "OmniRoute status %d on attempt %d/%d. Backoff %.2fs",
-                                status, attempt + 1, self.max_retries, delay
-                            )
-                            await asyncio.sleep(delay)
-                            continue
-
-                        # Terminal non-retryable error (e.g. 401, 404, or exhausted retries)
-                        self.failed_requests += 1
-                        logger.warning("OmniRoute request terminated with HTTP %d (attempt %d)", status, attempt)
-                        return None
+                # Both HTTP response and concurrency semaphore are now released before
+                # performing a repair call or sleeping for retry backoff (prevents
+                # max_concurrent=1 self-deadlock and connection-pool starvation).
+                if need_repair:
+                    repaired = await self._repair_json_once(
+                        sess, endpoint, headers, payload, call_timeout
+                    )
+                    if repaired is not None:
+                        self.successful_requests += 1
+                        return repaired
+                    return None
+                if retry_format:
+                    continue
+                if retry_delay is not None:
+                    await asyncio.sleep(retry_delay)
+                    attempt += 1
+                    continue
 
             except aiohttp.ClientConnectorError as exc:
                 self.failed_requests += 1
@@ -820,6 +841,7 @@ class OmniRouteClient:
                     delay = compute_backoff(attempt)
                     logger.debug("OmniRoute connection error (%s). Retrying in %.2fs...", exc, delay)
                     await asyncio.sleep(delay)
+                    attempt += 1
                 else:
                     self.failed_requests += 1
                     self.is_gateway_online = False
@@ -870,9 +892,18 @@ class OmniRouteClient:
                     if resp.status != 200:
                         return None
                     body = await resp.json()
+                    usage = body.get("usage", {})
+                    if isinstance(usage, dict):
+                        try:
+                            self._maybe_rollover_daily_quota()
+                            self.total_tokens_used += int(usage.get("total_tokens", 0))
+                        except (TypeError, ValueError):
+                            pass
                     choices = body.get("choices", [])
-                    if choices and "message" in choices[0]:
-                        content = choices[0]["message"].get("content", "")
+                    if choices and isinstance(choices[0], dict) and "message" in choices[0]:
+                        msg = choices[0].get("message") or {}
+                        raw_content = msg.get("content") if isinstance(msg, dict) else ""
+                        content = raw_content if isinstance(raw_content, str) else ""
                         parsed = extract_json(content)
                         if parsed is not None:
                             logger.info("OmniRoute repair retry returned usable JSON")

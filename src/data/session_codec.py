@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import logging
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 class SessionCodecMixin:
     """Serializes and restores live engine portfolios, active brackets, fills, and genomes."""
+
+    _persistence_epoch_lock = threading.Lock()
 
     @staticmethod
     def _serialize_ticket(ticket: Any) -> Optional[Dict[str, Any]]:
@@ -167,9 +170,10 @@ class SessionCodecMixin:
                 for c in self.competitors:
                     p = c.portfolio
                     g = c.genome
-                    comp_states.append({
+                    comp_entry: Dict[str, Any] = {
                         "portfolio_id": c.portfolio_id,
                         "name": c.name,
+                        "initial_cash": str(p.initial_cash),
                         "cash": str(p.cash),
                         "position_qty": str(p.position_qty),
                         "position_side": p.position_side.value,
@@ -208,7 +212,14 @@ class SessionCodecMixin:
                             "leverage": str(g.leverage),
                             "news_sensitivity": g.news_sensitivity,
                         },
-                    })
+                    }
+                    if hasattr(c, "trailing_active"):
+                        comp_entry["trailing_state"] = {
+                            "highest_price_since_entry": str(getattr(c, "highest_price_since_entry", Decimal("0"))),
+                            "lowest_price_since_entry": str(getattr(c, "lowest_price_since_entry", Decimal("0"))),
+                            "trailing_active": bool(getattr(c, "trailing_active", False)),
+                        }
+                    comp_states.append(comp_entry)
 
                 snapshot = {
                     "schema_version": 2,
@@ -216,6 +227,10 @@ class SessionCodecMixin:
                     "generation": gen,
                     "live_start_ts": self.live_start_ts,
                     "live_fill_seq_offset": int(getattr(self, "_live_fill_seq_offset", 0)),
+                    "closed_trades_since_evolve": int(getattr(self, "_closed_trades_since_evolve", 0)),
+                    "last_evolve_ts": float(getattr(self, "last_evolve_ts", 0.0)),
+                    "evolution_events": [dict(e) for e in getattr(self, "evolution_events", [])[-24:]],
+                    "tv_champion": dict(getattr(self, "tv_champion", {})),
                     "strategy_telemetry": dict(self.strategy_telemetry),
                     "fill_records": [self._serialize_fill(f) for f in self.fill_records[-100:] if f is not None],
                     "broker_execution_audit": [self._serialize_fill(f) for f in self.broker.execution_audit[-100:] if f is not None] if hasattr(self, "broker") else [],
@@ -228,7 +243,10 @@ class SessionCodecMixin:
                     "position_entry_ts": dict(self.position_entry_ts),
                     "competitors": comp_states,
                 }
-            self.storage.save_session_snapshot(snapshot)
+            with SessionCodecMixin._persistence_epoch_lock:
+                if self._stop_event.is_set() or not self._is_current_generation():
+                    return False
+                self.storage.save_session_snapshot(snapshot)
             self.log_event("SESSION_SAVED", f"Saved session state at Generation #{gen} to persistent storage.", "success")
             logger.info("Arena session snapshot saved successfully at Generation #%d", gen)
             return True
@@ -295,6 +313,10 @@ class SessionCodecMixin:
 
                     p = c.portfolio
                     p.name = c.name
+                    if "initial_cash" in cd:
+                        init_c = Decimal(str(cd["initial_cash"]))
+                        if init_c.is_finite() and init_c > Decimal("0"):
+                            p.initial_cash = init_c
                     p.cash = Decimal(str(cd.get("cash", p.cash)))
                     p.position_qty = Decimal(str(cd.get("position_qty", "0")))
                     try:
@@ -304,14 +326,34 @@ class SessionCodecMixin:
                         p.position_side = PositionSide.FLAT
                     p.avg_entry_price = Decimal(str(cd.get("avg_entry_price", "0")))
                     p.open_position_entry_fee = Decimal(str(cd.get("open_position_entry_fee", "0.00")))
-                    if "margin_locked" in cd:
-                        p.margin_locked = Decimal(str(cd["margin_locked"]))
-                    elif p.position_qty > Decimal("0") and p.avg_entry_price > Decimal("0"):
-                        cost = (p.position_qty * p.avg_entry_price).quantize(Decimal("0.01"))
-                        eff_lev = c.genome.leverage if (c.genome.leverage_enabled and c.genome.leverage > Decimal("0")) else Decimal("1.0")
-                        p.margin_locked = (cost / eff_lev).quantize(Decimal("0.01"))
-                    else:
+                    if p.position_qty <= Decimal("0"):
+                        p.position_qty = Decimal("0")
+                        p.position_side = PositionSide.FLAT
+                        p.avg_entry_price = Decimal("0")
+                        p.open_position_entry_fee = Decimal("0.00")
                         p.margin_locked = Decimal("0.00")
+                    else:
+                        if p.position_side == PositionSide.FLAT:
+                            p.position_side = PositionSide.LONG
+                        if "margin_locked" in cd:
+                            p.margin_locked = Decimal(str(cd["margin_locked"]))
+                        elif p.avg_entry_price > Decimal("0"):
+                            cost = (p.position_qty * p.avg_entry_price).quantize(Decimal("0.01"))
+                            eff_lev = c.genome.leverage if (c.genome.leverage_enabled and c.genome.leverage > Decimal("0")) else Decimal("1.0")
+                            p.margin_locked = (cost / eff_lev).quantize(Decimal("0.01"))
+                        else:
+                            p.margin_locked = Decimal("0.00")
+
+                    if hasattr(c, "trailing_active"):
+                        ts_dict = cd.get("trailing_state")
+                        if isinstance(ts_dict, dict) and p.position_qty > Decimal("0"):
+                            c.highest_price_since_entry = Decimal(str(ts_dict.get("highest_price_since_entry", "0")))
+                            c.lowest_price_since_entry = Decimal(str(ts_dict.get("lowest_price_since_entry", "0")))
+                            c.trailing_active = bool(ts_dict.get("trailing_active", False))
+                        else:
+                            c.highest_price_since_entry = Decimal("0")
+                            c.lowest_price_since_entry = Decimal("0")
+                            c.trailing_active = False
 
                     p.current_market_price = Decimal(str(cd.get("current_market_price", p.avg_entry_price)))
                     p.realized_pnl = Decimal(str(cd.get("realized_pnl", "0")))
@@ -339,23 +381,48 @@ class SessionCodecMixin:
 
                     self.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
 
+                open_pids = {c.portfolio_id for c in self.competitors if c.portfolio.position_qty > Decimal("0")}
                 if "active_stops" in snapshot and isinstance(snapshot["active_stops"], dict):
                     self.broker.active_stops = {}
                     for pid, s_data in snapshot["active_stops"].items():
+                        if pid in comp_map and pid not in open_pids:
+                            continue
                         t = self._deserialize_ticket(s_data)
                         if t:
                             self.broker.active_stops[pid] = t
                 if "active_targets" in snapshot and isinstance(snapshot["active_targets"], dict):
                     self.broker.active_targets = {}
                     for pid, t_data in snapshot["active_targets"].items():
+                        if pid in comp_map and pid not in open_pids:
+                            continue
                         t = self._deserialize_ticket(t_data)
                         if t:
                             self.broker.active_targets[pid] = t
                 if "position_entry_ts" in snapshot:
                     try:
-                        self.position_entry_ts = {pid: float(ts) for pid, ts in snapshot["position_entry_ts"].items()}
+                        self.position_entry_ts = {
+                            pid: float(ts)
+                            for pid, ts in snapshot["position_entry_ts"].items()
+                            if not (pid in comp_map and pid not in open_pids)
+                        }
                     except (TypeError, ValueError, AttributeError) as e:
                         logger.debug("Invalid position_entry_ts in saved snapshot, ignoring: %s", e)
+                if "closed_trades_since_evolve" in snapshot:
+                    try:
+                        self._closed_trades_since_evolve = max(0, int(snapshot["closed_trades_since_evolve"]))
+                    except (TypeError, ValueError):
+                        pass
+                if "last_evolve_ts" in snapshot:
+                    try:
+                        saved_evolve_ts = float(snapshot["last_evolve_ts"])
+                        if saved_evolve_ts > 0.0:
+                            self.last_evolve_ts = saved_evolve_ts
+                    except (TypeError, ValueError):
+                        pass
+                if "evolution_events" in snapshot and isinstance(snapshot["evolution_events"], list):
+                    self.evolution_events = [dict(e) for e in snapshot["evolution_events"][-24:] if isinstance(e, dict)]
+                if "tv_champion" in snapshot and isinstance(snapshot["tv_champion"], dict) and snapshot["tv_champion"]:
+                    self.tv_champion = dict(snapshot["tv_champion"])
                 if "strategy_telemetry" in snapshot and isinstance(snapshot["strategy_telemetry"], dict):
                     roster = {c.portfolio_id for c in self.competitors}
                     self.strategy_telemetry.update({k: v for k, v in snapshot["strategy_telemetry"].items() if k in roster})

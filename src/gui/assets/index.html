@@ -144,7 +144,7 @@
       </div>
 
       <!-- Pod 2 (Center): Dynamic Island (Hero Spot + Spread + Range + Shutdown) -->
-      <div class="lg-dock-pod lg-dock-pod--island lg-glass lg-spot-card" id="topDynamicIsland" onclick="switchMainView('arena')" title="Click to view Trading Arena" style="cursor: pointer;">
+      <div class="lg-dock-pod lg-dock-pod--island lg-glass lg-spot-card" id="topDynamicIsland" role="button" tabindex="0" onclick="switchMainView('arena')" title="Click to view Trading Arena" style="cursor: pointer;">
         <div class="island-hero-price">
           <div class="island-pair-tag">
             <span class="island-eth-glyph">Ξ</span>
@@ -328,7 +328,7 @@
           </div>
 
           <!-- AIMRAN uvq11-lens + uvq11-lava Macro Commander Optical Core Card -->
-          <div class="lg-glass lg-spot-card lg-macro-core-card" id="macroRibbon" onclick="switchMainView('intel')" title="Click to open Market Intelligence">
+          <div class="lg-glass lg-spot-card lg-macro-core-card" id="macroRibbon" role="button" tabindex="0" onclick="switchMainView('intel')" title="Click to open Market Intelligence">
             <div class="lg-macro-core-top">
               <!-- AIMRAN Optical Multi-Coating Lens + Lava Core -->
               <div class="lg-optical-iris" aria-hidden="true">
@@ -412,7 +412,7 @@
                   <button class="seg-btn ss-seg__option" id="btnScaleFull" onclick="setScaleMode('full')" title="Include distant bracket orders (Press F)">Full</button>
                 </div>
                 <div class="chart-legend-strip lg-pill">
-                  <span class="legend-item"><i class="legend-swatch" style="background:var(--c-mean)"></i>MEAN</span>
+                  <span class="legend-item"><i class="legend-swatch" style="background:#FFD60A"></i>MEAN</span>
                   <span class="legend-divider" aria-hidden="true"></span>
                   <span class="legend-item" title="Aggressive Momentum"><i class="legend-dot" style="background:var(--c-agg)"></i>AGG</span>
                   <span class="legend-item" title="Conservative Scalper"><i class="legend-dot" style="background:var(--c-cons)"></i>CONS</span>
@@ -471,7 +471,7 @@
               </div>
               <div class="panel-tools">
                 <span class="console-prompt-tag num">quant-core</span>
-                <span id="omniSourceBadge" class="brand-badge ss-badge lg-pill" onclick="showEngineInfo()" title="Click to view Quant Engine diagnostic telemetry">
+                <span id="omniSourceBadge" class="brand-badge ss-badge lg-pill" role="button" tabindex="0" onclick="showEngineInfo()" title="Click to view Quant Engine diagnostic telemetry">
                   Pure Math Core
                 </span>
                 <span id="omniQuotaBadge" class="brand-badge ss-badge lg-pill" data-tone="success">
@@ -624,7 +624,7 @@
                  footer row (Password left, Refresh right), so all three
                  small boxes are a uniform 76px. -->
             <div class="intel-meta-subrow">
-              <span class="intel-metric-sub" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" onclick="copyOmniPassword()" title="Admin password is stored in ~/.omniroute/.env"><span>********</span><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code></span>
+              <span class="intel-metric-sub" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" role="button" tabindex="0" onclick="copyOmniPassword()" title="Admin password is stored in ~/.omniroute/.env"><span>********</span><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code></span>
               <button class="btn btn-primary lg-btn lg-btn--primary" onclick="requestAiIntelDigest()" id="btnRefreshDigest" style="margin-left:auto;">
                 <svg class="ss-svg-icon btn-spin-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9L14 6.5M14 2.5v4h-4"></path>
@@ -637,7 +637,7 @@
                  The fill is indeterminate (sliding) -- a digest
                  refresh has no trustworthy percent, so none is
                  fabricated. -->
-            <div id="digestRefreshProgress" class="digest-refresh-progress" role="progressbar" aria-label="Refreshing news analysis">
+            <div id="digestRefreshProgress" class="digest-refresh-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Refreshing news analysis">
               <div class="digest-refresh-progress-track"><div class="digest-refresh-progress-fill indeterminate"></div></div>
             </div>
           </div>
@@ -800,12 +800,12 @@
         <div id="setupWizardStatusBanner" class="setup-wizard-banner"></div>
 
         <!-- One-click install progress (shown while downloading / installing) -->
-        <div id="setupInstallProgress" class="setup-install-progress" role="progressbar" aria-label="Installation progress">
+        <div id="setupInstallProgress" class="setup-install-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Installation progress">
           <div class="setup-install-progress-track"><div class="setup-install-progress-fill" id="setupInstallProgressFill"></div></div>
         </div>
 
         <!-- Save & Launch progress (shown while saving credentials / starting gateway) -->
-        <div id="setupSaveProgress" class="setup-save-progress" role="progressbar" aria-label="Save and launch progress">
+        <div id="setupSaveProgress" class="setup-save-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Save and launch progress">
           <div class="setup-save-progress-track"><div class="setup-save-progress-fill" id="setupSaveProgressFill"></div></div>
         </div>
         </div>

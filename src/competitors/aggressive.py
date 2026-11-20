@@ -44,7 +44,7 @@ class AggressiveCompetitor(BaseCompetitor):
         side: OrderSide = OrderSide.BUY,
         sizing_multiplier: Decimal = Decimal("1.0"),
     ) -> Optional[OrderTicket]:
-        if self.portfolio.is_circuit_breaker_tripped:
+        if self.portfolio.is_circuit_breaker_tripped or not market_price.is_finite() or market_price <= Decimal("0"):
             return None
 
         if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):

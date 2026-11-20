@@ -95,7 +95,8 @@ class BrokerSim:
         impact_pct = Decimal("0.0005") * (depth_ratio ** 2)
 
         # 3. Volatility adverse selection
-        vol_impact = (atr / mid_price) * Decimal("0.015") if mid_price > Decimal("0") else Decimal("0")
+        safe_atr = atr if (atr.is_finite() and atr > Decimal("0")) else Decimal("0")
+        vol_impact = (safe_atr / mid_price) * Decimal("0.015") if mid_price > Decimal("0") else Decimal("0")
 
         total_slippage = half_spread + (mid_price * (impact_pct + vol_impact))
 
@@ -124,9 +125,19 @@ class BrokerSim:
         circuit breaker) already evaluated their own triggers, so they call
         ``_execute_fill`` directly and bypass this gate.
         """
-        # Resting orders need a real market price to judge the trigger;
-        # before the first tick there is nothing to compare against.
-        if ticket.price is not None and self.current_price > Decimal("0"):
+        if ticket.order_type in (OrderType.LIMIT, OrderType.STOP_MARKET) and ticket.price is not None:
+            if ticket.portfolio_id not in self.portfolios:
+                raise KeyError(f"Unknown portfolio {ticket.portfolio_id}")
+            if (
+                not ticket.qty.is_finite()
+                or ticket.qty <= Decimal("0")
+                or not ticket.price.is_finite()
+                or ticket.price <= Decimal("0")
+            ):
+                return self._execute_fill(ticket)
+            if self.current_price <= Decimal("0"):
+                self.pending_orders[ticket.order_id] = ticket
+                return None
             if ticket.order_type == OrderType.LIMIT:
                 if not self._limit_hit(ticket.side, ticket.price, self.current_price, self.current_price):
                     self.pending_orders[ticket.order_id] = ticket
@@ -272,17 +283,18 @@ class BrokerSim:
         2. Evaluates intra-bar Take-Profit at exact target price.
         3. Updates end-of-bar portfolio mark-to-market valuation & checks circuit breakers.
         """
+        if not price.is_finite() or price <= Decimal("0"):
+            return []
         ts = timestamp if timestamp is not None else time.time()
         self.current_price = price
-        high_price = high if high is not None else price
-        low_price = low if low is not None else price
-        bar_open = open_price if open_price is not None else price
+        high_price = high if (high is not None and high.is_finite() and high > Decimal("0")) else price
+        low_price = low if (low is not None and low.is_finite() and low > Decimal("0")) else price
+        bar_open = open_price if (open_price is not None and open_price.is_finite() and open_price > Decimal("0")) else price
 
         fills: List[FillEvent] = []
 
         # 1. Check bracket stops & targets across all open positions
-        for p_id in list(self.portfolios.keys()):
-            p = self.portfolios[p_id]
+        for p_id, p in self.portfolios.items():
             if p.position_qty <= Decimal("0"):
                 continue
 
@@ -379,7 +391,16 @@ class BrokerSim:
                 if not hit:
                     continue
                 del self.pending_orders[order_id]
-                pending_fill = self._execute_fill(replace(ticket, timestamp=ts))
+                if ticket.order_type == OrderType.STOP_MARKET and open_price is not None:
+                    trigger_p = (
+                        max(bar_open, ticket.price)
+                        if ticket.side == OrderSide.BUY
+                        else min(bar_open, ticket.price)
+                    )
+                    pending_ticket = replace(ticket, price=trigger_p, timestamp=ts)
+                else:
+                    pending_ticket = replace(ticket, timestamp=ts)
+                pending_fill = self._execute_fill(pending_ticket)
                 if pending_fill:
                     fills.append(pending_fill)
 
@@ -388,16 +409,23 @@ class BrokerSim:
             p.update_market_price(price, ts, low_price=low_price, high_price=high_price)
             # Leverage maintenance margin liquidation (protects against negative balance).
             # Audit 2.4: compare POSITION equity against POSITION margin, not
-            # total equity. total_equity includes all idle cash, so the old
-            # comparison needed a ~139% adverse move on a 3x/70% long and
-            # could never fire. Position equity is margin_locked +
-            # unrealized_pnl; liquidation fires once the position has lost
-            # 90% of its margin (maintenance level 10%).
+            # total equity. Also check intra-bar adverse excursion (high for SHORT,
+            # low for LONG) so intra-bar margin wipeouts cannot escape liquidation.
             if p.leverage_enabled and p.position_qty > Decimal("0") and p.margin_locked > Decimal("0"):
-                position_equity = p.margin_locked + p.unrealized_pnl
+                is_short = p.position_side == PositionSide.SHORT
+                adverse_price = high_price if is_short else low_price
+                adverse_upnl = (
+                    ((p.avg_entry_price - adverse_price) * p.position_qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                    if is_short
+                    else ((adverse_price - p.avg_entry_price) * p.position_qty).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                )
+                worst_upnl = min(p.unrealized_pnl, adverse_upnl)
+                position_equity = p.margin_locked + worst_upnl
                 if position_equity <= (p.margin_locked * LIQUIDATION_MAINTENANCE_RATIO):
                     p.is_circuit_breaker_tripped = True
-                    liq_exit_side = OrderSide.BUY if p.position_side == PositionSide.SHORT else OrderSide.SELL
+                    for oid in [k for k, t in self.pending_orders.items() if t.portfolio_id == p_id]:
+                        self.pending_orders.pop(oid, None)
+                    liq_exit_side = OrderSide.BUY if is_short else OrderSide.SELL
                     liq_fill = self._execute_fill(OrderTicket(
                         portfolio_id=p_id,
                         symbol=self.symbol,
@@ -414,6 +442,8 @@ class BrokerSim:
 
             if not p.is_circuit_breaker_tripped and p.max_drawdown_pct >= MAX_DRAWDOWN_LIMIT_PCT:
                 p.is_circuit_breaker_tripped = True
+                for oid in [k for k, t in self.pending_orders.items() if t.portfolio_id == p_id]:
+                    self.pending_orders.pop(oid, None)
                 if p.position_qty > Decimal("0"):
                     cb_exit_side = OrderSide.BUY if p.position_side == PositionSide.SHORT else OrderSide.SELL
                     cb_fill = self._execute_fill(OrderTicket(

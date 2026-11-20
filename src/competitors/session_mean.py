@@ -55,22 +55,30 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
         side: OrderSide = OrderSide.BUY,
         sizing_multiplier: Decimal = Decimal("1.0"),
     ) -> Optional[OrderTicket]:
-        if self.portfolio.is_circuit_breaker_tripped:
+        if self.portfolio.is_circuit_breaker_tripped or not market_price.is_finite() or market_price <= Decimal("0"):
             return None
 
-        if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
-            mean_ref = indicators.get("mean_ref")
-            atr_val = indicators.get("atr", Decimal("20.00"))
-            atr_dec = Decimal(str(atr_val)) if atr_val is not None else Decimal("20.00")
+        def _parse_pos_dec(raw: Any, default: Optional[Decimal] = None) -> Optional[Decimal]:
+            if raw is None:
+                return default
+            try:
+                val = Decimal(str(raw))
+                return val if (val.is_finite() and val > Decimal("0")) else default
+            except Exception:
+                return default
 
-            if mean_ref is not None:
-                mean_dec = Decimal(str(mean_ref))
+        if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
+            mean_dec = _parse_pos_dec(indicators.get("mean_ref"))
+            atr_dec = _parse_pos_dec(indicators.get("atr"), Decimal("20.00")) or Decimal("20.00")
+
+            if mean_dec is not None:
                 # Pullback zone: within 0.85x ATR of the session mean
                 if abs(market_price - mean_dec) > (atr_dec * Decimal("0.85")):
                     return None
                 stop_price = max(Decimal("0.01"), (mean_dec - max(Decimal("10.00"), atr_dec * Decimal("0.5"))).quantize(Decimal("0.01")))
-                if stop_price >= market_price:
-                    stop_price = (market_price * Decimal("0.993")).quantize(Decimal("0.01"))
+                if (market_price - stop_price) < Decimal("10.00"):
+                    fallback_dist = max(Decimal("10.00"), (market_price * Decimal("0.007")).quantize(Decimal("0.01")))
+                    stop_price = max(Decimal("0.01"), (market_price - fallback_dist).quantize(Decimal("0.01")))
                 stop_dist = max(Decimal("10.00"), market_price - stop_price)
             else:
                 stop_dist = max(Decimal("10.00"), market_price * self.genome.stop_loss_pct)
@@ -96,25 +104,26 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
             )
 
         elif signal == "BUY" and side == OrderSide.SELL and self.portfolio.position_qty == Decimal("0"):
-            mean_ref = indicators.get("mean_ref")
-            atr_val = indicators.get("atr", Decimal("20.00"))
-            atr_dec = Decimal(str(atr_val)) if atr_val is not None else Decimal("20.00")
+            mean_dec = _parse_pos_dec(indicators.get("mean_ref"))
+            atr_dec = _parse_pos_dec(indicators.get("atr"), Decimal("20.00")) or Decimal("20.00")
 
-            if mean_ref is not None:
-                mean_dec = Decimal(str(mean_ref))
+            if mean_dec is not None:
                 # Pullback zone: within 0.85x ATR of the session mean
                 if abs(market_price - mean_dec) > (atr_dec * Decimal("0.85")):
                     return None
                 stop_price = (mean_dec + max(Decimal("10.00"), atr_dec * Decimal("0.5"))).quantize(Decimal("0.01"))
-                if stop_price <= market_price:
-                    stop_price = (market_price * Decimal("1.007")).quantize(Decimal("0.01"))
+                if (stop_price - market_price) < Decimal("10.00"):
+                    fallback_dist = max(Decimal("10.00"), (market_price * Decimal("0.007")).quantize(Decimal("0.01")))
+                    stop_price = (market_price + fallback_dist).quantize(Decimal("0.01"))
                 stop_dist = max(Decimal("10.00"), stop_price - market_price)
             else:
                 stop_dist = max(Decimal("10.00"), market_price * self.genome.stop_loss_pct)
-                stop_price = max(Decimal("0.01"), (market_price + stop_dist).quantize(Decimal("0.01")))
+                stop_price = (market_price + stop_dist).quantize(Decimal("0.01"))
 
             target_dist = stop_dist * Decimal("2.2")  # 2.2R Institutional Reward
-            target_price = (market_price - target_dist).quantize(Decimal("0.01"))
+            target_price = max(Decimal("0.01"), (market_price - target_dist).quantize(Decimal("0.01")))
+            if target_price >= market_price:
+                return None
 
             qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
             if qty <= Decimal("0"):

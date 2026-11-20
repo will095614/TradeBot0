@@ -10,6 +10,9 @@ import logging
 import os
 import re
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -68,8 +71,55 @@ class ConfigManager:
         # Audit §5.4: cache of the parsed omni env file, keyed by
         # (mtime_ns, size). The per-second gateway-diagnosis poll must
         # not re-open and re-parse this file 86,400 times a day.
+        self._io_lock = threading.RLock()
         self._omni_env_cache_key: Optional[Tuple[int, int]] = None
         self._omni_env_cache: Dict[str, str] = {}
+
+    @staticmethod
+    def _atomic_write_text(target: Path, content: str) -> None:
+        """Writes content via a unique temp file + fsync + os.replace with brief Windows retry."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(target.parent),
+                prefix=f"{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_path = f.name
+                f.write(content)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            last_err: Optional[Exception] = None
+            for attempt in range(4):
+                try:
+                    os.replace(tmp_path, str(target))
+                    tmp_path = None
+                    return
+                except PermissionError as pe:
+                    last_err = pe
+                    time.sleep(0.025 * (attempt + 1))
+            if last_err is not None:
+                raise last_err
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _strip_outer_quotes(val: str) -> str:
+        s = val.strip()
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+            return s[1:-1]
+        return s
 
     @staticmethod
     def sanitize_key(raw_key: Any) -> str:
@@ -106,17 +156,15 @@ class ConfigManager:
 
     def save_config(self, updates: Dict[str, Any]) -> bool:
         """
-        Atomically updates and saves configuration using a temporary file.
+        Atomically updates and saves configuration using a unique temporary file.
         Prevents half-written or corrupted state if application terminates unexpectedly.
         """
         try:
-            current = self.load_config()
-            current.update(updates)
-
-            tmp_file = self.config_file.with_suffix(".tmp")
-            content = json.dumps(current, indent=2, ensure_ascii=False)
-            tmp_file.write_text(content, encoding="utf-8")
-            tmp_file.replace(self.config_file)
+            with self._io_lock:
+                current = self.load_config()
+                current.update(updates)
+                content = json.dumps(current, indent=2, ensure_ascii=False)
+                self._atomic_write_text(self.config_file, content)
             return True
         except Exception as e:
             logger.error("Failed to save system config: %s", e)
@@ -141,31 +189,32 @@ class ConfigManager:
         the result cannot poison the cache. The cache is dropped on any
         mtime/size change and after our own writes (_write_omni_env_vars).
         """
-        try:
-            st = self.omni_env_file.stat()
-            key = (st.st_mtime_ns, st.st_size)
-        except OSError:
-            self._omni_env_cache_key = None
-            self._omni_env_cache = {}
-            return {}
-        if key == self._omni_env_cache_key:
-            return dict(self._omni_env_cache)
-        result: Dict[str, str] = {}
-        try:
-            lines = self.omni_env_file.read_text(encoding="utf-8").splitlines()
-            for line in lines:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    result[k.strip()] = v.strip().strip("'\"")
-        except Exception as e:
-            logger.warning("Could not read omniroute env file: %s", e)
-            return {}
-        self._omni_env_cache_key = key
-        self._omni_env_cache = result
-        return dict(result)
+        with self._io_lock:
+            try:
+                st = self.omni_env_file.stat()
+                key = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                self._omni_env_cache_key = None
+                self._omni_env_cache = {}
+                return {}
+            if key == self._omni_env_cache_key:
+                return dict(self._omni_env_cache)
+            result: Dict[str, str] = {}
+            try:
+                lines = self.omni_env_file.read_text(encoding="utf-8").splitlines()
+                for line in lines:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        result[k.strip()] = self._strip_outer_quotes(v)
+            except Exception as e:
+                logger.warning("Could not read omniroute env file: %s", e)
+                return {}
+            self._omni_env_cache_key = key
+            self._omni_env_cache = result
+            return dict(result)
 
     def _write_omni_env_vars(self, updates: Dict[str, str]) -> Dict[str, Any]:
         """
@@ -176,50 +225,48 @@ class ConfigManager:
         never log the values passed in here.
         """
         try:
-            self.omni_env_file.parent.mkdir(parents=True, exist_ok=True)
-            existing_lines: List[str] = []
-            if self.omni_env_file.is_file():
-                try:
-                    existing_lines = self.omni_env_file.read_text(encoding="utf-8").splitlines()
-                except Exception as e:
-                    logger.warning("Could not read omniroute env file, existing keys will be rebuilt: %s", e)
-                    existing_lines = []
+            with self._io_lock:
+                self.omni_env_file.parent.mkdir(parents=True, exist_ok=True)
+                existing_lines: List[str] = []
+                if self.omni_env_file.is_file():
+                    try:
+                        existing_lines = self.omni_env_file.read_text(encoding="utf-8").splitlines()
+                    except Exception as e:
+                        logger.error("Refusing to overwrite unreadable omniroute env file: %s", e)
+                        return {"ok": False, "error": f"Could not read existing .env safely: {e}"}
 
-            # Build updated line dictionary while preserving ordering
-            updated_vars: Dict[str, str] = dict(updates)
-            new_lines: List[str] = []
+                # Build updated line list while preserving ordering and dropping duplicate keys.
+                updated_vars: Dict[str, str] = dict(updates)
+                written_keys: set = set()
+                new_lines: List[str] = []
 
-            for line in existing_lines:
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#") and "=" in stripped:
-                    var_name, _ = stripped.split("=", 1)
-                    var_name = var_name.strip()
-                    if var_name in updated_vars:
-                        # Replace with sanitized new value
-                        new_lines.append(f"{var_name}={updated_vars.pop(var_name)}")
-                        continue
-                new_lines.append(line)
+                for line in existing_lines:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("#") and "=" in stripped:
+                        var_name, _ = stripped.split("=", 1)
+                        var_name = var_name.strip()
+                        if var_name in updated_vars:
+                            new_lines.append(f"{var_name}={updated_vars.pop(var_name)}")
+                            written_keys.add(var_name)
+                            continue
+                        if var_name in written_keys:
+                            continue
+                    new_lines.append(line)
 
-            # Append any remaining new keys that weren't present previously
-            for k, v in updated_vars.items():
-                new_lines.append(f"{k}={v}")
+                for k, v in updated_vars.items():
+                    new_lines.append(f"{k}={v}")
 
-            # Atomic file replacement
-            tmp_file = self.omni_env_file.with_suffix(".tmp")
-            tmp_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-            tmp_file.replace(self.omni_env_file)
+                self._atomic_write_text(self.omni_env_file, "\n".join(new_lines) + "\n")
 
-            # Audit §5.4: our own write changes the file; drop the cache
-            # so the next read sees the new content even if the mtime
-            # granularity ever collides.
-            self._omni_env_cache_key = None
-            self._omni_env_cache = {}
+                # Drop cache so the next read sees the new content.
+                self._omni_env_cache_key = None
+                self._omni_env_cache = {}
 
-            # Synchronize into current process environment
-            for env_name, env_val in updates.items():
-                os.environ[env_name] = env_val
+                # Synchronize into current process environment
+                for env_name, env_val in updates.items():
+                    os.environ[env_name] = env_val
 
-            return {"ok": True}
+                return {"ok": True}
         except Exception as e:
             logger.error("Failed to write omniroute env file: %s", e)
             return {"ok": False, "error": str(e)}
@@ -236,6 +283,9 @@ class ConfigManager:
                 val = self.sanitize_key(raw_val)
                 if val:
                     sanitized_keys[PROVIDER_ENV_MAP[norm_prov]] = val
+
+        if not sanitized_keys:
+            return {"ok": True, "updated_count": 0}
 
         res = self._write_omni_env_vars(sanitized_keys)
         if not res.get("ok"):

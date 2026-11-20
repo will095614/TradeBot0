@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 import logging
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
+import weakref
 
 from src.arena.order import OrderSide
 from src.intelligence.omniroute_client import OmniRouteClient
@@ -200,8 +201,13 @@ class MacroCommander:
         self.harvester = harvester or IntelligenceHarvester(client=client)
         self.forum_collector = ForumCollector(client=client)
         self.current_state = MacroRegimeState()
+        self._events_lock = threading.RLock()
+        self._synthesis_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+        self._synthesis_locks_guard = threading.Lock()
         self.synthesis_lock = asyncio.Lock()
         self.last_synthesis_time: float = 0.0
+        self._last_synthesized_keys: Tuple[str, ...] = ()
+        self._veto_day: date = date.today()
         self.curated_events: List[Dict[str, Any]] = []
         self._seed_default_events()
         # First-sync progress (workstream 3): the current pipeline
@@ -212,11 +218,22 @@ class MacroCommander:
             "detail": "",
             "updated_at": 0.0,
         }
-        # Per-event article generation (Phase A): one lock per event id
-        # so concurrent expand calls for the same event coalesce into a
-        # single LLM call; created on demand under _article_locks_guard.
-        self._article_locks: Dict[str, threading.Lock] = {}
+        # Per-event article generation (Phase A): one lock + refcount per
+        # event id so concurrent expand calls coalesce without a prune TOCTOU.
+        self._article_locks: Dict[str, List[Any]] = {}
         self._article_locks_guard = threading.Lock()
+
+    def _get_synthesis_lock(self) -> asyncio.Lock:
+        try:
+            loop = asyncio.get_running_loop()
+            with self._synthesis_locks_guard:
+                lock = self._synthesis_locks.get(loop)
+                if lock is None:
+                    lock = asyncio.Lock()
+                    self._synthesis_locks[loop] = lock
+                return lock
+        except RuntimeError:
+            return self.synthesis_lock
 
     def _seed_default_events(self) -> None:
         # No fabricated news: the intel timeline starts empty and is filled
@@ -240,26 +257,29 @@ class MacroCommander:
         Guarantees that all events currently in curated_events have Traditional Chinese
         headlines and summaries. Used during bootstrap and reset before UI reveal.
         """
-        for evt in self.curated_events:
-            head = evt.get("headline", "")
-            sum_txt = evt.get("summary", "")
-            if not IntelligenceHarvester._contains_cjk(head) or not IntelligenceHarvester._contains_cjk(sum_txt):
-                dummy_event = StructuredEvent(
-                    raw_title=head or evt.get("raw_title", ""),
-                    source=evt.get("source", ""),
-                    domain=evt.get("domain", "crypto"),
-                    urgency_score=evt.get("urgency", 5),
-                    sentiment_score=evt.get("sentiment", 0.0),
-                    headline_zh="",
-                    summary=sum_txt,
-                )
-                zh_h, zh_s = IntelligenceHarvester.ensure_traditional_chinese(dummy_event)
-                evt["headline"] = zh_h
-                evt["summary"] = zh_s
-        if not IntelligenceHarvester._contains_cjk(self.current_state.active_headline):
-            self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
-        if self.curated_events:
-            self.current_state.latest_event = self.curated_events[0]
+        with self._events_lock:
+            for evt in self.curated_events:
+                head = evt.get("headline", "")
+                sum_txt = evt.get("summary", "")
+                if not IntelligenceHarvester._contains_cjk(head) or not IntelligenceHarvester._contains_cjk(sum_txt):
+                    dummy_event = StructuredEvent(
+                        timestamp="",
+                        entities_tickers=list(evt.get("tickers") or []),
+                        raw_title=head or evt.get("raw_title", ""),
+                        source=evt.get("source", ""),
+                        domain=evt.get("domain", "crypto"),
+                        urgency_score=evt.get("urgency", 5),
+                        sentiment_score=evt.get("sentiment", 0.0),
+                        headline_zh="",
+                        summary=sum_txt,
+                    )
+                    zh_h, zh_s = IntelligenceHarvester.ensure_traditional_chinese(dummy_event)
+                    evt["headline"] = zh_h
+                    evt["summary"] = zh_s
+            if not IntelligenceHarvester._contains_cjk(self.current_state.active_headline):
+                self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+            if self.curated_events:
+                self.current_state.latest_event = self.curated_events[0]
 
     def record_strategy_action(self, strat_id: str, name: str, action: str, badge_cls: str = "buy", is_macro_action: bool = False) -> None:
         """
@@ -267,31 +287,24 @@ class MacroCommander:
         Retains the latest status per strategy (at most 6 items) to prevent spamming redundant actions.
         """
         display_name = self.STRAT_LABELS.get(strat_id, name)
-        if not self.curated_events:
-            # No real event yet: nothing honest to annotate. Never re-seed
-            # fabricated events just to have something to attach to (item 6).
-            return
-
-        active_evt = self.curated_events[0] if self.curated_events else None
-        if not active_evt:
-            return
-
-        acts = active_evt.setdefault("strategy_actions", [])
-        # Retain only the latest action per strategy to prevent spamming
-        existing_idx = next((i for i, a in enumerate(acts) if a.get("strat_id") == strat_id), -1)
-        if existing_idx >= 0:
-            acts.pop(existing_idx)
-
-        acts.insert(0, {
-            "strat_id": strat_id,
-            "name": display_name,
-            "action": action,
-            "badge_cls": badge_cls,
-            "time": time.strftime("%H:%M:%S"),
-        })
-        if len(acts) > 6:
-            acts.pop()
-        self.current_state.latest_event = active_evt
+        with self._events_lock:
+            if not self.curated_events:
+                return
+            active_evt = self.curated_events[0]
+            acts = active_evt.setdefault("strategy_actions", [])
+            existing_idx = next((i for i, a in enumerate(acts) if a.get("strat_id") == strat_id), -1)
+            if existing_idx >= 0:
+                acts.pop(existing_idx)
+            acts.insert(0, {
+                "strat_id": strat_id,
+                "name": display_name,
+                "action": action,
+                "badge_cls": badge_cls,
+                "time": time.strftime("%H:%M:%S"),
+            })
+            if len(acts) > 6:
+                acts.pop()
+            self.current_state.latest_event = active_evt
 
     def _set_sync_stage(self, stage: str, detail: str = "", percent: Optional[int] = None) -> None:
         """Records the current sync stage (atomic dict replacement, so
@@ -353,6 +366,8 @@ class MacroCommander:
             try:
                 self._set_sync_stage("forum", "Collecting community signals")
                 forum_events = await self.forum_collector.collect_async()
+                if forum_events and hasattr(self.harvester, "push_raw_events"):
+                    forum_events = self.harvester.push_raw_events(forum_events)
                 if forum_events:
                     structured_all.extend(await self.harvester.process_batch(forum_events))
             except Exception as ex:
@@ -370,21 +385,27 @@ class MacroCommander:
                 logger.warning("Error harvesting live feeds in refresh_digest_async: %s", ex)
             fetch_error = str(ex)[:80] or ex.__class__.__name__
 
+        if fetch_error:
+            self._set_sync_stage("failed", f"Sync failed: {fetch_error}")
+            return self.current_state
+        if not gateway_healthy:
+            # Audit 3.12: the gateway is dead and the refresh produced
+            # nothing to synthesize -- say so instead of "waiting".
+            self._set_sync_stage("failed", "Gateway unreachable")
+            return self.current_state
+
         recent = self.harvester.get_latest_events(10)
         if recent:
+            recent_keys = tuple((e.raw_title or e.summary) for e in recent)
+            if recent_keys == self._last_synthesized_keys and not self.current_state.fallback and self.curated_events:
+                self._set_sync_stage("done", "Stream live", percent=100)
+                return self.current_state
             self._set_sync_stage("synthesizing", "Synthesizing market direction")
             state = await self.synthesize_regime(recent)
             self._set_sync_stage("done", "Stream live" if self.curated_events else "No new events yet",
                                  percent=100 if self.curated_events else 90)
             return state
-        if fetch_error:
-            self._set_sync_stage("failed", f"Sync failed: {fetch_error}")
-        elif not gateway_healthy:
-            # Audit 3.12: the gateway is dead and the refresh produced
-            # nothing to synthesize -- say so instead of "waiting".
-            self._set_sync_stage("failed", "Gateway unreachable")
-        else:
-            self._set_sync_stage("waiting", "No new events yet")
+        self._set_sync_stage("waiting", "No new events yet")
         return self.current_state
 
     def run_digest_sync(self) -> "MacroRegimeState":
@@ -485,55 +506,73 @@ class MacroCommander:
     @classmethod
     def _telemetry_event(cls, evt: Dict[str, Any]) -> Dict[str, Any]:
         """A snapshot-safe copy of one curated event (no article body, no raw snippet)."""
-        return {k: v for k, v in evt.items() if k not in cls._TELEMETRY_ARTICLE_KEYS}
+        out: Dict[str, Any] = {}
+        for k, v in evt.items():
+            if k in cls._TELEMETRY_ARTICLE_KEYS:
+                continue
+            if k == "strategy_actions" and isinstance(v, list):
+                out[k] = [dict(a) if isinstance(a, dict) else a for a in v]
+            elif k == "tickers" and isinstance(v, list):
+                out[k] = list(v)
+            elif k == "consensus" and isinstance(v, dict):
+                out[k] = dict(v)
+            else:
+                out[k] = v
+        return out
 
     def _telemetry_events(self, limit: int) -> List[Dict[str, Any]]:
-        return [self._telemetry_event(e) for e in self.curated_events[:limit]]
+        with self._events_lock:
+            return [self._telemetry_event(e) for e in self.curated_events[:limit]]
 
     def _telemetry_macro_state(self) -> Dict[str, Any]:
         """Current regime state, with any latest_event article stripped."""
-        state = self.current_state.to_dict()
-        latest = state.get("latest_event")
-        if isinstance(latest, dict):
-            state["latest_event"] = self._telemetry_event(latest)
-        return state
+        with self._events_lock:
+            state = self.current_state.to_dict()
+            latest = state.get("latest_event")
+            if isinstance(latest, dict):
+                state["latest_event"] = self._telemetry_event(latest)
+            return state
 
     def _prune_article_locks(self) -> None:
-        """Drop locks for events no longer in the curated list.
-
-        Only unlocked locks are removed: a lock still held (or waited on)
-        belongs to an in-flight expansion and must stay until it is done.
-        Ids requested by get_event_article are always in curated_events,
-        so a live request can never lose its lock to this prune.
-        """
-        if len(self._article_locks) <= self._ARTICLE_LOCK_PRUNE_THRESHOLD:
-            return
-        live_ids = {e.get("id") for e in self.curated_events}
+        """Drop unreferenced locks for events no longer in the curated list."""
+        with self._events_lock:
+            live_ids = {e.get("id") for e in self.curated_events}
         with self._article_locks_guard:
+            if len(self._article_locks) <= self._ARTICLE_LOCK_PRUNE_THRESHOLD:
+                return
             stale = [
                 event_id
-                for event_id, lock in self._article_locks.items()
-                if event_id not in live_ids and not lock.locked()
+                for event_id, entry in self._article_locks.items()
+                if event_id not in live_ids and entry[1] <= 0 and not entry[0].locked()
             ]
             for event_id in stale:
                 self._article_locks.pop(event_id, None)
 
-    def _get_article_lock(self, event_id: str) -> threading.Lock:
-        """One lock per event id, created on demand under a guard lock.
+    def _acquire_article_lock_entry(self, event_id: str) -> List[Any]:
+        """Increments refcount and returns [lock, refcount] for event_id."""
+        with self._article_locks_guard:
+            entry = self._article_locks.get(event_id)
+            if entry is None:
+                entry = [threading.Lock(), 0]
+                self._article_locks[event_id] = entry
+            entry[1] += 1
+            return entry
 
-        Concurrent expand calls for the SAME event wait on the same
-        lock and then read the cache, so the LLM is called at most once
-        per event. Different events generate independently. The map is
-        pruned once it grows past the threshold, so it stays bounded by
-        the curated list plus in-flight expansions.
-        """
+    def _release_article_lock_entry(self, event_id: str, entry: List[Any]) -> None:
+        with self._article_locks_guard:
+            entry[1] = max(0, entry[1] - 1)
+        if len(self._article_locks) > self._ARTICLE_LOCK_PRUNE_THRESHOLD:
+            self._prune_article_locks()
+
+    def _get_article_lock(self, event_id: str) -> threading.Lock:
+        """Back-compat helper returning the per-event lock (pruning stale entries)."""
         self._prune_article_locks()
         with self._article_locks_guard:
-            lock = self._article_locks.get(event_id)
-            if lock is None:
-                lock = threading.Lock()
-                self._article_locks[event_id] = lock
-            return lock
+            entry = self._article_locks.get(event_id)
+            if entry is None:
+                entry = [threading.Lock(), 0]
+                self._article_locks[event_id] = entry
+            return entry[0]
 
     def get_event_article(self, event_id: str) -> Dict[str, Any]:
         """Returns the cached ~1000-word article for one curated event.
@@ -547,30 +586,37 @@ class MacroCommander:
         honestly -- never a fabricated article, and never the one-line
         summary passed off as the article. Never raises.
         """
-        evt = next((x for x in self.curated_events if x.get("id") == event_id), None)
+        with self._events_lock:
+            evt = next((x for x in self.curated_events if x.get("id") == event_id), None)
         if evt is None:
             return {"ok": False, "event_id": event_id, "state": "none", "reason": "event not found"}
-        lock = self._get_article_lock(event_id)
-        with lock:
-            state = str(evt.get("article_state") or "none")
-            article = evt.get("article")
-            if state == "ready" and isinstance(article, str) and article.strip():
-                return {"ok": True, "event_id": event_id, "state": "ready", "article": article}
-            evt["article_state"] = "loading"
-            evt["article"] = None
-            evt.pop("article_error", None)
-            try:
-                article_text, error = self._generate_article_sync(evt)
-            except Exception as ex:
-                article_text, error = None, f"article generation failed: {ex}"
-            if article_text is None:
-                evt["article_state"] = "failed"
-                evt["article_error"] = error or "article generation failed"
-                logger.warning("Event article generation failed for %s: %s", event_id, evt["article_error"])
-                return {"ok": False, "event_id": event_id, "state": "failed", "reason": evt["article_error"]}
-            evt["article"] = article_text
-            evt["article_state"] = "ready"
-            return {"ok": True, "event_id": event_id, "state": "ready", "article": article_text}
+        entry = self._acquire_article_lock_entry(event_id)
+        try:
+            with entry[0]:
+                with self._events_lock:
+                    state = str(evt.get("article_state") or "none")
+                    article = evt.get("article")
+                    if state == "ready" and isinstance(article, str) and article.strip():
+                        return {"ok": True, "event_id": event_id, "state": "ready", "article": article}
+                    evt["article_state"] = "loading"
+                    evt["article"] = None
+                    evt.pop("article_error", None)
+                    evt_copy = dict(evt)
+                try:
+                    article_text, error = self._generate_article_sync(evt_copy)
+                except Exception as ex:
+                    article_text, error = None, f"article generation failed: {ex}"
+                with self._events_lock:
+                    if article_text is None:
+                        evt["article_state"] = "failed"
+                        evt["article_error"] = error or "article generation failed"
+                        logger.warning("Event article generation failed for %s: %s", event_id, evt["article_error"])
+                        return {"ok": False, "event_id": event_id, "state": "failed", "reason": evt["article_error"]}
+                    evt["article"] = article_text
+                    evt["article_state"] = "ready"
+                    return {"ok": True, "event_id": event_id, "state": "ready", "article": article_text}
+        finally:
+            self._release_article_lock_entry(event_id, entry)
 
     async def _generate_article_async(self, evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         """One LLM call for one article. Returns (article_text, error).
@@ -669,6 +715,11 @@ class MacroCommander:
         # Closing a position is risk-reducing: never veto it (item 6).
         if is_close:
             return True, "PASSED"
+
+        today = date.today()
+        if today != self._veto_day:
+            self._veto_day = today
+            self.current_state.veto_count_today = 0
 
         bias = self.current_state.directional_bias
 
@@ -803,7 +854,7 @@ class MacroCommander:
         Performs Stage 2 cross-market synthesis by prompting LLM_MODEL_COMMANDER
         with the latest structured event stream.
         """
-        async with self.synthesis_lock:
+        async with self._get_synthesis_lock():
             now = time.time()
             if not recent_events:
                 self.current_state.last_synthesis_ts = now
@@ -816,43 +867,42 @@ class MacroCommander:
                 self._expire_fallback_if_stale(now)
                 return self.current_state
 
-            # Ingest structured events into curated timeline (newest first), ensuring Traditional Chinese headline & summary
-            for e in recent_events:
-                zh_head, zh_sum = IntelligenceHarvester.ensure_traditional_chinese(e)
-                dedup_key = e.raw_title or zh_head
-                digest_hex = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:8]
-                evt_id = f"evt_{int(now)}_{digest_hex}"
-                already_exists = any(
-                    (e.raw_title and x.get("raw_title") == e.raw_title) or x.get("headline") == zh_head
-                    for x in self.curated_events
-                )
-                if not already_exists:
-                    self.curated_events.insert(0, {
-                        "id": evt_id,
-                        "event_ts": int(now),
-                        "date_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
-                        "time": time.strftime("%H:%M:%S"),
-                        "source": e.source,
-                        "domain": e.domain,
-                        "urgency": e.urgency_score,
-                        "sentiment": round(e.sentiment_score, 2),
-                        "headline": zh_head,
-                        "summary": zh_sum,
-                        "raw_title": e.raw_title,
-                        "raw_snippet": getattr(e, "raw_content", "") or "",
-                        "tier": e.tier,
-                        "thread_id": e.thread_id,
-                        "consensus": e.consensus,
-                        "strategy_actions": [],
-                        # Phase A: tickers ride the telemetry payload so
-                        # the frontend can render fixed-colour tag chips;
-                        # the article is generated lazily on first expand.
-                        "tickers": _dedup_tickers(e.entities_tickers),
-                        "article": None,
-                        "article_state": "none",
-                    })
-            if len(self.curated_events) > 60:
-                self.curated_events = self.curated_events[:60]
+            # Ingest structured events into curated timeline (newest first), ensuring Traditional Chinese headline & summary.
+            # Iterate in reverse so recent_events[0] lands at curated_events[0].
+            with self._events_lock:
+                for e in reversed(recent_events):
+                    zh_head, zh_sum = IntelligenceHarvester.ensure_traditional_chinese(e)
+                    dedup_key = e.raw_title or zh_head
+                    digest_hex = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:8]
+                    evt_id = f"evt_{int(now)}_{digest_hex}"
+                    already_exists = any(
+                        (e.raw_title and x.get("raw_title") == e.raw_title) or x.get("headline") == zh_head
+                        for x in self.curated_events
+                    )
+                    if not already_exists:
+                        self.curated_events.insert(0, {
+                            "id": evt_id,
+                            "event_ts": int(now),
+                            "date_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                            "time": time.strftime("%H:%M:%S"),
+                            "source": e.source,
+                            "domain": e.domain,
+                            "urgency": e.urgency_score,
+                            "sentiment": round(e.sentiment_score, 2),
+                            "headline": zh_head,
+                            "summary": zh_sum,
+                            "raw_title": e.raw_title,
+                            "raw_snippet": getattr(e, "raw_content", "") or "",
+                            "tier": e.tier,
+                            "thread_id": e.thread_id,
+                            "consensus": e.consensus,
+                            "strategy_actions": [],
+                            "tickers": _dedup_tickers(e.entities_tickers),
+                            "article": None,
+                            "article_state": "none",
+                        })
+                if len(self.curated_events) > 60:
+                    self.curated_events = self.curated_events[:60]
 
             # Format top items for commander
             lines = []
@@ -971,8 +1021,10 @@ class MacroCommander:
 
                 self.current_state.status = "STANDBY" if not self.client.is_gateway_online else "ONLINE"
 
-            if self.curated_events:
-                self.current_state.latest_event = self.curated_events[0]
+            self._last_synthesized_keys = tuple((e.raw_title or e.summary) for e in recent_events[-10:])
+            with self._events_lock:
+                if self.curated_events:
+                    self.current_state.latest_event = self.curated_events[0]
 
             return self.current_state
 

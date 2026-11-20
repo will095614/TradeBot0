@@ -94,22 +94,42 @@ class Leaderboard:
                 return cached[1]
             # TTL expired: fall through and recompute below.
 
-        returns: List[float] = []
-        for i in range(1, len(history)):
-            prev_eq = float(history[i - 1][1])
-            curr_eq = float(history[i][1])
-            if prev_eq > 0:
-                returns.append((curr_eq - prev_eq) / prev_eq)
+        # Single-pass Welford online mean/variance + Sortino downside accumulation
+        # (avoids allocating returns/non_zero/downside_sq lists and halves Decimal->float casts).
+        it = iter(history)
+        prev_eq = float(next(it)[1])
+        n = 0
+        non_zero_count = 0
+        mean_ret = 0.0
+        m2 = 0.0
+        downside_sq_sum = 0.0
+        downside_count = 0
+
+        for _, eq_dec in it:
+            curr_eq = float(eq_dec)
+            if prev_eq > 0.0:
+                r = (curr_eq - prev_eq) / prev_eq
+                n += 1
+                if abs(r) > 1e-9:
+                    non_zero_count += 1
+                delta = r - mean_ret
+                mean_ret += delta / n
+                m2 += delta * (r - mean_ret)
+                if r < risk_free_rate:
+                    diff = r - risk_free_rate
+                    downside_sq_sum += diff * diff
+                    downside_count += 1
+            prev_eq = curr_eq
 
         # If portfolio never traded or all returns are 0
-        non_zero = [r for r in returns if abs(r) > 1e-9]
-        if len(non_zero) < 2:
-            return 0.0, 0.0
+        if non_zero_count < 2 or n < 2:
+            result = (0.0, 0.0)
+            portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
+            portfolio._metrics_cache_time = time.monotonic()  # type: ignore[attr-defined]
+            return result
 
-        n = len(returns)
-        mean_ret = sum(returns) / n
-        variance = sum((r - mean_ret) ** 2 for r in returns) / (n - 1)
-        std_dev = math.sqrt(variance)
+        variance = m2 / (n - 1)
+        std_dev = math.sqrt(variance) if variance > 0.0 else 0.0
 
         periods_per_year = cls._estimate_periods_per_year(history)
         ann_factor = math.sqrt(periods_per_year)
@@ -119,10 +139,9 @@ class Leaderboard:
             sharpe = ((mean_ret - risk_free_rate) / std_dev) * ann_factor
             sharpe = max(-25.0, min(25.0, round(sharpe, 2)))
 
-        # Sortino uses downside deviation only (returns < 0)
-        downside_sq = [r ** 2 for r in returns if r < 0.0]
-        if downside_sq:
-            downside_dev = math.sqrt(sum(downside_sq) / n)
+        # Sortino uses downside deviation only (returns < risk_free_rate)
+        if downside_count > 0:
+            downside_dev = math.sqrt(downside_sq_sum / n)
             if downside_dev > 1e-8:
                 sortino = ((mean_ret - risk_free_rate) / downside_dev) * ann_factor
                 sortino = max(-25.0, min(25.0, round(sortino, 2)))
@@ -191,8 +210,16 @@ class Leaderboard:
             # Audit 3.7: lifetime closed trades from the counters, not
             # the truncated history (see calculate_win_rate).
             closed_count = p.closed_trades_count
+            eq = p.total_equity
+            roi = (
+                (((eq - p.initial_cash) / p.initial_cash) * Decimal("100")).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                if p.initial_cash > Decimal("0")
+                else Decimal("0.00")
+            )
             fitness = cls.calculate_fitness(
-                float(p.roi_pct),
+                float(roi),
                 float(p.max_drawdown_pct),
                 sharpe,
                 sortino,
@@ -204,8 +231,8 @@ class Leaderboard:
                 rank=0,
                 portfolio_id=p_id,
                 name=p.name,
-                equity=p.total_equity,
-                roi_pct=p.roi_pct,
+                equity=eq,
+                roi_pct=roi,
                 max_drawdown_pct=p.max_drawdown_pct,
                 sharpe_ratio=sharpe,
                 # Display fallback for an undefined Sortino (F1); the

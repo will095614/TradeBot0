@@ -86,7 +86,7 @@ def test_style_b_genetic_evolution_elitism_and_mutation():
     GeneticEvolver.evolve_generation(competitors, rankings, preserve_portfolio=False)
     for c in competitors:
         assert c.portfolio.total_equity == Decimal("100000.00")
-    assert os.path.exists(os.path.join("memory", "arena_history.json"))
+    assert os.path.exists(os.path.join(os.environ.get("ARENA_MEMORY_DIR", "memory"), "arena_history.json"))
 
 
 def test_evolution_save_history_decoupled_from_lock():
@@ -110,7 +110,7 @@ def test_evolution_save_history_decoupled_from_lock():
 
     # Explicit save_history call outside locks succeeds
     GeneticEvolver.save_history(last_records[0], last_records[1])
-    assert os.path.exists(os.path.join("memory", "arena_history.json"))
+    assert os.path.exists(os.path.join(os.environ.get("ARENA_MEMORY_DIR", "memory"), "arena_history.json"))
 
 
 
