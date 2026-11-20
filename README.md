@@ -1,6 +1,5 @@
-# TradeBot0 — ETH/USD 多策略模擬交易系統 (V2.0.0)
+# TradeBot0 — ETH/USD 多策略模擬交易系統
 
-> 專案介紹簡報：[TradeBot0_Introduction.pdf](TradeBot0_Introduction.pdf)（V2.0.0 架構與功能介紹，點開可在 GitHub 線上瀏覽）
 
 TradeBot0 是一套在本機運行的 ETH/USD 多策略模擬交易軟體。系統同時運行 5 個量化策略，各配置 $100,000 虛擬資金（合計 $500,000），依據即時市場報價進行虛擬撮合，並定期自動調整策略參數。內建的 AI 會閱讀新聞、判斷市場方向，幫你過濾掉逆勢的交易訊號。
 
@@ -29,7 +28,7 @@ TradeBot0 是一套在本機運行的 ETH/USD 多策略模擬交易軟體。系�
 
 ### 1. 使用安裝程式（一般使用者）
 
-1. 下載 [TradeBot0Setup.exe（V2.0.0）](https://github.com/will095614/TradeBot0/releases/latest/download/TradeBot0Setup.exe) 並執行安裝。
+1. 下載 [TradeBot0Setup.exe](https://github.com/will095614/TradeBot0/releases/latest/download/TradeBot0Setup.exe) 並執行安裝。
 2. 因安裝檔未包含商業數位簽章，Windows SmartScreen 可能顯示提示視窗，點擊「其他資訊」並選擇「仍要執行」即可繼續。
 3. 首次啟動將顯示設定精靈：
    - 設定本機管理密碼。
@@ -131,4 +130,4 @@ TradeBot0 內建的 AI 會幫你閱讀市場新聞、判斷市場方向。
 
 ## 下載
 
-[TradeBot0Setup.exe（V2.0.0）](https://github.com/will095614/TradeBot0/releases/latest/download/TradeBot0Setup.exe)（GitHub Release 單一載點）。
+[TradeBot0Setup.exe](https://github.com/will095614/TradeBot0/releases/latest/download/TradeBot0Setup.exe)（GitHub Release 單一載點）。
