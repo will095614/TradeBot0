@@ -984,6 +984,52 @@
     </div>
   </div>
 
+  <!-- Close Setup Wizard Confirmation (wizard close when no install is running) -->
+  <!-- Separate from the shutdown prompt and the cancel-install prompt: this one
+       warns that the API key / password typed in the wizard will not be saved. -->
+  <div class="ss-modal-overlay wizard-close-confirm-overlay" id="wizardCloseConfirmModal" style="display:none;" onclick="handleWizardCloseOverlayClick(event)">
+    <div class="ss-modal lg-glass lg-spot-card" role="dialog" aria-modal="true" aria-labelledby="wizardCloseModalTitle">
+      <button class="ss-modal-close" onclick="closeWizardCloseConfirm()" title="Keep Editing" aria-label="Close">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M3 3l10 10M13 3L3 13"></path>
+        </svg>
+      </button>
+
+      <div class="ss-modal-ambient-glow ss-modal-glow--amber" aria-hidden="true"></div>
+
+      <div class="ss-modal-hero">
+        <div class="ss-modal-icon-orb ss-orb--amber">
+          <div class="orb-ring" aria-hidden="true"></div>
+          <svg class="ss-svg-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
+            <path d="M12 9v4"></path>
+            <path d="M12 17h.01"></path>
+          </svg>
+        </div>
+        <h2 class="ss-modal-title" id="wizardCloseModalTitle">Close setup wizard?</h2>
+        <p class="ss-modal-desc">
+          Are you sure you want to close the setup wizard? Anything you entered here has not been saved yet.
+        </p>
+      </div>
+
+      <div class="ss-modal-callout ss-callout--amber">
+        <svg class="ss-svg-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 3v5M8 11.5v1M15 8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"></path>
+        </svg>
+        <span>Your API key and admin password will not be saved.</span>
+      </div>
+
+      <div class="ss-modal-actions">
+        <button class="modal-act-btn modal-act-danger" onclick="confirmCloseWizardWithoutSaving()">
+          <span>Close Without Saving</span>
+        </button>
+        <button class="modal-act-btn modal-act-ghost" onclick="closeWizardCloseConfirm()">
+          <span>Keep Editing</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
 <script>
 /* __APP_JS__ */
 </script>

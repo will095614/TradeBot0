@@ -5089,6 +5089,12 @@ body:not(.arena-ready) .lg-glass {
   z-index: 10002;
 }
 
+/* Wizard-close confirmation sits above the wizard overlay (10001) and the
+   cancel-install confirmation (10002), below the shutdown prompt (10005). */
+.wizard-close-confirm-overlay {
+  z-index: 10003;
+}
+
 /* Shutdown prompt always sits above all modals including the setup wizard. */
 #shutdownModal {
   z-index: 10005;

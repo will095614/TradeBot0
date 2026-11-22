@@ -3371,7 +3371,7 @@ function blurActiveFocus() {
 
 function isAnyModalBlockingShortcuts() {
   if (isWizardOpen) return true;
-  const ids = ['shutdownModal', 'resetConfirmModal', 'installCancelConfirmModal', 'networkOfflineOverlay'];
+  const ids = ['shutdownModal', 'resetConfirmModal', 'installCancelConfirmModal', 'wizardCloseConfirmModal', 'networkOfflineOverlay'];
   for (let i = 0; i < ids.length; i++) {
     const el = document.getElementById(ids[i]);
     if (el && el.classList.contains('modal-visible')) return true;
@@ -4267,6 +4267,7 @@ function updateUiClockDisplay() {
   let shutdownCloseTimer = null;
   let resetCloseTimer = null;
   let installCancelCloseTimer = null;
+  let wizardCloseConfirmCloseTimer = null;
   let wizardCloseTimer = null;
 
   function requestShutdown() {
@@ -4541,10 +4542,12 @@ function updateUiClockDisplay() {
     }
   }
 
-  // Wizard dismiss paths (X button / overlay click / Escape) must warn
-  // first while an install is running: closing would interrupt the
-  // download and cancel the installation. Save & Skip close the wizard
-  // directly and never warn -- the install keeps running behind them.
+  // Wizard dismiss paths (X button / overlay click / Escape) must confirm
+  // first. While an install is running the cancel-install prompt warns
+  // that closing would interrupt the download; otherwise the dedicated
+  // wizard-close prompt warns that the typed API key / password will not
+  // be saved. Save & Skip close the wizard directly and never warn --
+  // the install keeps running behind them.
   function requestCloseSetupWizardModal() {
     const closeBtn = document.getElementById('btnWizardClose');
     if (closeBtn && closeBtn.style.display === 'none') return;
@@ -4552,7 +4555,7 @@ function updateUiClockDisplay() {
       if (st === 'downloading-node' || st === 'installing-omniroute') {
         openInstallCancelConfirm();
       } else {
-        closeSetupWizardModal();
+        openWizardCloseConfirm();
       }
     };
     const cached = window.__runtimeInstallStatus;
@@ -4627,6 +4630,49 @@ function updateUiClockDisplay() {
       fill.style.width = '0%';
     }
     closeInstallCancelConfirm();
+    closeSetupWizardModal();
+  }
+
+  // Wizard-close confirmation (no install running): a dedicated dialog,
+  // separate from the shutdown prompt and the cancel-install prompt. It
+  // warns that the API key / password typed in the wizard will not be
+  // saved. Confirming closes the wizard; dismissing stays on the wizard.
+  function openWizardCloseConfirm() {
+    if (wizardCloseConfirmCloseTimer) { clearTimeout(wizardCloseConfirmCloseTimer); wizardCloseConfirmCloseTimer = null; }
+    blurActiveFocus();
+    const modal = document.getElementById('wizardCloseConfirmModal');
+    if (modal) {
+      modal.style.display = 'flex';
+      modal.classList.remove('modal-closing');
+      void modal.offsetWidth;
+      modal.classList.add('modal-visible');
+    }
+  }
+
+  function closeWizardCloseConfirm() {
+    const modal = document.getElementById('wizardCloseConfirmModal');
+    if (modal) {
+      modal.classList.remove('modal-visible');
+      modal.classList.add('modal-closing');
+      if (wizardCloseConfirmCloseTimer) clearTimeout(wizardCloseConfirmCloseTimer);
+      wizardCloseConfirmCloseTimer = setTimeout(() => {
+        wizardCloseConfirmCloseTimer = null;
+        if (!modal.classList.contains('modal-visible')) {
+          modal.style.display = 'none';
+          modal.classList.remove('modal-closing');
+        }
+      }, 1250);
+    }
+  }
+
+  function handleWizardCloseOverlayClick(e) {
+    if (e && e.target && e.target.id === 'wizardCloseConfirmModal') {
+      closeWizardCloseConfirm();
+    }
+  }
+
+  function confirmCloseWizardWithoutSaving() {
+    closeWizardCloseConfirm();
     closeSetupWizardModal();
   }
 
@@ -5038,6 +5084,11 @@ function updateUiClockDisplay() {
     if (e.key === 'Escape') {
       // A confirm dialog open on top swallows Escape: dismiss the dialog
       // and stay on the wizard instead of closing the wizard behind it.
+      const wizardCloseModal = document.getElementById('wizardCloseConfirmModal');
+      if (wizardCloseModal && wizardCloseModal.classList.contains('modal-visible')) {
+        closeWizardCloseConfirm();
+        return;
+      }
       const cancelModal = document.getElementById('installCancelConfirmModal');
       if (cancelModal && cancelModal.classList.contains('modal-visible')) {
         closeInstallCancelConfirm();

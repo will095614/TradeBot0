@@ -250,6 +250,40 @@ def test_frontend_progress_bar_and_cancel_confirm_ids():
     assert "max-height: 92vh" in modal_block
 
 
+def test_wizard_close_confirm_dialog():
+    '''Wizard close (no install running) shows a dedicated confirmation
+    dialog, separate from the shutdown prompt and the cancel-install
+    prompt, warning that the typed API key / password will not be saved,
+    and layered above the wizard overlay so it actually displays.'''
+    assets = Path(__file__).resolve().parent.parent / "src" / "gui" / "assets"
+    html = (assets / "index.html").read_text(encoding="utf-8")
+    js = (assets / "app.js").read_text(encoding="utf-8")
+    css = (assets / "app.css").read_text(encoding="utf-8")
+    assert 'id="wizardCloseConfirmModal"' in html
+    assert 'id="wizardCloseModalTitle"' in html
+    assert "Your API key and admin password will not be saved." in html
+    assert "Close Without Saving" in html
+    assert "Keep Editing" in html
+    for fn in ["openWizardCloseConfirm", "closeWizardCloseConfirm",
+               "handleWizardCloseOverlayClick", "confirmCloseWizardWithoutSaving"]:
+        assert fn in js
+    # The no-install branch of the close decision opens the new dialog
+    # instead of closing the wizard directly.
+    decide = js.split("const decide = (st) => {", 1)[1].split("};", 1)[0]
+    assert "openInstallCancelConfirm()" in decide
+    assert "openWizardCloseConfirm()" in decide
+    # Layering: above the wizard overlay (10001), below shutdown (10005).
+    import re as _re
+    def _z(name):
+        m = _re.search(_re.escape(name) + r"\s*\{[^}]*z-index:\s*(\d+)", css)
+        assert m, name
+        return int(m.group(1))
+    assert _z(".setup-wizard-overlay") < _z(".wizard-close-confirm-overlay") < _z("#shutdownModal")
+    assert _z(".wizard-close-confirm-overlay") == 10003
+    # Escape dismisses the new dialog and stays on the wizard.
+    assert "wizardCloseConfirmModal" in js
+
+
 def test_wizard_vertical_content_sized_layout():
     """Single-column vertical wizard (Gemini-only): narrow vertical modal,
     live Node.js/OmniRoute environment detection pills, and content-sized
