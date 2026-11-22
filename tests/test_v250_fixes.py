@@ -540,7 +540,7 @@ def test_ingestion_clean_html_strips_script_style_and_dedup_forget():
 
 
 def test_update_checker_semver_prerelease_and_non_string_version():
-    assert APP_VERSION == "V2.5.0"
+    assert APP_VERSION == "V2.5.1"
     assert compare_versions("V2.5.0-rc.1", "V2.5.0") == -1
     assert compare_versions("V2.5.0", "V2.5.0-rc.1") == 1
     assert compare_versions("V2.5.0-alpha.1", "V2.5.0-beta.1") == -1
@@ -704,8 +704,8 @@ def test_app_js_and_installer_v250_contracts():
     assert idx_shutdown != -1 and idx_wiz_close != -1
     assert idx_shutdown < idx_wiz_close
 
-    # Installer V2.5.0 & silent-safe contracts
-    assert '#define MyAppVersion "V2.5.0"' in iss
-    assert "VersionInfoVersion=2.5.0" in iss
+    # Installer version & silent-safe contracts (sync with src/version.py)
+    assert f'#define MyAppVersion "{APP_VERSION}"' in iss
+    assert f"VersionInfoVersion={APP_VERSION.lstrip('Vv')}" in iss
     assert "SuppressibleMsgBox" in iss
     assert r"TradeBot0\runtime\node\node.exe" in iss
