@@ -68,15 +68,13 @@ def test_launchers_and_shortcut_integrity():
     exe = root / "dist" / "TradeBot0_Arena.exe"
     assert exe.exists(), "dist/TradeBot0_Arena.exe must exist"
 
-    run_bat = root / "Run_TradeBot0_Arena.bat"
-    assert run_bat.exists()
-    content_run = run_bat.read_text(encoding="utf-8", errors="ignore")
-    assert "dist\\TradeBot0_Arena.exe" in content_run
-
-    cjk_bat = root / "啟動TradeBot0_Arena.bat"
-    assert cjk_bat.exists()
-    content_cjk = cjk_bat.read_text(encoding="utf-8", errors="ignore")
-    assert "dist\\TradeBot0_Arena.exe" in content_cjk
+    # The old launcher .bat files (Run_TradeBot0_Arena.bat and
+    # 啟動TradeBot0_Arena.bat) were removed in the V2.2.0 cleanup; the
+    # unified dev_test.bat launcher replaced them.
+    assert not (root / "Run_TradeBot0_Arena.bat").exists()
+    assert not (root / "啟動TradeBot0_Arena.bat").exists()
+    dev_bat = root / "dev_test.bat"
+    assert dev_bat.exists()
 
 
 def test_splash_logo_concentric_alignment_and_svg_zap():
