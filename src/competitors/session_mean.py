@@ -5,6 +5,18 @@ from src.arena.order import OrderTicket, OrderSide, OrderType, ExecutionReason
 from src.arena.broker_sim import BrokerSim
 from src.competitors.base import BaseCompetitor, CompetitorGenome
 
+_BASE_RATIO = Decimal("0.026") / Decimal("0.012")
+
+
+def _parse_pos_dec(raw: Any, default: Optional[Decimal] = None) -> Optional[Decimal]:
+    if raw is None:
+        return default
+    try:
+        val = Decimal(str(raw))
+        return val if (val.is_finite() and val > Decimal("0")) else default
+    except Exception:
+        return default
+
 
 class SessionMeanPullbackCompetitor(BaseCompetitor):
     """
@@ -58,37 +70,33 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
         if self.portfolio.is_circuit_breaker_tripped or not market_price.is_finite() or market_price <= Decimal("0"):
             return None
 
-        def _parse_pos_dec(raw: Any, default: Optional[Decimal] = None) -> Optional[Decimal]:
-            if raw is None:
-                return default
-            try:
-                val = Decimal(str(raw))
-                return val if (val.is_finite() and val > Decimal("0")) else default
-            except Exception:
-                return default
+        if signal == "SELL":
+            return self._close_ticket(broker, timestamp)
+        if signal != "BUY" or self.portfolio.position_qty != Decimal("0"):
+            return None
 
         min_stop_floor = min(
             Decimal("10.00"),
             max(Decimal("0.01"), (market_price * Decimal("0.004")).quantize(Decimal("0.01"))),
         )
-        base_ratio = Decimal("0.026") / Decimal("0.012")
-        r_mult = (
-            Decimal("2.2") * ((self.genome.take_profit_pct / self.genome.stop_loss_pct) / base_ratio)
+        raw_r_mult = (
+            Decimal("2.2") * ((self.genome.take_profit_pct / self.genome.stop_loss_pct) / _BASE_RATIO)
             if (self.genome.take_profit_pct is not None and self.genome.stop_loss_pct > Decimal("0"))
             else Decimal("2.2")
         )
+        r_mult = max(Decimal("1.5"), min(Decimal("4.0"), raw_r_mult))
+        default_atr = max(Decimal("0.01"), (market_price * Decimal("0.008")).quantize(Decimal("0.01")))
+        mean_dec = _parse_pos_dec(indicators.get("mean_ref"))
+        atr_dec = _parse_pos_dec(indicators.get("atr"), default_atr) or default_atr
 
-        if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
-            mean_dec = _parse_pos_dec(indicators.get("mean_ref"))
-            atr_dec = _parse_pos_dec(indicators.get("atr"), Decimal("20.00")) or Decimal("20.00")
-
+        if side == OrderSide.BUY:
             if mean_dec is not None:
                 # Pullback zone: within 0.85x ATR of the session mean
                 if abs(market_price - mean_dec) > (atr_dec * Decimal("0.85")):
                     return None
                 stop_price = max(Decimal("0.01"), (mean_dec - max(min_stop_floor, atr_dec * Decimal("0.5"))).quantize(Decimal("0.01")))
                 if (market_price - stop_price) < min_stop_floor:
-                    fallback_dist = max(min_stop_floor, (market_price * Decimal("0.007")).quantize(Decimal("0.01")))
+                    fallback_dist = max(min_stop_floor, (market_price * self.genome.stop_loss_pct).quantize(Decimal("0.01")))
                     stop_price = max(Decimal("0.01"), (market_price - fallback_dist).quantize(Decimal("0.01")))
                 stop_dist = max(min_stop_floor, market_price - stop_price)
             else:
@@ -97,12 +105,15 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
 
             if stop_price >= market_price:
                 return None
-            target_dist = stop_dist * r_mult
+            actual_stop_dist = market_price - stop_price
+            target_dist = actual_stop_dist * r_mult
             target_price = (market_price + target_dist).quantize(Decimal("0.01"))
             if target_price <= market_price:
                 return None
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
+            qty = self.compute_r_multiple_qty(
+                market_price, stop_price, broker, sizing_multiplier=sizing_multiplier, side=OrderSide.BUY
+            )
             if qty <= Decimal("0"):
                 return None
 
@@ -118,17 +129,14 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
                 timestamp=timestamp
             )
 
-        elif signal == "BUY" and side == OrderSide.SELL and self.portfolio.position_qty == Decimal("0"):
-            mean_dec = _parse_pos_dec(indicators.get("mean_ref"))
-            atr_dec = _parse_pos_dec(indicators.get("atr"), Decimal("20.00")) or Decimal("20.00")
-
+        if side == OrderSide.SELL:
             if mean_dec is not None:
                 # Pullback zone: within 0.85x ATR of the session mean
                 if abs(market_price - mean_dec) > (atr_dec * Decimal("0.85")):
                     return None
                 stop_price = (mean_dec + max(min_stop_floor, atr_dec * Decimal("0.5"))).quantize(Decimal("0.01"))
                 if (stop_price - market_price) < min_stop_floor:
-                    fallback_dist = max(min_stop_floor, (market_price * Decimal("0.007")).quantize(Decimal("0.01")))
+                    fallback_dist = max(min_stop_floor, (market_price * self.genome.stop_loss_pct).quantize(Decimal("0.01")))
                     stop_price = (market_price + fallback_dist).quantize(Decimal("0.01"))
                 stop_dist = max(min_stop_floor, stop_price - market_price)
             else:
@@ -137,12 +145,15 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
 
             if stop_price <= market_price:
                 return None
-            target_dist = stop_dist * r_mult
+            actual_stop_dist = stop_price - market_price
+            target_dist = actual_stop_dist * r_mult
             target_price = max(Decimal("0.01"), (market_price - target_dist).quantize(Decimal("0.01")))
             if target_price >= market_price:
                 return None
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
+            qty = self.compute_r_multiple_qty(
+                market_price, stop_price, broker, sizing_multiplier=sizing_multiplier, side=OrderSide.SELL
+            )
             if qty <= Decimal("0"):
                 return None
 
@@ -157,7 +168,5 @@ class SessionMeanPullbackCompetitor(BaseCompetitor):
                 reason=ExecutionReason.SIGNAL_ENTRY,
                 timestamp=timestamp
             )
-        elif signal == "SELL":
-            return self._close_ticket(broker, timestamp)
 
         return None

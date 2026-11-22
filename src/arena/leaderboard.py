@@ -65,10 +65,23 @@ class Leaderboard:
         max_samples = 64
         step = max(1, (n_pts - 1) // max_samples)
         deltas: List[float] = []
-        for idx in range(0, n_pts - 1, step):
-            dt = equity_history[idx + 1][0] - equity_history[idx][0]
-            if dt > 0.0:
-                deltas.append(dt)
+        if isinstance(equity_history, _SliceableDeque):
+            # Single sequential pass avoids O(N) deque random indexing per sample.
+            it = iter(equity_history)
+            prev_t = next(it)[0]
+            next_sample = 0
+            for idx, (curr_t, _) in enumerate(it):
+                if idx == next_sample:
+                    dt = curr_t - prev_t
+                    if math.isfinite(dt) and dt > 0.0:
+                        deltas.append(dt)
+                    next_sample += step
+                prev_t = curr_t
+        else:
+            for idx in range(0, n_pts - 1, step):
+                dt = equity_history[idx + 1][0] - equity_history[idx][0]
+                if math.isfinite(dt) and dt > 0.0:
+                    deltas.append(dt)
         if not deltas:
             return PERIODS_PER_YEAR_15MIN_BARS
         deltas.sort()
@@ -86,17 +99,6 @@ class Leaderboard:
         if len(history) < 3:
             return 0.0, 0.0
 
-        # Audit §5.5: the old key included the latest equity value, which
-        # moves on every tick, so the cache never hit and 6 x up-to-2000
-        # point loops ran every second. The key is now fill-driven: only
-        # a fill (entry or close) changes the return series in a way the
-        # leaderboard must reflect immediately; ticks between fills only
-        # append mark-to-market points. The trade-off is deliberate:
-        # between fills the served metrics are the as-of-last-fill values
-        # (they can lag a fast-moving short history; over a long history
-        # one tick among up to 2000 points moves the 2dp-rounded values
-        # negligibly). The history version covers reset/restore, which
-        # reuse the same counters for a different history.
         cache_key = (
             portfolio.total_fills,
             portfolio.closed_trades_count,
@@ -111,13 +113,19 @@ class Leaderboard:
             # TTL expired: fall through and recompute below.
 
         eq_floats = getattr(portfolio, "_equity_floats", None)
-        if (
-            _np is not None
-            and isinstance(history, _SliceableDeque)
+        floats_in_sync = (
+            isinstance(history, _SliceableDeque)
             and eq_floats is not None
             and len(eq_floats) == len(history)
-        ):
+            and getattr(portfolio, "_equity_floats_sync_gen", -1) == getattr(history, "_mut_gen", -2)
+        )
+        if _np is not None and floats_in_sync:
             arr = _np.fromiter(eq_floats, dtype=_np.float64, count=len(eq_floats))
+            finite_mask = _np.isfinite(arr)
+            if not _np.all(finite_mask):
+                arr = arr[finite_mask]
+            if arr.size < 3:
+                return 0.0, 0.0
             prev = arr[:-1]
             valid = prev > 0.0
             rets = (arr[1:][valid] - prev[valid]) / prev[valid]
@@ -125,8 +133,9 @@ class Leaderboard:
             non_zero_count = int(_np.count_nonzero(_np.abs(rets) > 1e-9)) if n else 0
             if non_zero_count < 2 or n < 2:
                 result = (0.0, 0.0)
-                portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
-                portfolio._metrics_cache_time = time.monotonic()  # type: ignore[attr-defined]
+                if portfolio.position_qty <= Decimal("0"):
+                    portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
+                    portfolio._metrics_cache_time = time.monotonic()  # type: ignore[attr-defined]
                 return result
             mean_ret = float(rets.mean())
             std_dev = float(rets.std(ddof=1))
@@ -136,7 +145,14 @@ class Leaderboard:
         else:
             # Single-pass Welford online mean/variance + Sortino downside accumulation
             it = iter(history)
-            prev_eq = float(next(it)[1])
+            prev_eq = float("nan")
+            for _, eq_dec in it:
+                val = float(eq_dec)
+                if math.isfinite(val):
+                    prev_eq = val
+                    break
+            if not math.isfinite(prev_eq):
+                return 0.0, 0.0
             n = 0
             non_zero_count = 0
             mean_ret = 0.0
@@ -146,6 +162,8 @@ class Leaderboard:
 
             for _, eq_dec in it:
                 curr_eq = float(eq_dec)
+                if not math.isfinite(curr_eq):
+                    continue
                 if prev_eq > 0.0:
                     r = (curr_eq - prev_eq) / prev_eq
                     n += 1
@@ -162,27 +180,29 @@ class Leaderboard:
 
             if non_zero_count < 2 or n < 2:
                 result = (0.0, 0.0)
-                portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
-                portfolio._metrics_cache_time = time.monotonic()  # type: ignore[attr-defined]
+                if portfolio.position_qty <= Decimal("0"):
+                    portfolio._metrics_cache = (cache_key, result)  # type: ignore[attr-defined]
+                    portfolio._metrics_cache_time = time.monotonic()  # type: ignore[attr-defined]
                 return result
 
             variance = m2 / (n - 1)
-            std_dev = math.sqrt(variance) if variance > 0.0 else 0.0
+            std_dev = math.sqrt(variance) if (math.isfinite(variance) and variance > 0.0) else 0.0
 
         periods_per_year = cls._estimate_periods_per_year(history)
         ann_factor = math.sqrt(periods_per_year)
 
         sharpe = 0.0
-        if std_dev > 1e-8:
-            sharpe = ((mean_ret - risk_free_rate) / std_dev) * ann_factor
-            sharpe = max(-25.0, min(25.0, round(sharpe, 2)))
+        if math.isfinite(std_dev) and std_dev > 1e-8 and math.isfinite(mean_ret):
+            raw_sharpe = ((mean_ret - risk_free_rate) / std_dev) * ann_factor
+            if math.isfinite(raw_sharpe):
+                sharpe = max(-25.0, min(25.0, round(raw_sharpe, 2)))
 
         # Sortino uses downside deviation only (returns < risk_free_rate)
         if downside_count > 0:
-            downside_dev = math.sqrt(downside_sq_sum / n)
-            if downside_dev > 1e-8:
-                sortino = ((mean_ret - risk_free_rate) / downside_dev) * ann_factor
-                sortino = max(-25.0, min(25.0, round(sortino, 2)))
+            downside_dev = math.sqrt(downside_sq_sum / n) if (math.isfinite(downside_sq_sum) and downside_sq_sum >= 0.0) else 0.0
+            if math.isfinite(downside_dev) and downside_dev > 1e-8 and math.isfinite(mean_ret):
+                raw_sortino = ((mean_ret - risk_free_rate) / downside_dev) * ann_factor
+                sortino = max(-25.0, min(25.0, round(raw_sortino, 2))) if math.isfinite(raw_sortino) else sharpe
             else:
                 sortino = sharpe
         else:

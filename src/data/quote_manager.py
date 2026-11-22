@@ -35,8 +35,10 @@ class QuoteManager:
         ws_stale_threshold_sec: float = 3.0,
         symbol: str = "ETH/USD",
     ) -> None:
-        self.session = session or requests.Session()
-        self.session.headers.update({"User-Agent": "TradeBot0-LiveArena/2.0"})
+        self._owns_session = session is None
+        self.session = session
+        if self.session is not None:
+            self.session.headers.update({"User-Agent": "TradeBot0-LiveArena/2.0"})
         self.ws_feed = StreamingCryptoFeed(
             on_quote_callback=self._on_internal_ws_quote,
             stale_threshold_sec=ws_stale_threshold_sec,
@@ -55,6 +57,15 @@ class QuoteManager:
 
     def stop_ws(self) -> None:
         self.ws_feed.stop()
+
+    def close(self) -> None:
+        self.stop_ws()
+        if self._owns_session and self.session is not None:
+            try:
+                self.session.close()
+            except Exception:
+                pass
+            self.session = None
 
     def get_fresh_ws_quote(self, now: Optional[float] = None) -> Optional[Any]:
         if self.ws_feed.is_fresh(now=now):

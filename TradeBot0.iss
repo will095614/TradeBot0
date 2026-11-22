@@ -12,7 +12,7 @@
 ; Version: the single source of truth is src/version.py (APP_VERSION);
 ; keep MyAppVersion in sync with it at release time. Bump both per release.
 #define MyAppName "TradeBot0"
-#define MyAppVersion "V2.4.1"
+#define MyAppVersion "V2.5.0"
 #define MyAppPublisher "TradeBot0"
 #define MyAppExeName "TradeBot0_Arena.exe"
 
@@ -21,7 +21,7 @@ AppId={{A21CE6E9-710C-4C80-B1A0-B1A4DF694A6E}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 ; Numeric form of MyAppVersion (no V prefix) for the version resource.
-VersionInfoVersion=2.4.1
+VersionInfoVersion=2.5.0
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
@@ -67,17 +67,23 @@ begin
       'TradeBot0 data from a previous install was found on this computer.',
       'Your old data is kept by default. Check the box only if you want to remove it and start fresh.',
       False, False);
-    OldDataPage.Add('Delete old data (settings and trading history will be removed)');
+    OldDataPage.Add('Delete old TradeBot0 settings and trading history (keeps OmniRoute runtime and ~/.omniroute)');
     OldDataPage.Values[0] := False;
   end;
 end;
 
 function NodeJsMissing(): Boolean;
 var
-  Path, Dir: String;
+  Path, Dir, LocalNode: String;
   I: Integer;
 begin
   Result := True;
+  LocalNode := ExpandConstant('{localappdata}\TradeBot0\runtime\node\node.exe');
+  if FileExists(LocalNode) then
+  begin
+    Result := False;
+    Exit;
+  end;
   Path := GetEnv('PATH');
   while Path <> '' do
   begin
@@ -92,7 +98,11 @@ begin
       Dir := Copy(Path, 1, I - 1);
       Path := Copy(Path, I + 1, Length(Path));
     end;
-    if (Dir <> '') and FileExists(Dir + '\node.exe') then
+    Dir := Trim(Dir);
+    if (Length(Dir) >= 2) and (Dir[1] = '"') and (Dir[Length(Dir)] = '"') then
+      Dir := Copy(Dir, 2, Length(Dir) - 2);
+    Dir := RemoveBackslashUnlessRoot(Dir);
+    if (Dir <> '') and FileExists(AddBackslash(Dir) + 'node.exe') then
     begin
       Result := False;
       Exit;
@@ -106,15 +116,21 @@ begin
   begin
     if OldDataFound and (OldDataPage <> nil) and OldDataPage.Values[0] then
     begin
-      DelTree(ExpandConstant('{userappdata}\TradeBot0'), True, True, True);
+      if not DelTree(ExpandConstant('{userappdata}\TradeBot0'), True, True, True) then
+      begin
+        SuppressibleMsgBox(
+          'Some old TradeBot0 files in %APPDATA%\TradeBot0 could not be deleted (they may be locked by a running process). ' +
+          'Close TradeBot0 and remove the folder manually if you want a completely fresh start.',
+          mbError, MB_OK, IDOK);
+      end;
     end;
   end;
   if CurStep = ssPostInstall then
   begin
     if NodeJsMissing() then
-      MsgBox('Node.js was not found on this computer.' + #13#10 +
+      SuppressibleMsgBox('Node.js was not found on this computer.' + #13#10 +
         'TradeBot0 works without it (Pure Math mode), but the AI gateway needs Node.js 22 or later.' + #13#10 +
         'On first launch, use "Install Node.js & OmniRoute" in the setup wizard, or install Node.js from https://nodejs.org/ and run: npm install -g omniroute',
-        mbInformation, MB_OK);
+        mbInformation, MB_OK, IDOK);
   end;
 end;

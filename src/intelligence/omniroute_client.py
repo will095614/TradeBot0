@@ -120,9 +120,12 @@ def extract_json(text: Optional[str]) -> Optional[Dict[str, Any]]:
 
     # 5. Fallback: scan individual `{` offsets with JSONDecoder.raw_decode so
     # prose containing trailing `{...}` after a valid JSON object still parses.
+    # Bounded to 64 attempts so pathological HTML/CSS responses stay O(N).
     decoder = json.JSONDecoder()
     pos = start
-    while pos != -1 and pos < len(s):
+    attempts = 0
+    while pos != -1 and pos < len(s) and attempts < 64:
+        attempts += 1
         try:
             obj, _ = decoder.raw_decode(s, pos)
             if isinstance(obj, dict):
@@ -378,9 +381,9 @@ class OmniRouteClient:
         max_retries: int = 5,
         session: Optional[aiohttp.ClientSession] = None,
     ) -> None:
-        raw_url = base_url or os.getenv("LLM_BASE_URL", "http://localhost:20128/v1")
+        raw_url = base_url or os.getenv("LLM_BASE_URL", "http://127.0.0.1:20128/v1")
         self.base_url = raw_url.rstrip("/")
-        # Extract root URL (e.g. http://localhost:20128) for /api/health probe
+        # Extract root URL (e.g. http://127.0.0.1:20128) for /api/health probe
         if "/v1" in self.base_url:
             self.root_url = self.base_url.split("/v1")[0]
         else:
@@ -404,10 +407,11 @@ class OmniRouteClient:
         self._session_loop: Optional[asyncio.AbstractEventLoop] = None
         self._sessions: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
         self._sessions_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
         self._owns_session = session is None
         # JSON-mode negotiation (V2.8.0 repair): a provider that rejects
-        # response_format with 400 is retried once without it, and the
-        # model is remembered so later calls skip the field entirely.
+        # response_format with 400 is retried once without it, and concrete
+        # model IDs are remembered so later calls skip the field entirely.
         self._json_mode_unsupported: set = set()
 
         # Telemetry & Status
@@ -708,17 +712,33 @@ class OmniRouteClient:
         except Exception as e:
             logger.debug("Failed to close loop session: %s", e)
 
+    def mark_shutting_down(self) -> None:
+        """Signals all in-flight and future LLM calls to stop immediately on app teardown."""
+        self._shutdown_event.set()
+        self.is_gateway_online = False
+
+    def is_shutting_down(self) -> bool:
+        return sys.is_finalizing() or self._shutdown_event.is_set()
+
+    @staticmethod
+    def _is_dynamic_route_alias(model: Any) -> bool:
+        m = str(model or "").strip().lower()
+        return m == "auto" or m.startswith("auto/")
+
     async def check_health(self) -> bool:
         """
         Unauthenticated liveness probe to GET /api/health on OmniRoute gateway.
         """
+        if self.is_shutting_down():
+            self.is_gateway_online = False
+            return False
         try:
             sess = await self.get_session()
             url = f"{self.root_url}/api/health"
             async with sess.get(url, timeout=aiohttp.ClientTimeout(total=0.75)) as r:
                 if r.status == 200:
                     data = await r.json()
-                    self.is_gateway_online = bool(data.get("ok", True))
+                    self.is_gateway_online = isinstance(data, dict) and bool(data.get("ok", True))
                 else:
                     self.is_gateway_online = False
         except Exception as e:
@@ -739,27 +759,12 @@ class OmniRouteClient:
     ) -> Optional[Dict[str, Any]]:
         """
         Sends an OpenAI-compatible chat completion request and returns a parsed JSON dictionary.
-        Applies exponential backoff on 429/502/503. Falls back safely to None on failure.
+        Applies exponential backoff on transient 429/502/503. Falls back safely to None on failure.
         """
+        if self.is_shutting_down():
+            return None
         sess = await self.get_session()
-        # Per-call timeout override (None = the client default). Article
-        # generation passes 150s: the A/B probe measured 69-100s for a
-        # ~1000-word article from the routed model, so the 60s default
-        # can never complete it.
         call_timeout = timeout_sec if timeout_sec is not None else self.timeout_sec
-        # 2026-11-15: the gateway routes some calls to a model that
-        # answers in prose ("**Analysis Summary:**", "**headline_zh:**",
-        # plain sentences, even an empty string) -- 44x "200 OK returned
-        # unparseable content" in one afternoon's app log. extract_json
-        # then finds no braces and the whole digest/article call is
-        # wasted. Ask for JSON mode (OpenAI-compatible standard): a
-        # provider that rejects it answers 400, which is terminal here
-        # and falls back exactly as an unparseable 200 does today, and
-        # classify_llm_error maps 400 to kind "unknown", never quota.
-        # Honest limit, measured the same day by A/B probe: the routed
-        # provider (cfp / zai-org/glm-5.2) accepts the parameter but
-        # IGNORES it and answers in prose anyway. So a 200 with prose
-        # also gets one repair retry below (_repair_json_once).
         payload = {
             "model": model,
             "temperature": temperature,
@@ -769,7 +774,10 @@ class OmniRouteClient:
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if str(model) not in self._json_mode_unsupported:
+        model_key = str(model)
+        with self._sessions_lock:
+            skip_json_mode = (not self._is_dynamic_route_alias(model_key)) and (model_key in self._json_mode_unsupported)
+        if not skip_json_mode:
             payload["response_format"] = {"type": "json_object"}
         # Item 10 A3: never send a placeholder key. With no key configured
         # the request goes out without an Authorization header at all.
@@ -782,6 +790,8 @@ class OmniRouteClient:
         attempt = 0
 
         while attempt <= self.max_retries:
+            if self.is_shutting_down():
+                return None
             need_repair = False
             retry_delay: Optional[float] = None
             retry_format = False
@@ -806,6 +816,7 @@ class OmniRouteClient:
                         if status == 200:
                             body = await self._parse_ok_json_body(resp)
                             if not isinstance(body, dict):
+                                self.failed_requests += 1
                                 logger.warning("OmniRoute 200 OK returned non-JSON or non-object body")
                                 return None
                             self.is_gateway_online = True
@@ -823,6 +834,7 @@ class OmniRouteClient:
                                 logger.warning("OmniRoute 200 OK returned unparseable content: %s", content[:150])
                                 need_repair = True
                             else:
+                                self.failed_requests += 1
                                 return None
                         elif (
                             status in (400, 422)
@@ -831,7 +843,11 @@ class OmniRouteClient:
                             and _looks_like_format_rejection(err_body)
                         ):
                             payload.pop("response_format", None)
-                            self._json_mode_unsupported.add(str(model))
+                            if not self._is_dynamic_route_alias(model_key):
+                                with self._sessions_lock:
+                                    if len(self._json_mode_unsupported) >= 128:
+                                        self._json_mode_unsupported.clear()
+                                    self._json_mode_unsupported.add(model_key)
                             self.retried_requests += 1
                             format_retried = True
                             retry_format = True
@@ -840,12 +856,18 @@ class OmniRouteClient:
                                 status,
                             )
                         else:
-                            self.note_failure(classify_llm_error(
+                            classification = classify_llm_error(
                                 status, err_body,
                                 headers=dict(resp.headers),
                                 retry_after=retry_after,
-                            ))
-                            if status in _RETRY_STATUSES and attempt < self.max_retries:
+                            )
+                            self.note_failure(classification)
+                            # Do not burn 5 backoff retries against a terminal daily quota 429.
+                            if (
+                                status in _RETRY_STATUSES
+                                and classification.get("kind") != "quota"
+                                and attempt < self.max_retries
+                            ):
                                 self.retried_requests += 1
                                 retry_delay = compute_backoff(attempt, retry_after)
                                 logger.info(
@@ -871,17 +893,23 @@ class OmniRouteClient:
                 if retry_format:
                     continue
                 if retry_delay is not None:
+                    if self.is_shutting_down():
+                        return None
                     await asyncio.sleep(retry_delay)
                     attempt += 1
                     continue
 
             except aiohttp.ClientConnectorError as exc:
+                if self.is_shutting_down():
+                    return None
                 self.failed_requests += 1
                 self.is_gateway_online = False
                 self.note_failure({"kind": "connection", "provider": None, "status": None, "detail": str(exc)[:200]})
                 logger.debug("OmniRoute gateway offline (connection refused): %s", exc)
                 return None
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                if self.is_shutting_down():
+                    return None
                 if attempt < self.max_retries:
                     self.retried_requests += 1
                     delay = compute_backoff(attempt)
@@ -894,7 +922,22 @@ class OmniRouteClient:
                     self.note_failure({"kind": "connection", "provider": None, "status": None, "detail": str(exc)[:200]})
                     logger.warning("OmniRoute gateway unreachable after %d retries: %s", self.max_retries, exc)
                     return None
+            except RuntimeError as e:
+                err_txt = str(e)
+                if (
+                    self.is_shutting_down()
+                    or "cannot schedule new futures after shutdown" in err_txt
+                    or "Event loop is closed" in err_txt
+                ):
+                    logger.debug("OmniRouteClient request aborted during shutdown: %s", e)
+                    return None
+                self.failed_requests += 1
+                logger.error("Unexpected error in OmniRouteClient: %s", e)
+                return None
             except Exception as e:
+                if self.is_shutting_down():
+                    logger.debug("OmniRouteClient request aborted during shutdown: %s", e)
+                    return None
                 self.failed_requests += 1
                 logger.error("Unexpected error in OmniRouteClient: %s", e)
                 return None
@@ -933,6 +976,8 @@ class OmniRouteClient:
         ignores the reminder (like the routed glm-5.2, which also
         ignores response_format) must not be re-asked forever.
         """
+        if self.is_shutting_down():
+            return None
         try:
             if getattr(sess, "closed", False):
                 sess = await self.get_session()
@@ -953,6 +998,14 @@ class OmniRouteClient:
                     timeout=aiohttp.ClientTimeout(total=timeout_sec),
                 ) as resp:
                     if resp.status != 200:
+                        retry_after = resp.headers.get("Retry-After")
+                        err_body = await self._read_error_body(resp)
+                        if resp.status == 429:
+                            self.note_rate_limit(retry_after)
+                        if resp.status in (401, 402, 403, 429):
+                            self.note_failure(classify_llm_error(
+                                resp.status, err_body, headers=dict(resp.headers), retry_after=retry_after
+                            ))
                         return None
                     body = await self._parse_ok_json_body(resp)
                     if not isinstance(body, dict):
@@ -1019,7 +1072,11 @@ class OmniRouteClient:
                     if running_loop is owner_loop:
                         owner_loop.create_task(sess.close())
                     else:
-                        owner_loop.call_soon_threadsafe(owner_loop.create_task, sess.close())
+                        # Defer sess.close() coroutine creation onto owner_loop so a
+                        # closed-loop RuntimeError never leaks an unawaited coroutine.
+                        owner_loop.call_soon_threadsafe(
+                            lambda l=owner_loop, s=sess: l.create_task(s.close()) if not s.closed else None
+                        )
                 elif running_loop is not None and running_loop.is_running():
                     running_loop.create_task(sess.close())
                 else:

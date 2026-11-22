@@ -4,8 +4,10 @@ src/data/session_codec.py - Session Snapshot Serialization, Autosave & Restore.
 from __future__ import annotations
 
 import copy
+from datetime import date
 from decimal import Decimal
 import logging
+import math
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -14,6 +16,18 @@ from src.arena.order import ExecutionReason, FillEvent, OrderSide, OrderTicket, 
 from src.competitors.base import CompetitorGenome
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_finite_dec(raw: Any, default: Decimal, *, min_val: Optional[Decimal] = None) -> Decimal:
+    try:
+        val = Decimal(str(raw))
+    except Exception as exc:
+        raise ValueError(f"Non-decimal value: {raw!r}") from exc
+    if not val.is_finite():
+        raise ValueError(f"Non-finite decimal value: {raw!r}")
+    if min_val is not None and val < min_val:
+        return default
+    return val
 
 
 class SessionCodecMixin:
@@ -232,6 +246,7 @@ class SessionCodecMixin:
 
                 snapshot = {
                     "schema_version": 2,
+                    "symbol": self.symbol,
                     "saved_at": time.time(),
                     "generation": gen,
                     "live_start_ts": self.live_start_ts,
@@ -250,6 +265,21 @@ class SessionCodecMixin:
                     "live_orders_enabled": self.live_orders_enabled,
                     "active_stops": {pid: self._serialize_ticket(ticket) for pid, ticket in self.broker.active_stops.items() if ticket is not None},
                     "active_targets": {pid: self._serialize_ticket(ticket) for pid, ticket in self.broker.active_targets.items() if ticket is not None},
+                    "pending_orders": {
+                        oid: self._serialize_ticket(ticket)
+                        for oid, ticket in getattr(self.broker, "pending_orders", {}).items()
+                        if ticket is not None
+                    },
+                    "orb_state": {
+                        "high": str(getattr(self, "live_orb_high", Decimal("0.00"))),
+                        "low": str(getattr(self, "live_orb_low", Decimal("0.00"))),
+                        "frozen": bool(getattr(self, "_orb_range_frozen", False)),
+                        "day": (
+                            self._orb_session_day.isoformat()
+                            if getattr(self, "_orb_session_day", None) is not None
+                            else None
+                        ),
+                    },
                     "position_entry_ts": dict(self.position_entry_ts),
                     "competitors": comp_states,
                 }
@@ -268,30 +298,56 @@ class SessionCodecMixin:
         if self._stop_event.is_set() or not self._is_current_generation():
             return False
         now = time.time() if now is None else now
+        if now < getattr(self, "_autosave_retry_after", 0.0):
+            return False
         if not self._autosave_pending and (now - self._last_autosave_ts) < self.autosave_interval_sec:
             return False
         ok = self.save_session_state()
         if ok:
             self._last_autosave_ts = now
             self._autosave_pending = False
+            self._autosave_retry_after = 0.0
+        else:
+            # Back off 10s on failure so _live_loop (10 Hz) cannot enter a tight error storm.
+            self._autosave_retry_after = now + 10.0
         return ok
 
     def restore_session_state(self, snapshot: Optional[Dict[str, Any]] = None) -> bool:
-        """Restores arena session state from saved snapshot."""
+        """Restores arena session state from saved snapshot atomically (staging before mutating)."""
         try:
             if snapshot is None:
                 snapshot = self.storage.load_session_snapshot()
             if not snapshot or "competitors" not in snapshot:
                 return False
 
+            saved_sym = snapshot.get("symbol")
+            if saved_sym is not None and str(saved_sym).strip().upper() != str(self.symbol).strip().upper():
+                logger.warning(
+                    "Skipping session snapshot for symbol %s (engine running %s)",
+                    saved_sym,
+                    self.symbol,
+                )
+                return False
+
             with self.lock:
-                comp_map = {c["portfolio_id"]: c for c in snapshot.get("competitors", [])}
+                comp_map = {
+                    c["portfolio_id"]: c
+                    for c in snapshot.get("competitors", [])
+                    if isinstance(c, dict) and "portfolio_id" in c
+                }
+
+                # Stage and validate all competitor fields before mutating any Portfolio so
+                # a corrupt entry cannot leave earlier competitors half-restored.
+                staged: list[tuple[Any, Dict[str, Any]]] = []
+                genome_warnings: list[str] = []
                 for c in self.competitors:
                     if c.portfolio_id not in comp_map:
                         continue
                     cd = comp_map[c.portfolio_id]
+                    p = c.portfolio
+                    new_genome = None
                     gd = cd.get("genome", {})
-                    if gd:
+                    if isinstance(gd, dict) and gd:
                         try:
                             new_genome = CompetitorGenome(
                                 position_ratio=Decimal(str(gd.get("position_ratio", "0.40"))),
@@ -309,85 +365,166 @@ class SessionCodecMixin:
                                 leverage=Decimal(str(gd.get("leverage", "1.0"))),
                                 news_sensitivity=float(gd.get("news_sensitivity", getattr(c, "NEWS_SENSITIVITY", 0.5))),
                             )
-                        except ValueError as e:
-                            self.log_event("RESTORE_WARN", f"{c.portfolio_id} stored genome invalid ({e}); keeping default genome", "loss")
+                        except (ValueError, TypeError, ArithmeticError) as e:
+                            genome_warnings.append(f"{c.portfolio_id} stored genome invalid ({e}); keeping default genome")
                             new_genome = None
-                        if new_genome is not None:
-                            c.genome = new_genome
-                            c.max_position_ratio = new_genome.position_ratio
-                            gen_tag = f" [G{new_genome.generation}]" if new_genome.generation > 1 else ""
-                            c.name = f"{c.base_name}{gen_tag}"
-                            eff_lev = new_genome.leverage if new_genome.leverage_enabled else Decimal("1.0")
-                            c.portfolio.leverage = eff_lev
-                            c.portfolio.leverage_enabled = new_genome.leverage_enabled
+
+                    eff_genome = new_genome if new_genome is not None else c.genome
+                    init_c = p.initial_cash
+                    if "initial_cash" in cd:
+                        cand_init = _parse_finite_dec(cd["initial_cash"], p.initial_cash)
+                        if cand_init > Decimal("0"):
+                            init_c = cand_init
+                    cash = _parse_finite_dec(cd.get("cash", p.cash), p.cash)
+                    pos_qty = _parse_finite_dec(cd.get("position_qty", "0"), Decimal("0"))
+                    try:
+                        pos_side = PositionSide(cd.get("position_side", "FLAT"))
+                    except Exception as e:
+                        logger.debug("Invalid position side in saved snapshot, defaulting to FLAT: %s", e)
+                        pos_side = PositionSide.FLAT
+                    avg_entry = _parse_finite_dec(cd.get("avg_entry_price", "0"), Decimal("0"), min_val=Decimal("0"))
+                    open_fee = _parse_finite_dec(cd.get("open_position_entry_fee", "0.00"), Decimal("0.00"), min_val=Decimal("0"))
+                    if pos_qty <= Decimal("0"):
+                        pos_qty = Decimal("0.0000")
+                        pos_side = PositionSide.FLAT
+                        avg_entry = Decimal("0.00")
+                        open_fee = Decimal("0.00")
+                        margin_locked = Decimal("0.00")
+                        pos_leveraged = False
+                    else:
+                        if pos_side == PositionSide.FLAT:
+                            pos_side = PositionSide.LONG
+                        if "margin_locked" in cd:
+                            margin_locked = _parse_finite_dec(cd["margin_locked"], Decimal("0.00"), min_val=Decimal("0"))
+                        elif avg_entry > Decimal("0"):
+                            cost = (pos_qty * avg_entry).quantize(Decimal("0.01"))
+                            eff_lev = eff_genome.leverage if (eff_genome.leverage_enabled and eff_genome.leverage > Decimal("0")) else Decimal("1.0")
+                            margin_locked = (cost / eff_lev).quantize(Decimal("0.01"))
+                        else:
+                            margin_locked = Decimal("0.00")
+                        entry_notional = (pos_qty * avg_entry).quantize(Decimal("0.01"))
+                        pos_leveraged = (pos_side == PositionSide.SHORT) or (
+                            entry_notional > Decimal("0") and margin_locked < (entry_notional - Decimal("0.05"))
+                        )
+
+                    trailing_parsed = None
+                    if hasattr(c, "trailing_active"):
+                        ts_dict = cd.get("trailing_state")
+                        if isinstance(ts_dict, dict) and pos_qty > Decimal("0"):
+                            trailing_parsed = (
+                                _parse_finite_dec(ts_dict.get("highest_price_since_entry", "0"), Decimal("0"), min_val=Decimal("0")),
+                                _parse_finite_dec(ts_dict.get("lowest_price_since_entry", "0"), Decimal("0"), min_val=Decimal("0")),
+                                bool(ts_dict.get("trailing_active", False)),
+                            )
+                        else:
+                            trailing_parsed = (Decimal("0"), Decimal("0"), False)
+
+                    curr_mkt = _parse_finite_dec(cd.get("current_market_price", avg_entry), Decimal("0"), min_val=Decimal("0"))
+                    realized_pnl = _parse_finite_dec(cd.get("realized_pnl", "0"), Decimal("0"))
+                    total_fees = _parse_finite_dec(cd.get("total_fees_paid", "0"), Decimal("0"), min_val=Decimal("0"))
+                    gross_profit = _parse_finite_dec(cd.get("gross_profit", "0"), Decimal("0"), min_val=Decimal("0"))
+                    gross_loss = _parse_finite_dec(cd.get("gross_loss", "0"), Decimal("0"), min_val=Decimal("0"))
+                    win_count = max(0, int(cd.get("win_count", 0)))
+                    loss_count = max(0, int(cd.get("loss_count", 0)))
+                    breakeven_count = max(0, int(cd.get("breakeven_count", 0)))
+                    total_fills = max(0, int(cd.get("total_fills", 0))) if "total_fills" in cd else None
+                    peak_eq = _parse_finite_dec(cd.get("peak_equity", cash), cash)
+                    max_dd = _parse_finite_dec(cd.get("max_drawdown_pct", "0.00"), Decimal("0.00"), min_val=Decimal("0"))
+                    cb_tripped = bool(cd.get("is_circuit_breaker_tripped", False))
+
+                    trade_hist = None
+                    if "trade_history" in cd and isinstance(cd["trade_history"], list):
+                        trade_hist = [f for f in (self._deserialize_fill(d) for d in cd["trade_history"]) if f is not None]
+                    eq_hist = None
+                    if "equity_history" in cd and isinstance(cd["equity_history"], list):
+                        eq_pts = []
+                        for pt in cd["equity_history"]:
+                            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                                try:
+                                    pt_t = float(pt[0])
+                                    pt_eq = Decimal(str(pt[1]))
+                                    if math.isfinite(pt_t) and pt_eq.is_finite():
+                                        eq_pts.append((pt_t, pt_eq))
+                                except Exception:
+                                    continue
+                        eq_hist = eq_pts
+
+                    staged.append((c, {
+                        "genome": new_genome,
+                        "initial_cash": init_c,
+                        "cash": cash,
+                        "position_qty": pos_qty,
+                        "position_side": pos_side,
+                        "avg_entry_price": avg_entry,
+                        "open_position_entry_fee": open_fee,
+                        "margin_locked": margin_locked,
+                        "position_is_leveraged": pos_leveraged,
+                        "trailing": trailing_parsed,
+                        "current_market_price": curr_mkt,
+                        "realized_pnl": realized_pnl,
+                        "total_fees_paid": total_fees,
+                        "gross_profit": gross_profit,
+                        "gross_loss": gross_loss,
+                        "win_count": win_count,
+                        "loss_count": loss_count,
+                        "breakeven_count": breakeven_count,
+                        "total_fills": total_fills,
+                        "peak_equity": peak_eq,
+                        "max_drawdown_pct": max_dd,
+                        "cb_tripped": cb_tripped,
+                        "trade_history": trade_hist,
+                        "equity_history": eq_hist,
+                    }))
+
+                # Commit staged competitor state atomically now that validation succeeded.
+                for warn_msg in genome_warnings:
+                    self.log_event("RESTORE_WARN", warn_msg, "loss")
+
+                for c, s in staged:
+                    new_genome = s["genome"]
+                    if new_genome is not None:
+                        c.genome = new_genome
+                        c.max_position_ratio = new_genome.position_ratio
+                        gen_tag = f" [G{new_genome.generation}]" if new_genome.generation > 1 else ""
+                        c.name = f"{c.base_name}{gen_tag}"
+                        eff_lev = new_genome.leverage if new_genome.leverage_enabled else Decimal("1.0")
+                        c.portfolio.leverage = eff_lev
+                        c.portfolio.leverage_enabled = new_genome.leverage_enabled
 
                     p = c.portfolio
                     p.name = c.name
-                    if "initial_cash" in cd:
-                        init_c = Decimal(str(cd["initial_cash"]))
-                        if init_c.is_finite() and init_c > Decimal("0"):
-                            p.initial_cash = init_c
-                    p.cash = Decimal(str(cd.get("cash", p.cash)))
-                    p.position_qty = Decimal(str(cd.get("position_qty", "0")))
-                    try:
-                        p.position_side = PositionSide(cd.get("position_side", "FLAT"))
-                    except Exception as e:
-                        logger.debug("Invalid position side in saved snapshot, defaulting to FLAT: %s", e)
-                        p.position_side = PositionSide.FLAT
-                    p.avg_entry_price = Decimal(str(cd.get("avg_entry_price", "0")))
-                    p.open_position_entry_fee = Decimal(str(cd.get("open_position_entry_fee", "0.00")))
-                    if p.position_qty <= Decimal("0"):
-                        p.position_qty = Decimal("0")
-                        p.position_side = PositionSide.FLAT
-                        p.avg_entry_price = Decimal("0")
-                        p.open_position_entry_fee = Decimal("0.00")
-                        p.margin_locked = Decimal("0.00")
+                    p.initial_cash = s["initial_cash"]
+                    p.cash = s["cash"]
+                    p.position_qty = s["position_qty"]
+                    p.position_side = s["position_side"]
+                    p.avg_entry_price = s["avg_entry_price"]
+                    p.open_position_entry_fee = s["open_position_entry_fee"]
+                    p.margin_locked = s["margin_locked"]
+                    p.position_is_leveraged = s["position_is_leveraged"]
+
+                    if s["trailing"] is not None:
+                        c.highest_price_since_entry, c.lowest_price_since_entry, c.trailing_active = s["trailing"]
+
+                    p.current_market_price = s["current_market_price"]
+                    p.realized_pnl = s["realized_pnl"]
+                    p.total_fees_paid = s["total_fees_paid"]
+                    p.gross_profit = s["gross_profit"]
+                    p.gross_loss = s["gross_loss"]
+                    p.win_count = s["win_count"]
+                    p.loss_count = s["loss_count"]
+                    p.breakeven_count = s["breakeven_count"]
+                    p.peak_equity = s["peak_equity"]
+                    p.max_drawdown_pct = s["max_drawdown_pct"]
+                    p.is_circuit_breaker_tripped = s["cb_tripped"]
+
+                    if s["trade_history"] is not None:
+                        p.trade_history = s["trade_history"]
+                    if s["total_fills"] is not None:
+                        p.total_fills = s["total_fills"]
                     else:
-                        if p.position_side == PositionSide.FLAT:
-                            p.position_side = PositionSide.LONG
-                        if "margin_locked" in cd:
-                            p.margin_locked = Decimal(str(cd["margin_locked"]))
-                        elif p.avg_entry_price > Decimal("0"):
-                            cost = (p.position_qty * p.avg_entry_price).quantize(Decimal("0.01"))
-                            eff_lev = c.genome.leverage if (c.genome.leverage_enabled and c.genome.leverage > Decimal("0")) else Decimal("1.0")
-                            p.margin_locked = (cost / eff_lev).quantize(Decimal("0.01"))
-                        else:
-                            p.margin_locked = Decimal("0.00")
-
-                    if hasattr(c, "trailing_active"):
-                        ts_dict = cd.get("trailing_state")
-                        if isinstance(ts_dict, dict) and p.position_qty > Decimal("0"):
-                            c.highest_price_since_entry = Decimal(str(ts_dict.get("highest_price_since_entry", "0")))
-                            c.lowest_price_since_entry = Decimal(str(ts_dict.get("lowest_price_since_entry", "0")))
-                            c.trailing_active = bool(ts_dict.get("trailing_active", False))
-                        else:
-                            c.highest_price_since_entry = Decimal("0")
-                            c.lowest_price_since_entry = Decimal("0")
-                            c.trailing_active = False
-
-                    p.current_market_price = Decimal(str(cd.get("current_market_price", p.avg_entry_price)))
-                    p.realized_pnl = Decimal(str(cd.get("realized_pnl", "0")))
-                    p.total_fees_paid = Decimal(str(cd.get("total_fees_paid", "0")))
-                    p.gross_profit = Decimal(str(cd.get("gross_profit", "0")))
-                    p.gross_loss = Decimal(str(cd.get("gross_loss", "0")))
-                    p.win_count = int(cd.get("win_count", 0))
-                    p.loss_count = int(cd.get("loss_count", 0))
-                    p.breakeven_count = int(cd.get("breakeven_count", 0))
-                    p.total_fills = int(cd.get("total_fills", 0))
-                    p.peak_equity = Decimal(str(cd.get("peak_equity", p.cash)))
-                    p.max_drawdown_pct = Decimal(str(cd.get("max_drawdown_pct", "0.00")))
-                    p.is_circuit_breaker_tripped = bool(cd.get("is_circuit_breaker_tripped", False))
-
-                    if "trade_history" in cd and isinstance(cd["trade_history"], list):
-                        p.trade_history = [f for f in (self._deserialize_fill(d) for d in cd["trade_history"]) if f is not None]
-                    if "total_fills" not in cd:
                         p.total_fills = len(p.trade_history)
-                    if "equity_history" in cd and isinstance(cd["equity_history"], list):
-                        p.replace_equity_history([
-                            (float(pt[0]), Decimal(str(pt[1])))
-                            for pt in cd["equity_history"]
-                            if isinstance(pt, (list, tuple)) and len(pt) >= 2
-                        ])
+                    if s["equity_history"] is not None:
+                        p.replace_equity_history(s["equity_history"])
 
                     self.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
 
@@ -408,6 +545,28 @@ class SessionCodecMixin:
                         t = self._deserialize_ticket(t_data)
                         if t:
                             self.broker.active_targets[pid] = t
+                if hasattr(self, "broker"):
+                    self.broker.pending_orders = {}
+                    if "pending_orders" in snapshot and isinstance(snapshot["pending_orders"], dict):
+                        for oid, p_data in snapshot["pending_orders"].items():
+                            t = self._deserialize_ticket(p_data)
+                            if t:
+                                self.broker.pending_orders[str(oid)] = t
+                if "orb_state" in snapshot and isinstance(snapshot["orb_state"], dict):
+                    orb = snapshot["orb_state"]
+                    try:
+                        oh = _parse_finite_dec(orb.get("high", "0"), Decimal("0.00"), min_val=Decimal("0"))
+                        ol = _parse_finite_dec(orb.get("low", "0"), Decimal("0.00"), min_val=Decimal("0"))
+                        if oh > Decimal("0") and ol > Decimal("0") and oh >= ol:
+                            self.live_orb_high = oh
+                            self.live_orb_low = ol
+                            self._orb_range_frozen = bool(orb.get("frozen", False))
+                            raw_day = orb.get("day")
+                            if isinstance(raw_day, str) and raw_day:
+                                self._orb_session_day = date.fromisoformat(raw_day)
+                                self._orb_session_day_idx = None
+                    except Exception as e:
+                        logger.debug("Invalid orb_state in saved snapshot, ignoring: %s", e)
                 if "position_entry_ts" in snapshot:
                     try:
                         self.position_entry_ts = {

@@ -18,8 +18,22 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_json_value(obj: Any) -> Any:
+    """Recursively replaces non-finite floats (NaN/Inf) with None so JSON stays strict RFC 8259."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _sanitize_json_value(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_json_value(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [_sanitize_json_value(v) for v in obj]
+    return obj
+
+
 def _retry_on_db_error(fn):
-    """Retry a storage call once after resetting a broken connection.
+    """Retry a storage call once after backing off on transient lock errors or
+    resetting a broken connection.
 
     See the module note on the persistent connection: the only new
     failure mode versus per-call connections is a stale handle, and
@@ -34,8 +48,19 @@ def _retry_on_db_error(fn):
             return fn(self, *args, **kwargs)
         except (sqlite3.IntegrityError, sqlite3.InterfaceError):
             raise
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "locked" in msg or "busy" in msg:
+                # Transient WAL contention: wait briefly instead of running a
+                # disruptive wal_checkpoint(TRUNCATE) + reconnect storm.
+                time.sleep(0.05)
+                return fn(self, *args, **kwargs)
+            with self._db_lock:
+                self._reset_connection()
+            return fn(self, *args, **kwargs)
         except sqlite3.Error:
-            self._reset_connection()
+            with self._db_lock:
+                self._reset_connection()
             return fn(self, *args, **kwargs)
 
     return wrapper
@@ -84,6 +109,7 @@ class ArenaStorage:
             if self._conn is None:
                 conn = sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False)
                 try:
+                    conn.execute("PRAGMA busy_timeout=5000;")
                     conn.execute("PRAGMA journal_mode=WAL;")
                     conn.execute("PRAGMA synchronous=NORMAL;")
                     conn.execute("PRAGMA temp_store=MEMORY;")
@@ -171,13 +197,11 @@ class ArenaStorage:
                     CREATE INDEX IF NOT EXISTS idx_ledger_ts ON execution_ledger(timestamp);
                     """
                 )
-                # Schema migration for pre-existing DBs: evolution_seed column
-                # (added with the deterministic-seed change). ALTER fails if the
-                # column already exists; that is expected and safe to ignore.
-                try:
+                # Schema migration for pre-existing DBs: check PRAGMA table_info
+                # instead of swallowing arbitrary OperationalErrors on ALTER TABLE.
+                cols = {row[1] for row in conn.execute("PRAGMA table_info(evolution_history)").fetchall()}
+                if "evolution_seed" not in cols:
                     conn.execute("ALTER TABLE evolution_history ADD COLUMN evolution_seed INTEGER")
-                except Exception as e:
-                    logger.debug("Evolution seed column already exists, skipping migration: %s", e)
 
     @staticmethod
     def _candle_row(c: Dict[str, Any]) -> Optional[tuple]:
@@ -256,8 +280,60 @@ class ArenaStorage:
                     for r in reversed(rows)
                 ]
 
+    @staticmethod
+    def _fill_row(f: Dict[str, Any], default_ts: float) -> Optional[tuple]:
+        try:
+            seq = int(f.get("seq", 0))
+            ts = float(f.get("timestamp", default_ts))
+            qty = float(f.get("qty", 0.0))
+            price = float(f.get("price", 0.0))
+            fee = float(f.get("fee", 0.0))
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(ts) and math.isfinite(qty) and math.isfinite(price)):
+            return None
+        if qty < 0.0 or price < 0.0:
+            return None
+        if not math.isfinite(fee) or fee < 0.0:
+            fee = 0.0
+        entry_p = None
+        if f.get("entry_price") is not None:
+            try:
+                ep = float(f["entry_price"])
+                if math.isfinite(ep) and ep > 0.0:
+                    entry_p = ep
+            except (TypeError, ValueError):
+                entry_p = None
+        pnl = None
+        if f.get("pnl") is not None:
+            try:
+                pv = float(f["pnl"])
+                if math.isfinite(pv):
+                    pnl = pv
+            except (TypeError, ValueError):
+                pnl = None
+        return (
+            seq,
+            ts,
+            str(f.get("portfolio_id", "")),
+            str(f.get("strategy", "")),
+            str(f.get("symbol", "ETH/USD")),
+            str(f.get("side", "")),
+            str(f.get("action_label", "")),
+            qty,
+            price,
+            entry_p,
+            pnl,
+            fee,
+            str(f.get("reason", "")),
+            1 if f.get("is_live") else 0,
+        )
+
     @_retry_on_db_error
     def record_fill(self, fill_data: Dict[str, Any]) -> None:
+        row = self._fill_row(fill_data, time.time())
+        if row is None:
+            return
         with self._db_lock:
             with self._get_connection() as conn:
                 conn.execute(
@@ -267,22 +343,7 @@ class ArenaStorage:
                         side, action_label, qty, price, entry_price, realized_pnl, fee, reason, is_live
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        int(fill_data.get("seq", 0)),
-                        float(fill_data.get("timestamp", time.time())),
-                        str(fill_data.get("portfolio_id", "")),
-                        str(fill_data.get("strategy", "")),
-                        str(fill_data.get("symbol", "ETH/USD")),
-                        str(fill_data.get("side", "")),
-                        str(fill_data.get("action_label", "")),
-                        float(fill_data.get("qty", 0.0)),
-                        float(fill_data.get("price", 0.0)),
-                        float(fill_data["entry_price"]) if fill_data.get("entry_price") is not None else None,
-                        float(fill_data["pnl"]) if fill_data.get("pnl") is not None else None,
-                        float(fill_data.get("fee", 0.0)),
-                        str(fill_data.get("reason", "")),
-                        1 if fill_data.get("is_live") else 0,
-                    ),
+                    row,
                 )
 
     @_retry_on_db_error
@@ -290,25 +351,9 @@ class ArenaStorage:
         if not fills:
             return
         now = time.time()
-        rows = [
-            (
-                int(f.get("seq", 0)),
-                float(f.get("timestamp", now)),
-                str(f.get("portfolio_id", "")),
-                str(f.get("strategy", "")),
-                str(f.get("symbol", "ETH/USD")),
-                str(f.get("side", "")),
-                str(f.get("action_label", "")),
-                float(f.get("qty", 0.0)),
-                float(f.get("price", 0.0)),
-                float(f["entry_price"]) if f.get("entry_price") is not None else None,
-                float(f["pnl"]) if f.get("pnl") is not None else None,
-                float(f.get("fee", 0.0)),
-                str(f.get("reason", "")),
-                1 if f.get("is_live") else 0,
-            )
-            for f in fills
-        ]
+        rows = [r for r in (self._fill_row(f, now) for f in fills) if r is not None]
+        if not rows:
+            return
         with self._db_lock:
             with self._get_connection() as conn:
                 conn.executemany(
@@ -377,7 +422,14 @@ class ArenaStorage:
         elite_genome: Any,
         evolution_seed: Optional[int] = None,
     ) -> None:
-        genome_str = elite_genome if isinstance(elite_genome, str) else json.dumps(elite_genome, default=str)
+        genome_str = (
+            elite_genome
+            if isinstance(elite_genome, str)
+            else json.dumps(_sanitize_json_value(elite_genome), default=str, allow_nan=False)
+        )
+        safe_roi = float(champion_roi) if math.isfinite(float(champion_roi)) else 0.0
+        safe_sharpe = float(champion_sharpe) if math.isfinite(float(champion_sharpe)) else 0.0
+        safe_dd = float(champion_max_dd) if math.isfinite(float(champion_max_dd)) else 0.0
         with self._db_lock:
             with self._get_connection() as conn:
                 conn.execute(
@@ -393,9 +445,9 @@ class ArenaStorage:
                         time.time(),
                         str(champion_id),
                         str(champion_name),
-                        float(champion_roi),
-                        float(champion_sharpe),
-                        float(champion_max_dd),
+                        safe_roi,
+                        safe_sharpe,
+                        safe_dd,
                         genome_str,
                         int(evolution_seed) if evolution_seed is not None else None,
                     ),
@@ -435,7 +487,7 @@ class ArenaStorage:
     @_retry_on_db_error
     def save_session_snapshot(self, snapshot: Dict[str, Any]) -> None:
         """Persist full arena session snapshot (competitors, cash, positions, genomes, generation)."""
-        data_str = json.dumps(snapshot, default=str)
+        data_str = json.dumps(_sanitize_json_value(snapshot), default=str, allow_nan=False)
         with self._db_lock:
             with self._get_connection() as conn:
                 conn.execute(

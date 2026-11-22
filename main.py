@@ -1,18 +1,17 @@
 import logging
 import sys
 from decimal import Decimal
-from src.gui.dashboard import ArenaDashboard
-from src.data.timemachine import TimeMachineArena
-from src.data.eth_feed import ETHFeed
 
 from src.logging_setup import configure_logging
 
-# Audit 3.10: the release build is windowed (PyInstaller console=False), so
-# sys.stdout is None and a bare StreamHandler discards every log record.
-# configure_logging always writes a rotating file log and keeps the console
-# stream only when a real stdout exists.
+# Audit 3.10: configure file logging BEFORE importing ArenaDashboard/LiveEngine so
+# import-time diagnostics (e.g. HTML asset assembly) are captured even when stdout is None.
 configure_logging()
 logger = logging.getLogger("TradeBot0")
+
+from src.gui.dashboard import ArenaDashboard
+from src.data.timemachine import TimeMachineArena
+from src.data.eth_feed import ETHFeed
 
 
 def check_and_ensure_environment() -> bool:
@@ -134,8 +133,11 @@ def main() -> None:
                 pass
             import gc
             import os
-            import logging
-            logging.shutdown()
+            for h in list(logging.getLogger().handlers):
+                try:
+                    h.flush()
+                except Exception:
+                    pass
             gc.collect()
             try:
                 os.chdir(os.path.expanduser("~"))

@@ -28,6 +28,7 @@ V2.1.0 (2026-11-20): Setup wizard simplified to Google Gemini only; OmniRoute np
 V2.2.0 (2026-11-20): Full debug & optimization pass across arena ledger/broker/evolution, live engine/MTF/Monte Carlo/SQLite, intelligence/gateway/config, and GUI/frontend rendering & state sync.
 V2.4.0 (2026-11-21): Vertical Gemini Setup Wizard with live Node.js/OmniRoute environment detection, real OmniRoute SQLite admin password sync, unified dev_test.bat launcher, and comprehensive second-order debug & optimization sweep across Arena, LiveEngine, Intelligence/Gateway, and GUI/Frontend.
 V2.4.1 (2026-11-22): Installer wizard detects existing user data and asks whether to clear it (default: keep); installer filename carries the version.
+V2.5.0 (2026-11-22): Full debug & optimization sweep across Arena/BrokerSim/Portfolio/Competitors, LiveEngine/SessionCodec/Persistence/WebSocket/MTF/MonteCarlo, OmniRoute/GatewaySupervisor/MacroCommander/Harvester, and GUI/ViewModel/Frontend/Installer/Tooling.
 Going forward each new batch bumps the matching number by 1 (new
 feature group -> Y, fix / optimization batch -> Z, breaking change
 -> X with Y and Z reset to 0). The comparison helper accepts an
@@ -35,4 +36,4 @@ optional ``v``/``V`` prefix and plain ``X.Y.Z`` too.
 """
 
 APP_NAME = "TradeBot0"
-APP_VERSION = "V2.4.1"
+APP_VERSION = "V2.5.0"

@@ -54,7 +54,9 @@ class ConservativeCompetitor(BaseCompetitor):
             if stop_price >= market_price or target_price <= market_price:
                 return None
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
+            qty = self.compute_r_multiple_qty(
+                market_price, stop_price, broker, sizing_multiplier=sizing_multiplier, side=OrderSide.BUY
+            )
             if qty <= Decimal("0"):
                 return None
 
@@ -77,7 +79,9 @@ class ConservativeCompetitor(BaseCompetitor):
             if stop_price <= market_price or target_price >= market_price:
                 return None
 
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
+            qty = self.compute_r_multiple_qty(
+                market_price, stop_price, broker, sizing_multiplier=sizing_multiplier, side=OrderSide.SELL
+            )
             if qty <= Decimal("0"):
                 return None
 

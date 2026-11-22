@@ -42,7 +42,7 @@ PROVIDER_ENV_MAP: Dict[str, str] = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 
-_OMNI_ENV_QUOTED_RE = re.compile(r"""^(['"])([\s\S]*)\1(?:\s+#.*)?$""")
+_OMNI_ENV_QUOTED_RE = re.compile(r"""^(['"])([\s\S]*)\1\s*(?:#.*)?$""")
 _OMNI_ENV_INLINE_COMMENT_RE = re.compile(r"\s+#.*$")
 
 
@@ -122,6 +122,8 @@ class ConfigManager:
         self._io_lock = threading.RLock()
         self._omni_env_cache_key: Optional[Tuple[int, int]] = None
         self._omni_env_cache: Dict[str, str] = {}
+        self._config_cache_key: Optional[Tuple[int, int]] = None
+        self._config_cache: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def _atomic_write_text(target: Path, content: str) -> None:
@@ -181,25 +183,43 @@ class ConfigManager:
 
     def load_config(self) -> Dict[str, Any]:
         """
-        Safely loads system_config.json. If the file is missing, corrupted,
-        or unreadable, returns a valid default configuration without crashing.
+        Safely loads system_config.json under _io_lock with (mtime_ns, size) caching.
+        If the file is missing, corrupted, or unreadable, returns a valid default
+        configuration without crashing.
         """
-        if not self.config_file.is_file():
-            return dict(DEFAULT_SYSTEM_CONFIG)
-
-        try:
-            content = self.config_file.read_text(encoding="utf-8")
-            data = json.loads(content)
-            if not isinstance(data, dict):
-                logger.warning("system_config.json is not a JSON object. Using defaults.")
+        with self._io_lock:
+            try:
+                st = self.config_file.stat()
+                key = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                self._config_cache_key = None
+                self._config_cache = None
                 return dict(DEFAULT_SYSTEM_CONFIG)
 
-            # Ensure all required keys exist
-            config = dict(DEFAULT_SYSTEM_CONFIG)
-            config.update(data)
-            return config
-        except Exception as e:
-            logger.warning("Failed to parse system_config.json (%s). Using defaults.", e)
+            if key == self._config_cache_key and self._config_cache is not None:
+                return dict(self._config_cache)
+
+            for attempt in range(3):
+                try:
+                    content = self.config_file.read_text(encoding="utf-8")
+                    data = json.loads(content)
+                    if not isinstance(data, dict):
+                        logger.warning("system_config.json is not a JSON object. Using defaults.")
+                        return dict(DEFAULT_SYSTEM_CONFIG)
+                    config = dict(DEFAULT_SYSTEM_CONFIG)
+                    config.update(data)
+                    self._config_cache_key = key
+                    self._config_cache = config
+                    return dict(config)
+                except PermissionError as pe:
+                    if attempt < 2:
+                        time.sleep(0.02 * (attempt + 1))
+                        continue
+                    logger.warning("Failed to read system_config.json (%s). Using cached/defaults.", pe)
+                    return dict(self._config_cache) if self._config_cache is not None else dict(DEFAULT_SYSTEM_CONFIG)
+                except Exception as e:
+                    logger.warning("Failed to parse system_config.json (%s). Using defaults.", e)
+                    return dict(DEFAULT_SYSTEM_CONFIG)
             return dict(DEFAULT_SYSTEM_CONFIG)
 
     def save_config(self, updates: Dict[str, Any]) -> bool:
@@ -213,6 +233,8 @@ class ConfigManager:
                 current.update(updates)
                 content = json.dumps(current, indent=2, ensure_ascii=False)
                 self._atomic_write_text(self.config_file, content)
+                self._config_cache_key = None
+                self._config_cache = None
             return True
         except Exception as e:
             logger.error("Failed to save system config: %s", e)
@@ -248,19 +270,32 @@ class ConfigManager:
             if key == self._omni_env_cache_key:
                 return dict(self._omni_env_cache)
             result: Dict[str, str] = {}
-            try:
-                lines = self.omni_env_file.read_text(encoding="utf-8-sig").splitlines()
-                for line in lines:
-                    parsed = parse_omni_env_line(line)
-                    if parsed is None:
+            read_ok = False
+            for attempt in range(3):
+                try:
+                    lines = self.omni_env_file.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                    for line in lines:
+                        parsed = parse_omni_env_line(line)
+                        if parsed is None:
+                            continue
+                        k, v = parsed
+                        # First-wins mirrors OmniRoute's env loader (if process.env[k] === undefined).
+                        if k not in result:
+                            result[k] = v
+                    read_ok = True
+                    break
+                except PermissionError as pe:
+                    if attempt < 2:
+                        time.sleep(0.02 * (attempt + 1))
+                        result.clear()
                         continue
-                    k, v = parsed
-                    # First-wins mirrors OmniRoute's env loader (if process.env[k] === undefined).
-                    if k not in result:
-                        result[k] = v
-            except Exception as e:
-                logger.warning("Could not read omniroute env file: %s", e)
-                return {}
+                    logger.warning("Could not read omniroute env file: %s", pe)
+                    return dict(self._omni_env_cache) if self._omni_env_cache else {}
+                except Exception as e:
+                    logger.warning("Could not read omniroute env file: %s", e)
+                    return {}
+            if not read_ok:
+                return dict(self._omni_env_cache) if self._omni_env_cache else {}
             self._omni_env_cache_key = key
             self._omni_env_cache = result
             return dict(result)
@@ -279,7 +314,7 @@ class ConfigManager:
                 existing_lines: List[str] = []
                 if self.omni_env_file.is_file():
                     try:
-                        existing_lines = self.omni_env_file.read_text(encoding="utf-8-sig").splitlines()
+                        existing_lines = self.omni_env_file.read_text(encoding="utf-8-sig", errors="replace").splitlines()
                     except Exception as e:
                         logger.error("Refusing to overwrite unreadable omniroute env file: %s", e)
                         return {"ok": False, "error": f"Could not read existing .env safely: {e}"}

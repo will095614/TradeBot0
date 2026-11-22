@@ -1,10 +1,10 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Optional, Dict, Any
 from src.arena.order import OrderTicket, OrderSide, OrderType, PositionSide, ExecutionReason
-from src.arena.portfolio import Portfolio
+from src.arena.portfolio import Portfolio, PRECISION_CASH, PRECISION_CRYPTO
 from src.arena.broker_sim import BrokerSim
 
 
@@ -123,30 +123,26 @@ class BaseCompetitor(ABC):
         self.name = f"{self.base_name}{gen_tag}"
         eff_lev = new_genome.leverage if new_genome.leverage_enabled else Decimal("1.0")
         if not preserve_portfolio:
-            self.portfolio = Portfolio(
-                portfolio_id=self.portfolio_id,
-                name=self.name,
-                initial_cash=self.initial_cash,
-                leverage=eff_lev,
-                leverage_enabled=new_genome.leverage_enabled
-            )
+            # Reset in place so BrokerSim.portfolios retains the exact Portfolio binding
+            # and any custom maker_taker_fee_rate is preserved across generations.
+            self.portfolio.reset(self.initial_cash)
+            self.portfolio.name = self.name
+            self.portfolio.leverage = eff_lev
+            self.portfolio.leverage_enabled = new_genome.leverage_enabled
             self.last_exit_ts = 0.0
         else:
             self.portfolio.name = self.name
             self.portfolio.leverage = eff_lev
             self.portfolio.leverage_enabled = new_genome.leverage_enabled
+            # Invalidate Sharpe/Sortino cache at generation boundary so fast
+            # multi-generation tournaments never serve prior-generation metrics.
+            self.portfolio._equity_history_version += 1
             from src.arena.risk_guard import MAX_DRAWDOWN_LIMIT_PCT
             if (
                 self.portfolio.is_circuit_breaker_tripped
                 or self.portfolio.max_drawdown_pct >= MAX_DRAWDOWN_LIMIT_PCT
-            ):
-                # Generation boundary = fresh risk clock. Resetting the flag
-                # alone is not enough: max_drawdown_pct is sticky, so the
-                # next bar (broker_sim) or order (risk_guard) would re-trip
-                # the breaker immediately and the strategy would stay dead
-                # forever while its equity-ranked genome is kept as ELITE.
-                # Clear the drawdown clock as well so the strategy gets one
-                # clean evaluation window next generation.
+            ) and self.portfolio.total_equity > Decimal("0"):
+                # Generation boundary = fresh risk clock for solvent portfolios.
                 self.portfolio.is_circuit_breaker_tripped = False
                 self.portfolio.max_drawdown_pct = Decimal("0.00")
                 self.portfolio.peak_equity = self.portfolio.total_equity
@@ -174,7 +170,8 @@ class BaseCompetitor(ABC):
         self,
         target_val: Decimal,
         market_price: Decimal,
-        broker: BrokerSim
+        broker: BrokerSim,
+        side: OrderSide = OrderSide.BUY,
     ) -> Decimal:
         """
         Computes whole-precision crypto quantity that fits within both target_val
@@ -184,12 +181,12 @@ class BaseCompetitor(ABC):
             return Decimal("0")
         if not target_val.is_finite() or target_val <= Decimal("0"):
             return Decimal("0")
-        raw_qty = (target_val / market_price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+        raw_qty = (target_val / market_price).quantize(PRECISION_CRYPTO, rounding=ROUND_DOWN)
         if raw_qty <= Decimal("0"):
             return Decimal("0")
         if broker.slippage_pct > Decimal("0"):
             est_price = broker.compute_execution_slippage(
-                side=OrderSide.BUY,
+                side=side,
                 order_type=OrderType.MARKET,
                 qty=raw_qty,
                 mid_price=market_price,
@@ -198,17 +195,19 @@ class BaseCompetitor(ABC):
             # RiskGuard allows 0.5% slippage tolerance on the equity position cap;
             # only trim cap_qty below raw_qty when slippage exceeds that band.
             cap_limit_qty = (
-                ((target_val * Decimal("1.005")) / est_price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+                ((target_val * Decimal("1.005")) / est_price).quantize(PRECISION_CRYPTO, rounding=ROUND_DOWN)
                 if est_price > Decimal("0")
                 else Decimal("0")
             )
             cap_qty = min(raw_qty, cap_limit_qty)
         else:
-            est_price = market_price
+            est_price = market_price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
             cap_qty = raw_qty
+        if est_price <= Decimal("0"):
+            return Decimal("0")
         eff_lev = (
             self.portfolio.leverage
-            if self.portfolio.leverage_enabled and self.portfolio.leverage > Decimal("0")
+            if (self.portfolio.leverage_enabled and self.portfolio.leverage.is_finite() and self.portfolio.leverage > Decimal("0"))
             else Decimal("1.0")
         )
         # Fee is paid 100% in cash while margin is divided by leverage:
@@ -217,9 +216,19 @@ class BaseCompetitor(ABC):
         if cash_per_unit <= Decimal("0"):
             return Decimal("0")
         max_affordable_qty = (self.portfolio.cash / cash_per_unit).quantize(
-            Decimal("0.0001"), rounding=ROUND_DOWN
+            PRECISION_CRYPTO, rounding=ROUND_DOWN
         )
-        return max(Decimal("0"), min(cap_qty, max_affordable_qty))
+        qty = max(Decimal("0"), min(cap_qty, max_affordable_qty))
+        # Verify exact ROUND_HALF_UP margin+fee against cash so a $0.01 rounding
+        # edge never triggers a RiskGuard/Portfolio rejection.
+        while qty > Decimal("0"):
+            order_val = (qty * est_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            req_margin = (order_val / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            est_fee = (qty * est_price * self.portfolio.fee_rate).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+            if (req_margin + est_fee) <= self.portfolio.cash:
+                break
+            qty = (qty - PRECISION_CRYPTO).quantize(PRECISION_CRYPTO, rounding=ROUND_DOWN)
+        return max(Decimal("0"), qty)
 
     def compute_r_multiple_qty(
         self,
@@ -228,6 +237,7 @@ class BaseCompetitor(ABC):
         broker: BrokerSim,
         risk_budget: Optional[Decimal] = None,
         sizing_multiplier: Decimal = Decimal("1.0"),
+        side: OrderSide = OrderSide.BUY,
     ) -> Decimal:
         """
         Dynamic R-Multiple Volatility & Stop-Distance Adjusted Sizing (day-trader-skill Budget Manager).
@@ -242,8 +252,12 @@ class BaseCompetitor(ABC):
         equity = self.portfolio.total_equity
         if equity <= Decimal("0"):
             return Decimal("0")
-        # For ETH/Crypto, minimum stop distance is $2.00
-        stop_dist = max(Decimal("2.00"), abs(entry_price - stop_price))
+        # Scale minimum stop floor for sub-$2,000 assets while keeping exact $2.00 for ETH/BTC.
+        min_stop_floor = min(
+            Decimal("2.00"),
+            max(PRECISION_CASH, (entry_price * Decimal("0.001")).quantize(PRECISION_CASH)),
+        )
+        stop_dist = max(min_stop_floor, abs(entry_price - stop_price))
         budget = (
             risk_budget
             if risk_budget is not None
@@ -258,9 +272,9 @@ class BaseCompetitor(ABC):
         # max, so an optimistic regime can never push size past the cap.
         sizing_multiplier = max(Decimal("0.5"), min(Decimal("1.5"), sizing_multiplier))
         budget = budget * sizing_multiplier
-        risk_qty = (budget / stop_dist).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+        risk_qty = (budget / stop_dist).quantize(PRECISION_CRYPTO, rounding=ROUND_DOWN)
         max_cap_val = equity * self.genome.position_ratio
-        safe_cap_qty = self.compute_safe_buy_qty(max_cap_val, entry_price, broker)
+        safe_cap_qty = self.compute_safe_buy_qty(max_cap_val, entry_price, broker, side=side)
         return max(Decimal("0"), min(risk_qty, safe_cap_qty))
 
     @abstractmethod

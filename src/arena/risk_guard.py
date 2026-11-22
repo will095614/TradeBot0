@@ -2,7 +2,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Tuple
 from src.arena.order import OrderTicket, OrderSide, OrderType, PositionSide
-from src.arena.portfolio import Portfolio, PRECISION_CASH
+from src.arena.portfolio import Portfolio, PRECISION_CASH, PRECISION_CRYPTO
 
 MAX_DRAWDOWN_LIMIT_PCT = Decimal("15.00")
 
@@ -25,6 +25,9 @@ class RiskGuard:
     ) -> Tuple[bool, str]:
         if not ticket.qty.is_finite() or ticket.qty <= Decimal("0"):
             return False, "Order quantity must be positive."
+        qty_q = ticket.qty.quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
+        if qty_q <= Decimal("0"):
+            return False, "Order quantity must be positive after quantization."
         if ticket.order_type in (OrderType.LIMIT, OrderType.STOP_MARKET) and ticket.price is None:
             return False, f"{ticket.order_type.value} order requires an explicit price."
         if not market_price.is_finite() or market_price <= Decimal("0"):
@@ -41,6 +44,9 @@ class RiskGuard:
         )
         if not base_price.is_finite() or base_price <= Decimal("0"):
             return False, "Market price or order price must be positive."
+        base_price_q = base_price.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        if base_price_q <= Decimal("0"):
+            return False, "Market price or order price must be positive after quantization."
 
         # Validate optional bracket levels upfront so NaN/Inf/non-positive/inverted
         # levels can never enter BrokerSim.active_stops/active_targets.
@@ -53,13 +59,13 @@ class RiskGuard:
 
         # 1. Closing / Reducing Position Checks (Never blocked by drawdown/breaker)
         if portfolio.position_side == PositionSide.LONG and ticket.side == OrderSide.SELL:
-            if ticket.qty > portfolio.position_qty:
-                return False, f"Overclosing: attempting to sell {ticket.qty}, currently holding {portfolio.position_qty}"
+            if qty_q > portfolio.position_qty:
+                return False, f"Overclosing: attempting to sell {qty_q}, currently holding {portfolio.position_qty}"
             return True, "PASS"
 
         if portfolio.position_side == PositionSide.SHORT and ticket.side == OrderSide.BUY:
-            if ticket.qty > portfolio.position_qty:
-                return False, f"Overcovering: attempting to cover {ticket.qty}, currently short {portfolio.position_qty}"
+            if qty_q > portfolio.position_qty:
+                return False, f"Overcovering: attempting to cover {qty_q}, currently short {portfolio.position_qty}"
             return True, "PASS"
 
         # 2. Position Opening / Expanding Checks (Applies to BUY when flat/long, or SELL when flat/short)
@@ -77,7 +83,7 @@ class RiskGuard:
                 (base_price * mult).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP),
             )
         else:
-            effective_order_price = base_price
+            effective_order_price = base_price_q
 
         # Directional bracket sanity for opening/expanding orders
         if ticket.side == OrderSide.BUY:
@@ -91,8 +97,12 @@ class RiskGuard:
             if ticket.take_profit is not None and ticket.take_profit >= effective_order_price:
                 return False, "Short take-profit must be below entry price."
 
-        order_val = (ticket.qty * effective_order_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-        eff_lev = portfolio.leverage if portfolio.leverage_enabled and portfolio.leverage > Decimal("0") else Decimal("1.0")
+        order_val = (qty_q * effective_order_price).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+        eff_lev = (
+            portfolio.leverage
+            if (portfolio.leverage_enabled and portfolio.leverage.is_finite() and portfolio.leverage > Decimal("0"))
+            else Decimal("1.0")
+        )
 
         # Check maximum single position cap relative to UNLEVERAGED total equity.
         # Leverage affects only the margin required (below), never the notional cap.
@@ -105,7 +115,7 @@ class RiskGuard:
 
         # Check cash margin sufficiency including fee buffer (matches BrokerSim fee formula)
         required_margin = (order_val / eff_lev).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-        estimated_fee = (ticket.qty * effective_order_price * portfolio.fee_rate).quantize(
+        estimated_fee = (qty_q * effective_order_price * portfolio.fee_rate).quantize(
             PRECISION_CASH, rounding=ROUND_HALF_UP
         )
         if (required_margin + estimated_fee) > portfolio.cash:

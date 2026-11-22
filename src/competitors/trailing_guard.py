@@ -89,11 +89,14 @@ class TrailingGuardCompetitor(BaseCompetitor):
                 if gain_pct >= self.genome.trailing_trigger_pct:
                     self.trailing_active = True
 
-                be_stop = (entry * Decimal("0.9995")).quantize(Decimal("0.01"))
+                be_stop = max(Decimal("0.01"), (entry * Decimal("0.9995")).quantize(Decimal("0.01")))
                 if self.trailing_active:
-                    trail_stop = min(
-                        be_stop,
-                        (self.lowest_price_since_entry * (Decimal("1") + self.genome.trailing_distance_pct)).quantize(Decimal("0.01")),
+                    trail_stop = max(
+                        Decimal("0.01"),
+                        min(
+                            be_stop,
+                            (self.lowest_price_since_entry * (Decimal("1") + self.genome.trailing_distance_pct)).quantize(Decimal("0.01")),
+                        ),
                     )
                     if curr_stop_price is None or trail_stop < curr_stop_price:
                         broker.active_stops[self.portfolio_id] = OrderTicket(
@@ -127,7 +130,7 @@ class TrailingGuardCompetitor(BaseCompetitor):
                 if gain_pct >= self.genome.trailing_trigger_pct:
                     self.trailing_active = True
 
-                be_stop = (entry * Decimal("1.0005")).quantize(Decimal("0.01"))
+                be_stop = max(Decimal("0.01"), (entry * Decimal("1.0005")).quantize(Decimal("0.01")))
                 if self.trailing_active:
                     trail_stop = max(
                         be_stop,
@@ -157,17 +160,19 @@ class TrailingGuardCompetitor(BaseCompetitor):
                             timestamp=timestamp
                         )
 
-            if signal == "SELL":
-                # Leave trailing state intact until the close actually fills;
-                # lines above clear it automatically once position_qty == 0.
-                return self._close_ticket(broker, timestamp)
+        if signal == "SELL":
+            # Leave trailing state intact until the close actually fills;
+            # lines above clear it automatically once position_qty == 0.
+            return self._close_ticket(broker, timestamp)
 
         # Opening new position
         if signal == "BUY" and side == OrderSide.BUY and self.portfolio.position_qty == Decimal("0"):
             stop_price = max(Decimal("0.01"), (market_price * (Decimal("1") - self.genome.stop_loss_pct)).quantize(Decimal("0.01")))
             if stop_price >= market_price:
                 return None
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
+            qty = self.compute_r_multiple_qty(
+                market_price, stop_price, broker, sizing_multiplier=sizing_multiplier, side=OrderSide.BUY
+            )
             if qty <= Decimal("0"):
                 return None
 
@@ -191,7 +196,9 @@ class TrailingGuardCompetitor(BaseCompetitor):
             stop_price = (market_price * (Decimal("1") + self.genome.stop_loss_pct)).quantize(Decimal("0.01"))
             if stop_price <= market_price:
                 return None
-            qty = self.compute_r_multiple_qty(market_price, stop_price, broker, sizing_multiplier=sizing_multiplier)
+            qty = self.compute_r_multiple_qty(
+                market_price, stop_price, broker, sizing_multiplier=sizing_multiplier, side=OrderSide.SELL
+            )
             if qty <= Decimal("0"):
                 return None
 

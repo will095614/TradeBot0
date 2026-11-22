@@ -157,6 +157,8 @@ class _ArenaBridgeApi:
         # when the call is about to return ok.
         self._save_launch_lock = threading.Lock()
         self._save_launch_exec_lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_started = False
         self._save_launch_stage = {
             "status": "idle",
             "message": "",
@@ -224,7 +226,7 @@ class _ArenaBridgeApi:
                 self._dashboard._evolution_running = False
 
     def toggle_pause(self) -> Dict[str, Any]:
-        self._dashboard.engine.paused = not self._dashboard.engine.paused
+        self._dashboard.engine.toggle_pause()
         return self.get_state()
 
     def toggle_auto_evolve(self) -> Dict[str, Any]:
@@ -279,13 +281,18 @@ class _ArenaBridgeApi:
         return {"status": "cancelled"}
 
     def shutdown(self, save_progress: bool = True) -> Dict[str, Any]:
+        with self._shutdown_lock:
+            if self._shutdown_started:
+                return {"status": "shutting_down", "saved": save_progress}
+            self._shutdown_started = True
         logger.info("Shutdown requested from UI bridge (save_progress=%s)", save_progress)
+        self._dashboard.allow_exit = True
+        self._dashboard.closing_prompt_active = False
         if save_progress:
             try:
                 self._dashboard.engine.save_session_state()
             except Exception as e:
                 logger.error("Error saving session state on shutdown: %s", e)
-        self._dashboard.allow_exit = True
         try:
             self._dashboard.engine.stop()
         except Exception as e:
@@ -389,12 +396,23 @@ class _ArenaBridgeApi:
         try:
             cfg = self._dashboard.config_manager.load_config()
             configured = self._dashboard.config_manager.get_configured_providers()
-            is_open = self._dashboard.gateway_supervisor.is_port_open(timeout=0.3)
+            sup = self._dashboard.gateway_supervisor
+            is_open = sup.is_port_open(timeout=0.3)
             healthy = False
             if is_open:
-                healthy, _ = self._dashboard.gateway_supervisor.probe_health(timeout=0.6)
+                healthy, _ = sup.probe_health(timeout=0.6)
 
-            cli_avail = self._dashboard.gateway_supervisor.is_cli_available()
+            node_ok = bool(sup.node_available())
+            omni_ok = bool(sup.omniroute_installed())
+            cli_avail = bool(sup.is_cli_available())
+            if not node_ok:
+                gw_reason = "Node.js is not installed. The OmniRoute gateway needs Node.js 22 or later."
+            elif not omni_ok:
+                gw_reason = "OmniRoute is not installed. Install it with one click below (about 3-5 min, ~2.6 GB)."
+            elif not cli_avail:
+                gw_reason = "OmniRoute CLI is not installed or not found in system PATH."
+            else:
+                gw_reason = None
 
             # Never send any password value to the frontend: the old code
             # returned the admin password (default or configured) in plain
@@ -410,14 +428,14 @@ class _ArenaBridgeApi:
                 "gateway_online": bool(healthy),
                 "port_open": bool(is_open),
                 "configured_providers": configured,
-                "cli_available": bool(cli_avail),
+                "cli_available": cli_avail,
                 "gateway_port": int(cfg.get("gateway_port", 20128)),
                 "omniroute_password_configured": pw_configured,
                 "admin_password_required": bool((not cfg.get("skip_ai_mode", False)) and not pw_configured),
-                "node_available": bool(self._dashboard.gateway_supervisor.node_available()),
-                "omniroute_installed": bool(self._dashboard.gateway_supervisor.omniroute_installed()),
-                "gateway_unavailable_reason": self._dashboard.gateway_supervisor.gateway_unavailable_reason(),
-                "runtime_install_status": self._dashboard.gateway_supervisor.install_runtime_status(),
+                "node_available": node_ok,
+                "omniroute_installed": omni_ok,
+                "gateway_unavailable_reason": gw_reason,
+                "runtime_install_status": sup.install_runtime_status(),
             }
         except Exception as e:
             logger.error("Error reading setup status: %s", e)
@@ -471,6 +489,14 @@ class _ArenaBridgeApi:
                 "progress": progress,
                 "phase": phase,
             }
+
+    def get_runtime_install_status(self) -> Dict[str, Any]:
+        """Zero-I/O lock-only read of the current runtime install state."""
+        try:
+            return self._dashboard.gateway_supervisor.install_runtime_status()
+        except Exception as e:
+            logger.debug("Runtime install status read failed: %s", e)
+            return {"status": "idle", "message": "", "progress": None, "phase": ""}
 
     def get_save_launch_status(self) -> Dict[str, Any]:
         """Current Save & Launch stage for the wizard poll loop.
@@ -529,8 +555,13 @@ class _ArenaBridgeApi:
                 # gateway first (to avoid SQLite lock/cache staleness or a watchdog
                 # respawn mid-update), apply the password directly into OmniRoute's
                 # storage.sqlite via CLI, and only then persist INITIAL_PASSWORD to .env.
+                _stopped_for_pw = False
+                _had_own_daemon = False
+                _had_watchdog = False
                 if admin_password is not None:
                     _sup = self._dashboard.gateway_supervisor
+                    with _sup._watchdog_lock:
+                        _had_watchdog = bool(_sup._watchdog_thread is not None and _sup._watchdog_thread.is_alive())
                     try:
                         _sup.stop_watchdog()
                     except Exception as e:
@@ -540,22 +571,39 @@ class _ArenaBridgeApi:
                             (_sup.is_self_spawned and _sup.child_process is not None)
                             or _sup._daemon_starting
                         )
+                    _had_own_daemon = _needs_restart
                     if _needs_restart:
                         self._set_save_launch_stage("restarting-gateway", "Restarting AI services...", 40, "gateway")
                         try:
                             _sup.shutdown()
+                            _stopped_for_pw = True
                         except Exception as e:
                             logger.debug("Gateway restart after password change failed: %s", e)
+
+                    def _recover_gateway_after_pw_error() -> None:
+                        if _stopped_for_pw and _had_own_daemon:
+                            try:
+                                _sup.start_daemon(max_wait_sec=15.0)
+                            except Exception as rec_err:
+                                logger.debug("Gateway recovery spawn failed: %s", rec_err)
+                        if _had_watchdog:
+                            try:
+                                _sup.start_watchdog(armed=bool(_sup._probe_gateway_healthy()))
+                            except Exception as rec_err:
+                                logger.debug("Watchdog recovery start failed: %s", rec_err)
+
                     _pw_sync = _sup.sync_admin_password(
                         admin_password,
                         data_dir=_cm.omni_env_file.parent,
                     )
                     if isinstance(_pw_sync, dict) and _pw_sync.get("ok") is False:
+                        _recover_gateway_after_pw_error()
                         err_msg = str(_pw_sync.get("error") or "Failed to apply admin password to OmniRoute.")
                         self._set_save_launch_stage("failed", err_msg, 40, "password")
                         return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
                     _pw_res = _cm.set_admin_password(admin_password)
                     if not _pw_res.get("ok"):
+                        _recover_gateway_after_pw_error()
                         err_msg = _pw_res.get("error", "Could not write the admin password.")
                         self._set_save_launch_stage("failed", err_msg, 45, "password")
                         return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
@@ -570,6 +618,16 @@ class _ArenaBridgeApi:
                     "last_setup_ts": time.time(),
                 })
                 if cfg_saved is False:
+                    if admin_password is not None and (_stopped_for_pw or _had_watchdog):
+                        try:
+                            if _stopped_for_pw and _had_own_daemon:
+                                self._dashboard.gateway_supervisor.start_daemon(max_wait_sec=15.0)
+                            if _had_watchdog:
+                                self._dashboard.gateway_supervisor.start_watchdog(
+                                    armed=bool(self._dashboard.gateway_supervisor._probe_gateway_healthy())
+                                )
+                        except Exception as rec_err:
+                            logger.debug("Gateway recovery after config save failure failed: %s", rec_err)
                     err_msg = "Failed to save system configuration."
                     self._set_save_launch_stage("failed", err_msg, 55, "config")
                     return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
@@ -680,6 +738,7 @@ class ArenaDashboard:
         self._evolution_lock = threading.Lock()
         self._reset_lock = threading.Lock()
         self._stop_lock = threading.Lock()
+        self._stopped = False
         self._bridge = _ArenaBridgeApi(self)
 
     def get_gateway_diagnosis(self) -> str:
@@ -731,6 +790,9 @@ class ArenaDashboard:
         from dataclasses import replace as _dc_replace
 
         with self._reset_lock:
+            if self._stopped:
+                logger.info("Skipping reset_engine: dashboard is shutting down.")
+                return
             old_engine = self.engine
             old_engine.stop()
             if old_engine.worker_thread and old_engine.worker_thread.is_alive():
@@ -758,6 +820,14 @@ class ArenaDashboard:
                 old_engine.storage.clear_session_snapshot()
             except Exception as e:
                 logger.warning("Failed to clear session snapshot during reset: %s", e)
+            finally:
+                try:
+                    old_engine.storage.close()
+                except Exception as e:
+                    logger.debug("Failed to close previous engine storage during reset: %s", e)
+
+            if self._stopped:
+                return
 
             _gw_base_url = (
                 None
@@ -826,8 +896,11 @@ class ArenaDashboard:
         threading.Thread(target=_check, daemon=True).start()
 
     def stop(self) -> None:
-        """Cleanly halts trading engine, persistence, and background daemon supervisor."""
+        """Cleanly halts trading engine, persistence, and background daemon supervisor (idempotent)."""
         with self._stop_lock:
+            if self._stopped:
+                return
+            self._stopped = True
             try:
                 self.gateway_supervisor.cancel_runtime_install()
             except Exception as e:
@@ -1068,20 +1141,22 @@ class ArenaDashboard:
             # Calling evaluate_js synchronously on the WinForms UI thread during FormClosing
             # deadlocks on semaphore.acquire(), hanging the application and freeze-lagging Windows!
             def _prompt_async():
+                if self.allow_exit or self._stopped:
+                    return
                 try:
                     window.evaluate_js("window.promptShutdownSave()")
                 except Exception as e:
-                    logger.debug("Prompt shutdown JS failed: %s", e)
+                    logger.debug("Prompt shutdown JS skipped/disposed: %s", e)
 
             threading.Thread(target=_prompt_async, daemon=True).start()
             return False
 
         def _on_window_closed():
             self.allow_exit = True
-            try:
-                self.stop()
-            except Exception as e:
-                logger.debug("Stop on window closed: %s", e)
+            self.closing_prompt_active = False
+            # Avoid blocking the WinForms UI thread inside FormClosed; run() finally:
+            # also calls self.stop() synchronously and blocks on _stop_lock until done.
+            threading.Thread(target=self.stop, name="dashboard-stop", daemon=True).start()
 
         window.events.closing += _on_window_closing
         window.events.closed += _on_window_closed

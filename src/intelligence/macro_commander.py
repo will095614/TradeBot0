@@ -213,6 +213,9 @@ class MacroCommander:
         self._last_synthesized_keys: Tuple[str, ...] = ()
         self._veto_day: date = date.today()
         self.curated_events: List[Dict[str, Any]] = []
+        self._curated_version: int = 0
+        self._telemetry_events_cache_key: Optional[Tuple[int, int]] = None
+        self._telemetry_events_cache: List[Dict[str, Any]] = []
         self._seed_default_events()
         # First-sync progress (workstream 3): the current pipeline
         # stage + milestone percent, read by get_intel_hub_telemetry.
@@ -254,6 +257,7 @@ class MacroCommander:
         self.current_state.status = "ONLINE" if self.client.is_gateway_online else "STANDBY"
 
         self.curated_events = []
+        self._curated_version += 1
         self.current_state.latest_event = None
 
     def ensure_traditional_chinese_seed_events(self) -> None:
@@ -262,6 +266,7 @@ class MacroCommander:
         headlines and summaries. Used during bootstrap and reset before UI reveal.
         """
         with self._events_lock:
+            mutated = False
             for evt in self.curated_events:
                 head = evt.get("headline", "")
                 sum_txt = evt.get("summary", "")
@@ -280,6 +285,9 @@ class MacroCommander:
                     zh_h, zh_s = IntelligenceHarvester.ensure_traditional_chinese(dummy_event)
                     evt["headline"] = zh_h
                     evt["summary"] = zh_s
+                    mutated = True
+            if mutated:
+                self._curated_version += 1
             if not IntelligenceHarvester._contains_cjk(self.current_state.active_headline):
                 self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
             if self.curated_events:
@@ -309,6 +317,7 @@ class MacroCommander:
             if len(acts) > 6:
                 acts.pop()
             self.current_state.latest_event = active_evt
+            self._curated_version += 1
 
     def _set_sync_stage(self, stage: str, detail: str = "", percent: Optional[int] = None) -> None:
         """Records the current sync stage (atomic dict replacement, so
@@ -333,7 +342,13 @@ class MacroCommander:
         Records the real pipeline stage in self.sync_status so the Intel
         Hub stream loading bar can show honest milestone progress.
         """
-        if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+        def _shutting_down() -> bool:
+            if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+                return True
+            fn = getattr(self.client, "is_shutting_down", None)
+            return callable(fn) and fn() is True
+
+        if _shutting_down():
             return self.current_state
         fetch_error: Optional[str] = None
         # Audit 3.12: check_health catches every Exception and returns a
@@ -359,18 +374,18 @@ class MacroCommander:
         except Exception as ex:
             self._set_sync_stage("failed", f"Gateway unreachable: {str(ex)[:60]}")
             raise
-        if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+        if _shutting_down():
             return self.current_state
         try:
             self._set_sync_stage("fetching", "Fetching live news feeds")
             raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 3.5)
-            if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+            if _shutting_down():
                 return self.current_state
             structured_all: List[StructuredEvent] = []
             if raw_events:
                 self._set_sync_stage("processing", f"Reading {len(raw_events)} new stories")
                 structured_all.extend(await self.harvester.process_batch(raw_events))
-            if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+            if _shutting_down():
                 return self.current_state
             # Forum batch (item 12B): StockTwits streams are collected on
             # their own cadence and scored in a separate batch, so forum
@@ -392,13 +407,15 @@ class MacroCommander:
                     return self.current_state
                 logger.warning("Forum collection failed, continuing with news only: %s", ex)
             if structured_all:
+                if _shutting_down():
+                    return self.current_state
                 self._set_sync_stage("synthesizing", "Synthesizing market direction")
                 state = await self.synthesize_regime(structured_all)
                 self._set_sync_stage("done", "Stream live" if self.curated_events else "No new events yet",
                                      percent=100 if self.curated_events else 90)
                 return state
         except Exception as ex:
-            if "cannot schedule new futures after shutdown" in str(ex) or sys.is_finalizing():
+            if "cannot schedule new futures after shutdown" in str(ex) or _shutting_down():
                 logger.debug("Live feed harvest skipped during shutdown: %s", ex)
                 return self.current_state
             else:
@@ -406,11 +423,15 @@ class MacroCommander:
             fetch_error = str(ex)[:80] or ex.__class__.__name__
 
         if fetch_error:
+            with self._events_lock:
+                self._expire_fallback_if_stale(time.time())
             self._set_sync_stage("failed", f"Sync failed: {fetch_error}")
             return self.current_state
         if not gateway_healthy:
             # Audit 3.12: the gateway is dead and the refresh produced
             # nothing to synthesize -- say so instead of "waiting".
+            with self._events_lock:
+                self._expire_fallback_if_stale(time.time())
             self._set_sync_stage("failed", "Gateway unreachable")
             return self.current_state
 
@@ -420,11 +441,15 @@ class MacroCommander:
             if recent_keys == self._last_synthesized_keys and not self.current_state.fallback and self.curated_events:
                 self._set_sync_stage("done", "Stream live", percent=100)
                 return self.current_state
+            if _shutting_down():
+                return self.current_state
             self._set_sync_stage("synthesizing", "Synthesizing market direction")
             state = await self.synthesize_regime(recent)
             self._set_sync_stage("done", "Stream live" if self.curated_events else "No new events yet",
                                  percent=100 if self.curated_events else 90)
             return state
+        with self._events_lock:
+            self._expire_fallback_if_stale(time.time())
         self._set_sync_stage("waiting", "No new events yet")
         return self.current_state
 
@@ -436,7 +461,13 @@ class MacroCommander:
         never leaves an Unclosed client session behind. Callers that
         already have a running loop use refresh_digest_async directly.
         """
-        if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+        def _shutting_down() -> bool:
+            if sys.is_finalizing() or (stop_event is not None and stop_event.is_set()):
+                return True
+            fn = getattr(self.client, "is_shutting_down", None)
+            return callable(fn) and fn() is True
+
+        if _shutting_down():
             return self.current_state
 
         async def _wrapped() -> "MacroRegimeState":
@@ -500,7 +531,7 @@ class MacroCommander:
         return {
             "omniroute": {
                 "status": status_text,
-                "endpoint": str(getattr(self.client, "base_url", "http://localhost:20128/v1")),
+                "endpoint": str(getattr(self.client, "base_url", "http://127.0.0.1:20128/v1")),
                 "model_ingest": str(getattr(self.client, "model_ingest", "auto")),
                 "model_commander": str(getattr(self.client, "model_commander", "auto")),
                 "quota_pct": quota_pct,
@@ -556,11 +587,18 @@ class MacroCommander:
 
     def _telemetry_events(self, limit: int) -> List[Dict[str, Any]]:
         with self._events_lock:
-            return [self._telemetry_event(e) for e in self.curated_events[:limit]]
+            cache_key = (self._curated_version, limit)
+            if self._telemetry_events_cache_key != cache_key:
+                self._telemetry_events_cache = [
+                    self._telemetry_event(e) for e in self.curated_events[:limit]
+                ]
+                self._telemetry_events_cache_key = cache_key
+            return [dict(e) for e in self._telemetry_events_cache]
 
     def _telemetry_macro_state(self) -> Dict[str, Any]:
         """Current regime state, with any latest_event article stripped."""
         with self._events_lock:
+            self._expire_fallback_if_stale(time.time())
             state = self.current_state.to_dict()
             latest = state.get("latest_event")
             if isinstance(latest, dict):
@@ -620,6 +658,11 @@ class MacroCommander:
         honestly -- never a fabricated article, and never the one-line
         summary passed off as the article. Never raises.
         """
+        if sys.is_finalizing():
+            return {"ok": False, "event_id": event_id, "state": "none", "reason": "shutting down"}
+        shut_fn = getattr(self.client, "is_shutting_down", None)
+        if callable(shut_fn) and shut_fn() is True:
+            return {"ok": False, "event_id": event_id, "state": "none", "reason": "shutting down"}
         with self._events_lock:
             evt = next((x for x in self.curated_events if x.get("id") == event_id), None)
         if evt is None:
@@ -635,6 +678,7 @@ class MacroCommander:
                     evt["article_state"] = "loading"
                     evt["article"] = None
                     evt.pop("article_error", None)
+                    self._curated_version += 1
                     evt_copy = dict(evt)
                 try:
                     article_text, error = self._generate_article_sync(evt_copy)
@@ -644,10 +688,12 @@ class MacroCommander:
                     if article_text is None:
                         evt["article_state"] = "failed"
                         evt["article_error"] = error or "article generation failed"
+                        self._curated_version += 1
                         logger.warning("Event article generation failed for %s: %s", event_id, evt["article_error"])
                         return {"ok": False, "event_id": event_id, "state": "failed", "reason": evt["article_error"]}
                     evt["article"] = article_text
                     evt["article_state"] = "ready"
+                    self._curated_version += 1
                     return {"ok": True, "event_id": event_id, "state": "ready", "article": article_text}
         finally:
             self._release_article_lock_entry(event_id, entry)
@@ -751,6 +797,7 @@ class MacroCommander:
             return True, "PASSED"
 
         with self._events_lock:
+            self._expire_fallback_if_stale(time.time())
             today = date.today()
             if today != self._veto_day:
                 self._veto_day = today
@@ -790,12 +837,18 @@ class MacroCommander:
             return
         if now - self.current_state.fallback_since_ts <= FALLBACK_MAX_AGE_SEC:
             return
+        was_non_neutral = (
+            self.current_state.regime != "NORMAL"
+            or self.current_state.directional_bias != "BIDIRECTIONAL"
+            or self.current_state.risk_multiplier != 1.0
+        )
         self.current_state.regime = "NORMAL"
         self.current_state.directional_bias = "BIDIRECTIONAL"
         self.current_state.risk_multiplier = 1.0
         self.current_state.confidence = 0.50
         self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
-        logger.info("Keyword fallback regime expired after 30m without LLM; stepped down to BIDIRECTIONAL")
+        if was_non_neutral:
+            logger.info("Keyword fallback regime expired after 30m without LLM; stepped down to BIDIRECTIONAL")
 
     def is_quota_throttled(self) -> bool:
         """True while measured token usage has reached the daily quota.
@@ -847,22 +900,26 @@ class MacroCommander:
                 tier_w = TIER_WEIGHTS.get(int(getattr(e, "tier", 2)), 1.0)
             except (TypeError, ValueError):
                 tier_w = 1.0
-            urg = max(1, min(10, int(e.urgency_score)))
+            urg = max(1, min(10, int(_safe_float(getattr(e, "urgency_score", 5), 5.0))))
+            sent = max(-1.0, min(1.0, _safe_float(getattr(e, "sentiment_score", 0.0), 0.0)))
             urg_w = 0.5 + urg / 10.0
             decay = 0.5 ** (age_min / WEIGHTED_HALF_LIFE_MIN)
-            scored.append((tier_w * urg_w * decay, float(e.sentiment_score), float(urg), decay))
+            scored.append((tier_w * urg_w * decay, sent, float(urg), decay))
         if not scored:
             return 0.0, 0.0, 0.0
         # Freshest first (largest decay), keep at most 30.
         scored.sort(key=lambda item: -item[3])
         scored = scored[:WEIGHTED_MAX_EVENTS]
         total_w = sum(w for w, _, _, _ in scored)
-        if total_w <= 0.0:
+        if not math.isfinite(total_w) or total_w <= 0.0:
             return 0.0, 0.0, 0.0
         s = sum(w * sent for w, sent, _, _ in scored) / total_w
         u = sum(w * urg for w, _, urg, _ in scored) / total_w
         n = sum(d for _, _, _, d in scored)
-        return max(-1.0, min(1.0, s)), max(0.0, min(10.0, u)), n
+        s = max(-1.0, min(1.0, s)) if math.isfinite(s) else 0.0
+        u = max(0.0, min(10.0, u)) if math.isfinite(u) else 0.0
+        n = max(0.0, n) if math.isfinite(n) else 0.0
+        return s, u, n
 
     def news_sizing_multiplier(self, news_sensitivity: float = 0.5) -> float:
         """Per-strategy news sizing factor (item 12C / C2).
@@ -913,25 +970,31 @@ class MacroCommander:
             # Ingest structured events into curated timeline (newest first), ensuring Traditional Chinese headline & summary.
             # Iterate in reverse so recent_events[0] lands at curated_events[0].
             with self._events_lock:
+                inserted = False
                 for e in reversed(recent_events):
                     zh_head, zh_sum = IntelligenceHarvester.ensure_traditional_chinese(e)
                     dedup_key = e.raw_title or zh_head
                     digest_hex = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:8]
                     evt_id = f"evt_{int(now)}_{digest_hex}"
                     already_exists = any(
-                        (e.raw_title and x.get("raw_title") == e.raw_title) or x.get("headline") == zh_head
+                        (
+                            (e.raw_title == x.get("raw_title"))
+                            if (e.raw_title and x.get("raw_title"))
+                            else (x.get("headline") == zh_head)
+                        )
                         for x in self.curated_events
                     )
                     if not already_exists:
+                        local_tm = time.localtime(now)
                         self.curated_events.insert(0, {
                             "id": evt_id,
                             "event_ts": int(now),
-                            "date_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
-                            "time": time.strftime("%H:%M:%S"),
+                            "date_time": time.strftime("%Y-%m-%d %H:%M:%S", local_tm),
+                            "time": time.strftime("%H:%M:%S", local_tm),
                             "source": e.source,
                             "domain": e.domain,
                             "urgency": e.urgency_score,
-                            "sentiment": round(e.sentiment_score, 2),
+                            "sentiment": round(_safe_float(e.sentiment_score, 0.0), 2),
                             "headline": zh_head,
                             "summary": zh_sum,
                             "raw_title": e.raw_title,
@@ -944,8 +1007,11 @@ class MacroCommander:
                             "article": None,
                             "article_state": "none",
                         })
+                        inserted = True
                 if len(self.curated_events) > 60:
                     self.curated_events = self.curated_events[:60]
+                if inserted:
+                    self._curated_version += 1
 
             # Format top items for commander
             lines = []
@@ -1016,7 +1082,10 @@ class MacroCommander:
                     # out of the veto pipeline (item 6).
                     risk_mult = max(0.5, min(1.5, _safe_float(parsed.get("risk_multiplier"), 1.0)))
                     conf = max(0.0, min(1.0, _safe_float(parsed.get("confidence"), 0.70)))
-                    headline = str(parsed.get("active_headline", "Macro regime updated from live stream"))
+                    raw_hl = parsed.get("active_headline")
+                    headline = str(raw_hl).strip() if raw_hl is not None else ""
+                    if not headline:
+                        headline = "Macro regime updated from live stream"
 
                     self.current_state.regime = regime
                     self.current_state.directional_bias = bias
@@ -1038,16 +1107,23 @@ class MacroCommander:
                     # keyword fallback by definition does not have. Confidence
                     # resets to 0.50 ("no confidence"), so news sizing (C2) is
                     # neutral until the LLM is back.
+                    top_ev = max(
+                        recent_events,
+                        key=lambda ev: (
+                            _safe_float(getattr(ev, "urgency_score", 5), 5.0),
+                            abs(_safe_float(getattr(ev, "sentiment_score", 0.0), 0.0)),
+                        ),
+                    )
                     if w_s > 0.45 and w_u >= 7 and w_n >= 1.9:
                         self.current_state.regime = "BULLISH_SURGE"
                         self.current_state.directional_bias = "LONG_ONLY"
                         self.current_state.risk_multiplier = 1.25
-                        self.current_state.active_headline = recent_events[-1].summary[:80]
+                        self.current_state.active_headline = (top_ev.summary or "")[:80]
                     elif w_s < -0.45 and w_u >= 7 and w_n >= 1.9:
                         self.current_state.regime = "BEARISH_PANIC"
                         self.current_state.directional_bias = "SHORT_ONLY"
                         self.current_state.risk_multiplier = 0.75
-                        self.current_state.active_headline = recent_events[-1].summary[:80]
+                        self.current_state.active_headline = (top_ev.summary or "")[:80]
                     else:
                         self.current_state.regime = "NORMAL"
                         self.current_state.directional_bias = "BIDIRECTIONAL"

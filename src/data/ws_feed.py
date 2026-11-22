@@ -40,14 +40,16 @@ class StreamingCryptoFeed:
         stream_name = parse_symbol_pairs(symbol)["ws_stream"]
         self.symbol = symbol
         self.on_quote = on_quote_callback
+        self._custom_ws_url = ws_url is not None
         self.ws_url = ws_url or f"wss://stream.binance.com:9443/ws/{stream_name}"
-        self.alt_ws_url = f"wss://stream.binance.com:443/ws/{stream_name}"
+        self.alt_ws_url = ws_url if ws_url is not None else f"wss://stream.binance.com:443/ws/{stream_name}"
         self.stale_threshold_sec = float(stale_threshold_sec)
         self.running: bool = False
         self.connected: bool = False
         self.last_msg_ts: float = 0.0
         self.latest_ws_quote: Optional[Any] = None
         self.reconnect_count: int = 0
+        self._lifecycle_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stream_task: Optional[asyncio.Task] = None
@@ -61,45 +63,49 @@ class StreamingCryptoFeed:
         return (current - self.last_msg_ts) < self.stale_threshold_sec
 
     def start(self) -> None:
-        if self.running:
-            return
-        if os.environ.get("ARENA_FAST_TEST") == "1":
-            # Avoid opening real external sockets during hermetic unit tests
-            return
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-            if self._thread.is_alive():
-                logger.warning("Previous WebSocket thread still alive; refusing duplicate start")
+        with self._lifecycle_lock:
+            if self.running:
                 return
-        self.running = True
-        self._thread = threading.Thread(
-            target=self._run_loop,
-            daemon=True,
-            name="WebSocketFeedThread",
-        )
-        self._thread.start()
+            if os.environ.get("ARENA_FAST_TEST") == "1":
+                # Avoid opening real external sockets during hermetic unit tests
+                return
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=2.0)
+                if self._thread.is_alive():
+                    logger.warning("Previous WebSocket thread still alive; refusing duplicate start")
+                    return
+            self.running = True
+            self._thread = threading.Thread(
+                target=self._run_loop,
+                daemon=True,
+                name="WebSocketFeedThread",
+            )
+            self._thread.start()
 
     def stop(self) -> None:
-        self.running = False
-        self.connected = False
-        loop = self._loop
-        task = self._stream_task
-        ws = self._active_ws
-        if loop and loop.is_running():
-            if task is not None:
-                try:
-                    loop.call_soon_threadsafe(task.cancel)
-                except Exception as e:
-                    logger.debug("WebSocket task cancel failed during stop: %s", e)
-            elif ws is not None:
-                try:
-                    asyncio.run_coroutine_threadsafe(ws.close(), loop)
-                except Exception as e:
-                    logger.debug("WebSocket close failed during stop: %s", e)
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-        if self._thread is None or not self._thread.is_alive():
-            self._thread = None
+        with self._lifecycle_lock:
+            self.running = False
+            self.connected = False
+            self.latest_ws_quote = None
+            self.last_msg_ts = 0.0
+            loop = self._loop
+            task = self._stream_task
+            ws = self._active_ws
+            if loop and loop.is_running():
+                if task is not None:
+                    try:
+                        loop.call_soon_threadsafe(task.cancel)
+                    except Exception as e:
+                        logger.debug("WebSocket task cancel failed during stop: %s", e)
+                elif ws is not None:
+                    try:
+                        asyncio.run_coroutine_threadsafe(ws.close(), loop)
+                    except Exception as e:
+                        logger.debug("WebSocket close failed during stop: %s", e)
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=2.0)
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = None
 
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -118,7 +124,9 @@ class StreamingCryptoFeed:
                 for p in pending:
                     p.cancel()
                 if pending:
-                    self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    self._loop.run_until_complete(
+                        asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=1.5)
+                    )
                 self._loop.close()
             except Exception as e:
                 logger.debug("WebSocket event loop close failed: %s", e)
@@ -126,7 +134,11 @@ class StreamingCryptoFeed:
 
     async def _connect_and_stream(self) -> None:
         backoff = 1.0
-        urls = [self.ws_url, getattr(self, "alt_ws_url", self.BINANCE_ALT_WS_URL)]
+        if getattr(self, "_custom_ws_url", False):
+            urls = [self.ws_url]
+        else:
+            urls = [self.ws_url, getattr(self, "alt_ws_url", self.BINANCE_ALT_WS_URL)]
+        recv_timeout = max(15.0, self.stale_threshold_sec * 5.0)
         url_idx = 0
         while self.running:
             target_url = urls[url_idx % len(urls)]
@@ -135,6 +147,7 @@ class StreamingCryptoFeed:
                 logger.info("Connecting to Binance WebSocket ticker stream (%s)...", target_url)
                 async with websockets.connect(
                     target_url,
+                    open_timeout=5,
                     ping_interval=20,
                     ping_timeout=10,
                     close_timeout=5,
@@ -145,7 +158,12 @@ class StreamingCryptoFeed:
                     self.connected = True
                     logger.info("Binance WebSocket ticker stream connected successfully.")
 
-                    async for message in ws:
+                    aiter = ws.__aiter__()
+                    while self.running:
+                        try:
+                            message = await asyncio.wait_for(aiter.__anext__(), timeout=recv_timeout)
+                        except StopAsyncIteration:
+                            break
                         if not self.running:
                             break
                         data = json.loads(message) if isinstance(message, (str, bytes)) else message
@@ -156,7 +174,10 @@ class StreamingCryptoFeed:
                                 backoff = 1.0
                                 self.latest_ws_quote = quote
                                 self.last_msg_ts = time.time()
-                                self.on_quote(quote)
+                                try:
+                                    self.on_quote(quote)
+                                except Exception as cb_err:
+                                    logger.debug("WebSocket on_quote callback error: %s", cb_err)
                 # Clean stream end (server closed the socket without raising):
                 # do NOT reconnect immediately; wait out the same backoff.
                 self.connected = False

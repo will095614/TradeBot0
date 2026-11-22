@@ -123,7 +123,15 @@ class GeneticEvolver:
             new_lev = cls._clamp_decimal(blend(lev1, lev2, 0.15), "1.0", "5.0", "0.1")
         else:
             new_lev_enabled = rng.random() < 0.15
-            new_lev = cls._clamp_decimal(blend(parent1.leverage, parent2.leverage, 0.10), "1.0", "3.0", "0.1")
+            if new_lev_enabled:
+                new_lev = cls._clamp_decimal(blend(Decimal("1.5"), Decimal("1.5"), 0.15), "1.1", "3.0", "0.1")
+            else:
+                new_lev = Decimal("1.0")
+        if new_lev <= Decimal("1.0"):
+            new_lev_enabled = False
+            new_lev = Decimal("1.0")
+        elif not new_lev_enabled:
+            new_lev = Decimal("1.0")
 
         return CompetitorGenome(
             position_ratio=new_pos,
@@ -247,6 +255,7 @@ class GeneticEvolver:
             rankings,
             key=lambda r: (
                 r.fitness_score,
+                r.status == "ACTIVE",
                 r.equity,
                 float(r.roi_pct),
                 -float(r.max_drawdown_pct),

@@ -74,16 +74,22 @@ class IndicatorEngineMixin:
         fed = 0
         for b in chain:
             try:
-                bar = {
-                    "t": float(b["t"]),
-                    "o": float(b["o"]),
-                    "h": float(b["h"]),
-                    "l": float(b["l"]),
-                    "c": float(b["c"]),
-                    "v": float(b.get("v", 0.0)),
-                }
+                bt = float(b["t"])
+                bo = float(b["o"])
+                bh = float(b["h"])
+                bl = float(b["l"])
+                bc = float(b["c"])
+                bv = float(b.get("v", 0.0))
             except (KeyError, TypeError, ValueError):
                 continue
+            if not (
+                math.isfinite(bt) and math.isfinite(bo) and math.isfinite(bh)
+                and math.isfinite(bl) and math.isfinite(bc) and math.isfinite(bv)
+            ):
+                continue
+            if bo <= 0.0 or bh <= 0.0 or bl <= 0.0 or bc <= 0.0:
+                continue
+            bar = {"t": bt, "o": bo, "h": bh, "l": bl, "c": bc, "v": max(0.0, bv)}
             self.mtf_engine.update_from_1m_bar(bar, recompute=False)
             fed += 1
         if fed == 0:
@@ -111,19 +117,31 @@ class IndicatorEngineMixin:
         if not bars:
             logger.debug("MTF 1h history seed skipped (no bars returned).")
             return
-        buckets = [
-            {
-                "t": float(b.timestamp),
-                "o": float(b.open),
-                "h": float(b.high),
-                "l": float(b.low),
-                "c": float(b.close),
-                "v": float(b.volume),
-            }
-            for b in bars
-        ]
+        buckets = []
+        for b in bars:
+            try:
+                bt = float(b.timestamp)
+                bo = float(b.open)
+                bh = float(b.high)
+                bl = float(b.low)
+                bc = float(b.close)
+                bv = float(b.volume)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if not (
+                math.isfinite(bt) and math.isfinite(bo) and math.isfinite(bh)
+                and math.isfinite(bl) and math.isfinite(bc) and math.isfinite(bv)
+            ):
+                continue
+            if bt <= 0.0 or bo <= 0.0 or bh <= 0.0 or bl <= 0.0 or bc <= 0.0 or bv < 0.0:
+                continue
+            buckets.append({"t": bt, "o": bo, "h": bh, "l": bl, "c": bc, "v": bv})
+        if not buckets:
+            logger.debug("MTF 1h history seed skipped (no valid bars).")
+            return
         buckets.sort(key=lambda b: b["t"])
-        if time.time() - buckets[-1]["t"] > MTF_SEED_STALE_SEC:
+        last_t = buckets[-1]["t"]
+        if not math.isfinite(last_t) or (time.time() - last_t) > MTF_SEED_STALE_SEC:
             logger.debug("MTF 1h history seed skipped (last bar too old).")
             return
         if len(buckets) < MultiTimeframeEngine.MIN_HTF_BARS:
@@ -146,6 +164,7 @@ class IndicatorEngineMixin:
         high: Optional[Decimal] = None,
         low: Optional[Decimal] = None,
         open_: Optional[Decimal] = None,
+        volume: Optional[Decimal] = None,
     ) -> None:
         """Aggregates a bar or tick into its 1m candle, updates MTF regimes, and queues/persists closed bars."""
         c = float(close)
@@ -155,17 +174,38 @@ class IndicatorEngineMixin:
             return
         if c <= 0.0 or h <= 0.0 or lo <= 0.0:
             return
+        vol_f: Optional[float] = None
+        if volume is not None:
+            try:
+                vf = float(volume)
+                if math.isfinite(vf) and vf >= 0.0:
+                    vol_f = vf
+            except (TypeError, ValueError):
+                vol_f = None
         minute = float(int(ts // 60) * 60)
+        bar_h = max(h, lo)
+        bar_l = min(h, lo)
         if self.candles and minute < self.candles[-1]["t"]:
             return
         if self.candles and self.candles[-1]["t"] == minute:
             cur = self.candles[-1]
-            cur["h"] = max(cur["h"], h)
-            cur["l"] = min(cur["l"], lo)
+            cur["h"] = max(cur["h"], bar_h)
+            cur["l"] = min(cur["l"], bar_l)
             cur["c"] = c
+            if vol_f is not None:
+                cur["v"] = vol_f
         elif not self.candles or minute > self.candles[-1]["t"]:
             o = float(open_) if (open_ is not None and math.isfinite(float(open_)) and float(open_) > 0.0) else (self.candles[-1]["c"] if self.candles else c)
-            self.candles.append({"t": minute, "o": o, "h": max(h, o), "l": min(lo, o), "c": c})
+            bar_dict: Dict[str, float] = {
+                "t": minute,
+                "o": o,
+                "h": max(bar_h, o) if high is None else bar_h,
+                "l": min(bar_l, o) if low is None else bar_l,
+                "c": c,
+            }
+            if vol_f is not None:
+                bar_dict["v"] = vol_f
+            self.candles.append(bar_dict)
             if len(self.candles) > self.max_candles:
                 del self.candles[:-self.max_candles]
             self._ind_prefix_cache = None
@@ -184,33 +224,36 @@ class IndicatorEngineMixin:
                         except Exception as e:
                             logger.debug("SQLite candle save skipped: %s", e)
 
-    def _recompute_orb_range(self, cs: List[Dict[str, float]]) -> None:
+    def _recompute_orb_range(self, cs: List[Dict[str, float]], has_forming_bar: bool = False) -> None:
         if not cs:
             return
-        day = datetime.fromtimestamp(float(cs[-1]["t"]), timezone.utc).date()
-        if self._orb_session_day != day:
-            self._orb_session_day = day
-            self._orb_range_frozen = False
+        last_ts = float(cs[-1]["t"])
+        day_idx = int(last_ts // 86400)
+        prev_day_idx = getattr(self, "_orb_session_day_idx", None)
+        if prev_day_idx != day_idx:
+            day = datetime.fromtimestamp(last_ts, timezone.utc).date()
+            if self._orb_session_day != day:
+                self._orb_session_day = day
+                self._orb_range_frozen = False
+            self._orb_session_day_idx = day_idx
         if self._orb_range_frozen:
             return
-        day_bars = [
-            b for b in cs
-            if datetime.fromtimestamp(float(b["t"]), timezone.utc).date() == day
-        ]
+        day_bars = [b for b in cs if int(float(b["t"]) // 86400) == day_idx]
         if not day_bars:
             return
         first_15 = day_bars[:15]
         self.live_orb_high = Decimal(str(round(max(x["h"] for x in first_15), 2)))
         self.live_orb_low = Decimal(str(round(min(x["l"] for x in first_15), 2)))
-        if len(day_bars) >= 15:
+        freeze_at = 16 if has_forming_bar else 15
+        if len(day_bars) >= freeze_at:
             self._orb_range_frozen = True
 
-    def _recompute_candle_indicators(self, period: int = 14) -> None:
+    def _recompute_candle_indicators(self, period: int = 14, has_forming_bar: bool = False) -> None:
         """Wilder RSI(14), ATR(14), ORB range, and session typical-price mean (O(1) cached over closed bars)."""
         cs = self.candles
         if not cs:
             return
-        self._recompute_orb_range(cs)
+        self._recompute_orb_range(cs, has_forming_bar=has_forming_bar)
 
         n = len(cs)
         last_bar = cs[-1]

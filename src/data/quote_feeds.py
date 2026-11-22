@@ -169,19 +169,21 @@ class QuoteFeedsMixin:
                     pair_key = next(iter(k_res.keys()))
                     k = k_res[pair_key]
                     price = Decimal(str(k["c"][0]))
-                    open_p = Decimal(str(k["o"]))
-                    chg = (
-                        ((price - open_p) / open_p) * Decimal("100")
-                        if (price.is_finite() and open_p.is_finite() and open_p > 0)
-                        else Decimal("0.00")
-                    )
+                    chg = Decimal("0.00")
+                    if "o" in k and k["o"] is not None:
+                        try:
+                            open_p = Decimal(str(k["o"]))
+                            if price.is_finite() and open_p.is_finite() and open_p > 0:
+                                chg = ((price - open_p) / open_p) * Decimal("100")
+                        except Exception:
+                            chg = Decimal("0.00")
                     return self._validated_quote(
                         price_raw=k["c"][0],
-                        bid_raw=k["b"][0],
-                        ask_raw=k["a"][0],
-                        high_raw=k["h"][1],
-                        low_raw=k["l"][1],
-                        vol_raw=k["v"][1],
+                        bid_raw=k["b"][0] if isinstance(k.get("b"), list) and k["b"] else None,
+                        ask_raw=k["a"][0] if isinstance(k.get("a"), list) and k["a"] else None,
+                        high_raw=k["h"][1] if isinstance(k.get("h"), list) and len(k["h"]) > 1 else None,
+                        low_raw=k["l"][1] if isinstance(k.get("l"), list) and len(k["l"]) > 1 else None,
+                        vol_raw=k["v"][1] if isinstance(k.get("v"), list) and len(k["v"]) > 1 else None,
                         chg_raw=chg,
                         source="Kraken Live",
                     )
@@ -212,20 +214,22 @@ class QuoteFeedsMixin:
                 high_24: Any = price
                 low_24: Any = price
                 chg_pct: Any = Decimal("0.00")
-                try:
-                    r_stats = self._session_get(
-                        f"https://api.exchange.coinbase.com/products/{pairs['coinbase']}/stats",
-                        timeout=1.2,
-                    )
-                    if r_stats.status_code == 200:
-                        s_data = r_stats.json()
-                        open_24 = Decimal(str(s_data.get("open", price)))
-                        high_24 = s_data.get("high", price)
-                        low_24 = s_data.get("low", price)
-                        if open_24.is_finite() and open_24 > Decimal("0"):
-                            chg_pct = ((price - open_24) / open_24) * Decimal("100")
-                except Exception as stats_err:
-                    logger.debug("Coinbase stats optional fetch skipped (%s): %s", pairs["coinbase"], stats_err)
+                stop_ev = getattr(self, "_stop_event", None)
+                if stop_ev is None or not stop_ev.is_set():
+                    try:
+                        r_stats = self._session_get(
+                            f"https://api.exchange.coinbase.com/products/{pairs['coinbase']}/stats",
+                            timeout=1.0,
+                        )
+                        if r_stats.status_code == 200:
+                            s_data = r_stats.json()
+                            open_24 = Decimal(str(s_data.get("open", price)))
+                            high_24 = s_data.get("high", price)
+                            low_24 = s_data.get("low", price)
+                            if open_24.is_finite() and open_24 > Decimal("0"):
+                                chg_pct = ((price - open_24) / open_24) * Decimal("100")
+                    except Exception as stats_err:
+                        logger.debug("Coinbase stats optional fetch skipped (%s): %s", pairs["coinbase"], stats_err)
                 return self._validated_quote(
                     price_raw=t_data["price"],
                     bid_raw=t_data.get("bid"),
@@ -264,15 +268,18 @@ class QuoteFeedsMixin:
                 return self.latest_quote
 
         providers = ["binance", "kraken", "coinbase"]
-        if self.preferred_quote_provider in providers:
-            providers.remove(self.preferred_quote_provider)
-            providers.insert(0, self.preferred_quote_provider)
-
         lock = getattr(self, "_session_lock", None)
         if lock is not None:
             with lock:
+                pref = self.preferred_quote_provider
+                if pref in providers:
+                    providers.remove(pref)
+                    providers.insert(0, pref)
                 active_providers = [p for p in providers if self._quote_provider_cooldown.get(p, 0.0) <= now]
         else:
+            if self.preferred_quote_provider in providers:
+                providers.remove(self.preferred_quote_provider)
+                providers.insert(0, self.preferred_quote_provider)
             active_providers = [p for p in providers if self._quote_provider_cooldown.get(p, 0.0) <= now]
         if not active_providers:
             return self._offline_quote()

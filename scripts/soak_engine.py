@@ -187,8 +187,8 @@ def do_slice(eng, price, prev_price, slot):
             if not eng.live_trading_active:
                 eng.live_trading_active = True
                 if not eng.live_start_ts:
-                    eng.live_start_ts = time.time()
-                eng.last_evolve_ts = time.time()
+                    eng.live_start_ts = float(slot)
+                eng.last_evolve_ts = float(slot)
                 eng._ensure_active_live_positions(price, float(slot))
                 eng._harvest_fills()
             fills = eng.broker.on_tick(
@@ -384,6 +384,10 @@ def main():
     def _sample(tick_i, note=""):
         cur, peak = tracemalloc.get_traced_memory()
         hist_path = os.path.join(MEM_DIR, "arena_history.json")
+        hist_entries = 0
+        if os.path.exists(hist_path):
+            with open(hist_path, encoding="utf-8") as hf:
+                hist_entries = len(json.load(hf))
         samples.append({
             "tick": tick_i, "sim_seconds": tick_i,
             "wall_sec": round(time.perf_counter() - t_run0, 1),
@@ -393,9 +397,7 @@ def main():
             "structures": structure_sizes(eng),
             "db": db_stats(DB_PATH),
             "db_memory": db_stats(os.path.join(MEM_DIR, "arena_history.db")),
-            "arena_history_json_entries": (
-                len(json.load(open(hist_path, encoding="utf-8")))
-                if os.path.exists(hist_path) else 0),
+            "arena_history_json_entries": hist_entries,
             "note": note,
         })
 
@@ -417,6 +419,8 @@ def main():
                 closes_in_window, last_seq = closing_fills_since(storage, last_seq)
                 n_fills_window = len(eng.fill_records) - fills_before_evolve
                 logs = eng.evolve_now(trigger=f"auto:{reason}")
+                # Align last_evolve_ts back to the accelerated sim clock (evolve_now stamps wall time).
+                eng.last_evolve_ts = float(slot)
                 gen_after = max(c.genome.generation for c in eng.competitors)
                 problems = {c.portfolio_id: genome_valid(c) for c in eng.competitors}
                 problems = {k: v for k, v in problems.items() if v}
@@ -581,8 +585,12 @@ def main():
     agreement = {}
     try:
         hist_path = os.path.join(MEM_DIR, "arena_history.json")
-        json_gens = [e.get("generation") for e in json.load(open(hist_path, encoding="utf-8"))] if os.path.exists(hist_path) else []
-        mem_storage = ArenaStorage(db_path=os.path.join(MEM_DIR, "arena_history.db"))
+        if os.path.exists(hist_path):
+            with open(hist_path, encoding="utf-8") as hf:
+                json_gens = [e.get("generation") for e in json.load(hf)]
+        else:
+            json_gens = []
+        mem_storage = ArenaStorage(db_path=DB_PATH)
         sql_gens = [r["generation"] for r in mem_storage.load_evolution_history(limit=500)]
         try:
             mem_storage.close()
@@ -674,8 +682,9 @@ def main():
         breaker["reentry_after_evolve_fill"] = eng_b.broker.submit_order(ticket3) is not None
         fills_after = len(eng_b.fill_records)
         prev2 = Decimal("2300.00")
+        rng_resume = random.Random(SEED + 99)
         for k in range(10):
-            px = prev2 + Decimal(str(random.Random(SEED + 99).uniform(-5, 5))).quantize(Decimal("0.01"))
+            px = prev2 + Decimal(str(rng_resume.uniform(-5, 5))).quantize(Decimal("0.01"))
             with eng_b.lock:
                 eng_b.broker.on_tick(price=px, high=max(px, prev2), low=min(px, prev2),
                                      timestamp=time.time(), open_price=prev2)
@@ -702,6 +711,9 @@ def main():
         pass
     result["rss_end_mb"] = round(rss_mb(), 2)
     result["peak_rss_mb"] = round(_win_mem()[1], 2)
+    out_parent = os.path.dirname(os.path.abspath(ARGS.out))
+    if out_parent:
+        os.makedirs(out_parent, exist_ok=True)
     with open(ARGS.out, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False, default=str)
     print(json.dumps({k: v for k, v in result.items() if k not in ("samples", "tracemalloc_top_growth")}, indent=2, ensure_ascii=False, default=str))

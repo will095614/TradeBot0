@@ -17,6 +17,12 @@ if /I "%~1"=="cli" goto :run_cli
 if /I "%~1"=="evolve" goto :run_evolve
 if /I "%~1"=="pytest" goto :run_pytest
 if /I "%~1"=="all" goto :run_all
+if not "%~1"=="" (
+    echo [ERROR] Unknown command: "%~1"
+    echo         Valid commands: gui, self-test, cli, evolve, pytest, all
+    popd
+    exit /b 2
+)
 
 :menu
 echo.
@@ -115,10 +121,11 @@ echo [2/3] Running main.py --self-test...
 "%VENV_PY%" "%~dp0main.py" --self-test
 if errorlevel 1 exit /b 1
 echo [3/3] Running pytest suite ^(dev scope; skipping build-artifact checks^)...
-if exist "%TEMP%\tb0_pytest_run" rmdir /s /q "%TEMP%\tb0_pytest_run" >nul 2>&1
-"%VENV_PY%" -m pytest -q tests -k "not test_system_config_is_untracked_but_present_on_disk and not test_launchers_and_shortcut_integrity" --basetemp="%TEMP%\tb0_pytest_run"
+set "PYTEST_TMP=%TEMP%\tb0_pytest_run_%RANDOM%_%RANDOM%"
+if exist "%PYTEST_TMP%" rmdir /s /q "%PYTEST_TMP%" >nul 2>&1
+"%VENV_PY%" -m pytest -q tests -k "not test_system_config_is_untracked_but_present_on_disk and not test_launchers_and_shortcut_integrity" --basetemp="%PYTEST_TMP%"
 set "PYTEST_RC=%ERRORLEVEL%"
-if exist "%TEMP%\tb0_pytest_run" rmdir /s /q "%TEMP%\tb0_pytest_run" >nul 2>&1
+if exist "%PYTEST_TMP%" rmdir /s /q "%PYTEST_TMP%" >nul 2>&1
 exit /b %PYTEST_RC%
 
 :finish

@@ -45,7 +45,35 @@ class MultiTimeframeEngine:
         return round(ema, 2)
 
     @staticmethod
+    def _upsert_bucket_parsed(
+        bucket_list: List[Dict[str, float]],
+        bucket_seconds: int,
+        ts: float,
+        o: float,
+        h: float,
+        lo: float,
+        c: float,
+        v: float,
+        max_len: int,
+    ) -> None:
+        bar_h = max(o, h, lo, c)
+        bar_l = min(o, h, lo, c)
+        slot = float(int(ts // bucket_seconds) * bucket_seconds)
+
+        if bucket_list and bucket_list[-1]["t"] == slot:
+            cur = bucket_list[-1]
+            cur["h"] = max(cur["h"], bar_h)
+            cur["l"] = min(cur["l"], bar_l)
+            cur["c"] = c
+            cur["v"] = cur.get("v", 0.0) + v
+        elif not bucket_list or slot > bucket_list[-1]["t"]:
+            bucket_list.append({"t": slot, "o": o, "h": bar_h, "l": bar_l, "c": c, "v": v})
+            if len(bucket_list) > max_len:
+                del bucket_list[:-max_len]
+
+    @classmethod
     def _upsert_bucket(
+        cls,
         bucket_list: List[Dict[str, float]],
         bucket_seconds: int,
         bar_1m: Dict[str, Any],
@@ -64,19 +92,7 @@ class MultiTimeframeEngine:
             return
         if o <= 0.0 or h <= 0.0 or lo <= 0.0 or c <= 0.0:
             return
-        v = max(0.0, v)
-        slot = float(int(ts // bucket_seconds) * bucket_seconds)
-
-        if bucket_list and bucket_list[-1]["t"] == slot:
-            cur = bucket_list[-1]
-            cur["h"] = max(cur["h"], h)
-            cur["l"] = min(cur["l"], lo)
-            cur["c"] = c
-            cur["v"] = cur.get("v", 0.0) + v
-        elif not bucket_list or slot > bucket_list[-1]["t"]:
-            bucket_list.append({"t": slot, "o": o, "h": h, "l": lo, "c": c, "v": v})
-            if len(bucket_list) > max_len:
-                del bucket_list[:-max_len]
+        cls._upsert_bucket_parsed(bucket_list, bucket_seconds, ts, o, h, lo, c, max(0.0, v), max_len)
 
     def update_from_1m_bar(self, new_1m_bar: Dict[str, Any], recompute: bool = True) -> str:
         """
@@ -104,20 +120,20 @@ class MultiTimeframeEngine:
         if ts == self._last_1m_ts:
             delta_v = max(0.0, v - self._last_1m_vol)
             self._last_1m_vol = max(self._last_1m_vol, v)
-            bar_for_agg = dict(new_1m_bar, v=delta_v)
+            agg_v = delta_v
         elif ts > self._last_1m_ts:
             self._last_1m_ts = ts
             self._last_1m_vol = v
-            bar_for_agg = new_1m_bar
+            agg_v = v
         else:
             # Ignore out-of-order older 1m bars if we already have higher buckets past them.
             return self.htf_bias
 
         prev_1h_len = len(self.candles_1h)
         prev_1h_tail_t = self.candles_1h[-1]["t"] if prev_1h_len else -1.0
-        self._upsert_bucket(self.candles_5m, 300, bar_for_agg, self.max_htf_bars)
-        self._upsert_bucket(self.candles_15m, 900, bar_for_agg, self.max_htf_bars)
-        self._upsert_bucket(self.candles_1h, 3600, bar_for_agg, self.max_htf_bars)
+        self._upsert_bucket_parsed(self.candles_5m, 300, ts, o, h, lo, c, agg_v, self.max_htf_bars)
+        self._upsert_bucket_parsed(self.candles_15m, 900, ts, o, h, lo, c, agg_v, self.max_htf_bars)
+        self._upsert_bucket_parsed(self.candles_1h, 3600, ts, o, h, lo, c, agg_v, self.max_htf_bars)
         if len(self.candles_1h) != prev_1h_len or (self.candles_1h and self.candles_1h[-1]["t"] != prev_1h_tail_t):
             self._ema_prefix_cache = None
         return self.recompute_regime() if recompute else self.htf_bias
@@ -167,6 +183,8 @@ class MultiTimeframeEngine:
             else:
                 self.htf_bias = "NEUTRAL"
         else:
+            self.htf_ema_50 = 0.0
+            self.htf_ema_200 = 0.0
             self.htf_bias = "NEUTRAL"
         return self.htf_bias
 

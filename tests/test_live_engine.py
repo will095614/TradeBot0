@@ -1464,9 +1464,10 @@ def test_bootstrap_hydrates_fresh_sqlite_candles(monkeypatch):
         assert kwargs["volume"] == Decimal("15.0"), i
         assert kwargs["rsi"] == Decimal("50.00"), i
         assert kwargs["atr"] == Decimal("12.00"), i
-    # Indicators come from the last bar's fills; ORB / mean from the bars.
-    assert engine.live_rsi == Decimal("50.00")
-    assert engine.live_atr == Decimal("12.00")
+    # Indicators are recomputed via Wilder RSI/ATR from the hydrated bars
+    # (120 monotonic +1 bars with H=C+5, L=C-5 -> RSI=100.00, ATR=10.00).
+    assert engine.live_rsi == Decimal("100.00")
+    assert engine.live_atr == Decimal("10.00")
     assert engine.live_orb_high == Decimal("3519.00")  # max high, first 15 bars
     assert engine.live_orb_low == Decimal("3495.00")   # min low, first 15 bars
     assert engine.live_typical_mean == Decimal("3559.50")  # mean of 3500..3619

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import copy
+from dataclasses import replace
 from decimal import Decimal
 import logging
 import math
@@ -16,6 +18,7 @@ from src.arena.broker_sim import BrokerSim
 from src.arena.evolution import GeneticEvolver
 from src.arena.leaderboard import Leaderboard
 from src.arena.order import ExecutionReason, FillEvent, OrderSide, OrderTicket, OrderType, PositionSide
+from src.arena.portfolio import _SliceableDeque
 from src.competitors.aggressive import AggressiveCompetitor
 from src.competitors.conservative import ConservativeCompetitor
 from src.competitors.orb import ORBCompetitor
@@ -89,6 +92,8 @@ class LiveArenaEngine(
         self._snapshot_lock = threading.Lock()
         self._session_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
+        self._quote_lock = threading.Lock()
+        self._evolve_lock = threading.Lock()
         self._ui_state_snapshot: Optional[Dict[str, Any]] = None
         self.market_online: bool = False
         self.is_bootstrapped: bool = False
@@ -138,10 +143,10 @@ class LiveArenaEngine(
 
         # Strategy live telemetry descriptions
         self.strategy_telemetry: Dict[str, Dict[str, Any]] = {}
-        self.tick_timestamps: List[str] = []
-        self.eth_price_series: List[float] = []
-        self.ema_fast_series: List[float] = []
-        self.ema_slow_series: List[float] = []
+        self.tick_timestamps: List[str] = _SliceableDeque(maxlen=180)  # type: ignore[assignment]
+        self.eth_price_series: List[float] = _SliceableDeque(maxlen=180)  # type: ignore[assignment]
+        self.ema_fast_series: List[float] = _SliceableDeque(maxlen=180)  # type: ignore[assignment]
+        self.ema_slow_series: List[float] = _SliceableDeque(maxlen=180)  # type: ignore[assignment]
         self.live_logs: List[Dict[str, str]] = []
         self.latest_quote: Optional[LiveQuote] = None
         self.tick_count: int = 0
@@ -154,6 +159,7 @@ class LiveArenaEngine(
         self.live_orb_low: Decimal = Decimal("0.00")
         self._orb_range_frozen: bool = False
         self._orb_session_day = None
+        self._orb_session_day_idx: Optional[int] = None
 
         # 1-minute OHLC candles for charting & live RSI/ATR
         self.candles: List[Dict[str, float]] = []
@@ -182,6 +188,7 @@ class LiveArenaEngine(
         self.autosave_interval_sec: float = 60.0
         self._last_autosave_ts: float = time.time()
         self._autosave_pending: bool = False
+        self._autosave_retry_after: float = 0.0
         self._closed_trades_since_evolve: int = 0
         self.live_chop_gate_blocked: int = 0
         self.evolution_events: List[Dict[str, Any]] = []
@@ -240,13 +247,20 @@ class LiveArenaEngine(
         return ETHFeed.fetch_historical_bars(ticker=ticker, period=period, interval=interval)
 
     def _handle_ws_quote(self, quote: LiveQuote) -> None:
-        """Callback invoked by StreamingCryptoFeed when a real-time WebSocket tick arrives."""
-        with self.lock:
-            self.latest_quote = quote
+        """Callback invoked by StreamingCryptoFeed when a real-time WebSocket tick arrives.
+
+        Uses dedicated _quote_lock so the WebSocket asyncio loop is never blocked by
+        main engine lock contention (Monte Carlo, indicator recompute, snapshot builds).
+        """
+        if self._stop_event.is_set():
+            return
+        with self._quote_lock:
             self._raw_quote_cache = quote
             self._slice_ticks.append(quote)
             if len(self._slice_ticks) > 1200:
                 del self._slice_ticks[:-1200]
+            if self.latest_quote is None and not self._paused:
+                self.latest_quote = quote
 
     def _is_current_generation(self) -> bool:
         """Generation fence: True only while this engine instance is the active generation."""
@@ -309,25 +323,30 @@ class LiveArenaEngine(
                 self.broker.execution_audit = self.broker.execution_audit[self._audit_cursor:]
                 self._audit_cursor = 0
 
-    def _flush_sql_queues(self) -> None:
-        """Flushes deferred SQLite candle and fill writes outside self.lock."""
+    def _flush_sql_queues(self, allow_when_stopping: bool = False) -> None:
+        """Flushes deferred SQLite candle and fill writes outside self.lock under epoch fence."""
         with self.lock:
             candles = list(self._pending_sql_candles)
             fills = list(self._pending_sql_fills)
             self._pending_sql_candles.clear()
             self._pending_sql_fills.clear()
-        if not self._is_current_generation():
+        if not candles and not fills:
             return
-        if candles:
-            try:
-                self.storage.save_candles_batch(candles)
-            except Exception as e:
-                logger.debug("SQLite candle batch save skipped: %s", e)
-        if fills:
-            try:
-                self.storage.record_fills_batch(fills)
-            except Exception as e:
-                logger.debug("SQLite fill batch record skipped: %s", e)
+        with SessionCodecMixin._persistence_epoch_lock:
+            if not self._is_current_generation():
+                return
+            if not allow_when_stopping and self._stop_event.is_set():
+                return
+            if candles:
+                try:
+                    self.storage.save_candles_batch(candles)
+                except Exception as e:
+                    logger.debug("SQLite candle batch save skipped: %s", e)
+            if fills:
+                try:
+                    self.storage.record_fills_batch(fills)
+                except Exception as e:
+                    logger.debug("SQLite fill batch record skipped: %s", e)
 
     def _init_broker(self) -> None:
         self.broker = BrokerSim(symbol=self.symbol, slippage_pct=Decimal("0.0001"))
@@ -515,10 +534,15 @@ class LiveArenaEngine(
                 self.live_atr = max(Decimal("5.00"), bar.atr or Decimal("12.00"))
                 self.broker.current_atr = self.live_atr
 
-                self._update_candle(float(bar.timestamp), bar.close, bar.high, bar.low, bar.open)
+                self._update_candle(
+                    float(bar.timestamp), bar.close, bar.high, bar.low, bar.open, volume=bar.volume
+                )
                 self._record_series_point(bar.close, bar.timestamp)
 
-            self._recompute_orb_range(self.candles)
+            if len(self.candles) >= 15:
+                self._recompute_candle_indicators()
+            else:
+                self._recompute_orb_range(self.candles)
 
             if recent_bars:
                 self.live_typical_mean = (
@@ -579,18 +603,21 @@ class LiveArenaEngine(
                         if comp.portfolio.position_qty > Decimal("0"):
                             comp.portfolio.current_market_price = last_price
 
-        if candles_to_save and not self._stop_event.is_set() and self._is_current_generation():
-            try:
-                self.storage.save_candles_batch(candles_to_save)
-            except Exception as e:
-                logger.debug("SQLite candle batch save skipped: %s", e)
+        if candles_to_save:
+            with SessionCodecMixin._persistence_epoch_lock:
+                if not self._stop_event.is_set() and self._is_current_generation():
+                    try:
+                        self.storage.save_candles_batch(candles_to_save)
+                    except Exception as e:
+                        logger.debug("SQLite candle batch save skipped: %s", e)
 
-        if not self._stop_event.is_set() and self._is_current_generation():
-            try:
-                self.storage.prune_old_candles()
-                self._last_candle_prune_ts = time.time()
-            except Exception as e:
-                logger.debug("SQLite candle prune skipped during bootstrap: %s", e)
+        with SessionCodecMixin._persistence_epoch_lock:
+            if not self._stop_event.is_set() and self._is_current_generation():
+                try:
+                    self.storage.prune_old_candles()
+                    self._last_candle_prune_ts = time.time()
+                except Exception as e:
+                    logger.debug("SQLite candle prune skipped during bootstrap: %s", e)
 
         if should_try_restore and not self._stop_event.is_set():
             try:
@@ -615,7 +642,9 @@ class LiveArenaEngine(
 
             self.published_candles = [dict(c) for c in self.candles]
             self.published_quote = self.latest_quote
-            self._raw_quote_cache = self.latest_quote
+            with self._quote_lock:
+                if self._raw_quote_cache is None:
+                    self._raw_quote_cache = self.latest_quote
             self.last_cadence_ts = time.time()
             self.last_cadence_slot = math.floor(self.last_cadence_ts / self.cadence_sec) * self.cadence_sec
             self.macro_commander.ensure_traditional_chinese_seed_events()
@@ -656,7 +685,6 @@ class LiveArenaEngine(
                 return {"accepted": True, "reason": "Live trading already active", "restored": False}
 
             self.live_orders_enabled = True
-            self.live_trading_active = True
             if not self.live_start_ts:
                 self.live_start_ts = time.time()
 
@@ -669,10 +697,14 @@ class LiveArenaEngine(
                     self.fill_records.clear()
                     self._live_fill_seq_offset = 0
 
-                is_quote_online = self._is_quote_fresh(self.latest_quote)
+                with self._quote_lock:
+                    fresh_candidate = self._raw_quote_cache or self.latest_quote
+                is_quote_online = self._is_quote_fresh(fresh_candidate)
 
-                if is_quote_online and self.latest_quote is not None:
-                    quote_p = self.latest_quote.price
+                if not self._paused and is_quote_online and fresh_candidate is not None:
+                    self.live_trading_active = True
+                    quote_p = fresh_candidate.price
+                    self.latest_quote = fresh_candidate
                     if hasattr(self, "broker"):
                         self.broker.current_price = quote_p
                     self._ensure_active_live_positions(quote_p, self.live_start_ts)
@@ -680,18 +712,21 @@ class LiveArenaEngine(
                     self.log_event("ARENA_REVEALED", f"Arena initialization verified. Live order placement activated @ ${quote_p:,.2f}", "info")
                     self._publish_state_snapshot()
                     return {"accepted": True, "reason": "Live trading active", "restored": False}
+                # Leave live_trading_active=False so _live_loop dispatches LIVE_START once unpaused and online.
+                self.live_trading_active = False
                 self.log_event("ARENA_REVEALED", "Arena initialization verified. Live order placement active, awaiting live price ticks...", "info")
                 self._publish_state_snapshot()
                 return {"accepted": True, "reason": "Live trading active, awaiting online quote", "restored": False}
 
+            self.live_trading_active = True
             self._publish_state_snapshot()
             return {"accepted": True, "reason": "Live trading active with restored positions", "restored": True}
 
     def trigger_intel_refresh_async(self) -> bool:
         """Spawns a single tracked background thread to refresh macro intelligence."""
-        if self._stop_event.is_set() or not self._is_current_generation():
-            return False
         with self._intel_refresh_lock:
+            if self._stop_event.is_set() or not self._is_current_generation():
+                return False
             if self._is_refreshing_intel or (self._intel_thread is not None and self._intel_thread.is_alive()):
                 return False
             t = threading.Thread(target=self.refresh_intel_digest, daemon=True, name="IntelRefreshThread")
@@ -770,7 +805,7 @@ class LiveArenaEngine(
         self.ema_slow_series.append(float(self.live_ema_slow))
 
         max_pts = 180
-        if len(self.tick_timestamps) > max_pts:
+        if not isinstance(self.tick_timestamps, deque) and len(self.tick_timestamps) > max_pts:
             self.tick_timestamps = self.tick_timestamps[-max_pts:]
             self.eth_price_series = self.eth_price_series[-max_pts:]
             self.ema_fast_series = self.ema_fast_series[-max_pts:]
@@ -786,14 +821,12 @@ class LiveArenaEngine(
                 if not self.ws_feed.is_fresh():
                     fetch_started = time.time()
                     raw = self.fetch_realtime_crypto_quote()
-                    if raw and not raw.is_offline and raw.price > Decimal("0"):
-                        with self.lock:
+                    if raw and not raw.is_offline and raw.price > Decimal("0") and not self._paused:
+                        with self._quote_lock:
                             cur = self._raw_quote_cache
                             if cur is None or (raw.timestamp >= cur.timestamp and cur.timestamp <= fetch_started + 0.05):
                                 self._raw_quote_cache = raw
                                 self._slice_ticks.append(raw)
-                                if len(self._slice_ticks) > 1200:
-                                    del self._slice_ticks[:-1200]
             except Exception as e:
                 logger.debug("Background quote fetcher error: %s", e)
             self._stop_event.wait(1.0)
@@ -822,6 +855,16 @@ class LiveArenaEngine(
         with self._lifecycle_lock:
             self.running = False
             self._stop_event.set()
+            if hasattr(self.omniroute_client, "mark_shutting_down"):
+                try:
+                    self.omniroute_client.mark_shutting_down()
+                except Exception as e:
+                    logger.debug("OmniRouteClient shutdown marker failed: %s", e)
+            for task in list(self._bg_tasks):
+                try:
+                    task.get_loop().call_soon_threadsafe(task.cancel)
+                except Exception:
+                    pass
             self.ws_feed.stop()
             if self.worker_thread and self.worker_thread.is_alive():
                 self.worker_thread.join(timeout=timeout)
@@ -833,10 +876,13 @@ class LiveArenaEngine(
             if not raw_still_alive:
                 self.raw_fetch_thread = None
             bg_join = min(timeout, 1.5)
-            if self._intel_thread and self._intel_thread.is_alive():
-                self._intel_thread.join(timeout=bg_join)
-            if self._intel_thread and not self._intel_thread.is_alive():
-                self._intel_thread = None
+            with self._intel_refresh_lock:
+                intel_t = self._intel_thread
+            if intel_t and intel_t.is_alive():
+                intel_t.join(timeout=bg_join)
+            with self._intel_refresh_lock:
+                if self._intel_thread and not self._intel_thread.is_alive():
+                    self._intel_thread = None
             if self._mtf_seed_thread and self._mtf_seed_thread.is_alive():
                 self._mtf_seed_thread.join(timeout=bg_join)
             if self._mtf_seed_thread and not self._mtf_seed_thread.is_alive():
@@ -883,6 +929,8 @@ class LiveArenaEngine(
 
             while self.running and not self._stop_event.is_set():
                 if self.paused:
+                    if self._autosave_pending:
+                        self._maybe_autosave()
                     self._stop_event.wait(0.25)
                     continue
 
@@ -894,14 +942,18 @@ class LiveArenaEngine(
                     _evolve_reason: Optional[str] = None
                     _should_refresh_intel = False
                     try:
+                        with self._quote_lock:
+                            raw = self._raw_quote_cache
+                            ticks = list(self._slice_ticks)
+                            self._slice_ticks.clear()
                         with self.lock:
                             self._defer_sql_flush = True
                             try:
-                                if self._raw_quote_cache is None and self.latest_quote is not None:
-                                    self._raw_quote_cache = self.latest_quote
-                                raw = self._raw_quote_cache
-                                ticks = list(self._slice_ticks)
-                                self._slice_ticks.clear()
+                                if raw is None and self.latest_quote is not None:
+                                    raw = self.latest_quote
+                                    with self._quote_lock:
+                                        if self._raw_quote_cache is None:
+                                            self._raw_quote_cache = raw
 
                                 if self._is_quote_fresh(raw, now):
                                     if not self.market_online:
@@ -918,11 +970,13 @@ class LiveArenaEngine(
                                         high_p = max(t.price for t in ticks)
                                         low_p = min(t.price for t in ticks)
                                         close_p = ticks[-1].price
+                                        real_quote_ts = float(ticks[-1].timestamp)
                                     else:
                                         open_p = prev_p
                                         high_p = max(raw.price, raw.ask)
                                         low_p = min(raw.price, raw.bid)
                                         close_p = raw.price
+                                        real_quote_ts = float(raw.timestamp)
 
                                     cadenced_quote = LiveQuote(
                                         price=close_p,
@@ -933,7 +987,7 @@ class LiveArenaEngine(
                                         volume_24h=raw.volume_24h,
                                         change_24h_pct=raw.change_24h_pct,
                                         source=raw.source,
-                                        timestamp=float(current_slot),
+                                        timestamp=real_quote_ts,
                                         is_offline=False,
                                     )
                                     self.latest_quote = cadenced_quote
@@ -948,9 +1002,9 @@ class LiveArenaEngine(
                                         low=low_p,
                                         open_=open_p,
                                     )
-                                    self._recompute_candle_indicators()
+                                    self._recompute_candle_indicators(has_forming_bar=True)
 
-                                    # Publish candle slices on the 1.0-second cadence heartbeat (incremental tail update)
+                                    # Publish candle slices on the 1.0-second cadence heartbeat (O(1) tail update)
                                     if (
                                         self.published_candles
                                         and self.candles
@@ -958,7 +1012,7 @@ class LiveArenaEngine(
                                         and self.published_candles[-1]["t"] == self.candles[-1]["t"]
                                         and self.published_candles[0]["t"] == self.candles[0]["t"]
                                     ):
-                                        self.published_candles = self.published_candles[:-1] + [dict(self.candles[-1])]
+                                        self.published_candles[-1] = dict(self.candles[-1])
                                     else:
                                         self.published_candles = [dict(c) for c in self.candles]
                                     self.last_cadence_ts = float(current_slot)
@@ -1020,6 +1074,8 @@ class LiveArenaEngine(
                                     self._record_series_point(cadenced_quote.price, float(current_slot))
                                 elif self.market_online:
                                     self.market_online = False
+                                    if self.latest_quote is not None and not self.latest_quote.is_offline:
+                                        self.latest_quote = replace(self.latest_quote, is_offline=True)
                                     self.log_event("FEED_OFFLINE", "Market feed offline: trading paused, waiting to reconnect...", "loss")
 
                                 if self.live_orders_enabled:
@@ -1040,19 +1096,17 @@ class LiveArenaEngine(
                         # Flush deferred SQLite writes and auto-evolution outside self.lock (§3.2).
                         self._flush_sql_queues()
                         if _evolve_reason is not None:
-                            self.evolve_now(trigger=f"auto:{_evolve_reason}")
+                            self.evolve_now(trigger=f"auto:{_evolve_reason}", _from_auto_loop=True)
                         if _should_refresh_intel:
                             self.trigger_intel_refresh_async()
-                        if (
-                            (now - self._last_candle_prune_ts) >= 86400.0
-                            and not self._stop_event.is_set()
-                            and self._is_current_generation()
-                        ):
-                            self._last_candle_prune_ts = now
-                            try:
-                                self.storage.prune_old_candles()
-                            except Exception as prune_err:
-                                logger.debug("Periodic candle prune skipped: %s", prune_err)
+                        if (now - self._last_candle_prune_ts) >= 86400.0:
+                            with SessionCodecMixin._persistence_epoch_lock:
+                                if not self._stop_event.is_set() and self._is_current_generation():
+                                    self._last_candle_prune_ts = now
+                                    try:
+                                        self.storage.prune_old_candles()
+                                    except Exception as prune_err:
+                                        logger.debug("Periodic candle prune skipped: %s", prune_err)
 
                     except Exception as e:
                         self.log_event("FEED_WARN", f"Retrying live quote stream: {e}", "loss")
@@ -1061,13 +1115,15 @@ class LiveArenaEngine(
                 self._stop_event.wait(0.1)  # High-frequency poll to align cleanly with the cadence slot without drift
         finally:
             try:
-                self.ws_feed.stop()
-            except Exception as e:
-                logger.debug("WebSocket stop skipped during loop exit: %s", e)
-            try:
                 self._flush_sql_queues()
             except Exception as e:
                 logger.debug("Final SQL flush skipped during loop exit: %s", e)
+            self.running = False
+            self._stop_event.set()
+            try:
+                self.ws_feed.stop()
+            except Exception as e:
+                logger.debug("WebSocket stop skipped during loop exit: %s", e)
 
     @property
     def paused(self) -> bool:
@@ -1076,28 +1132,41 @@ class LiveArenaEngine(
     @paused.setter
     def paused(self, value: bool) -> None:
         val = bool(value)
-        if getattr(self, "_paused", False) == val:
-            return
-        now = time.time()
+        changed = False
         with self.lock:
+            if getattr(self, "_paused", False) == val:
+                return
+            now = time.time()
             self._paused = val
+            changed = True
             if val:
                 self._pause_start_ts = now
                 self.log_event("ENGINE", "Simulation & Evolution Timer PAUSED", "info")
             else:
                 if getattr(self, "_pause_start_ts", None) is not None:
-                    paused_dur = max(0.0, now - self._pause_start_ts)
+                    p0 = self._pause_start_ts
+                    paused_dur = max(0.0, now - p0)
                     self.last_evolve_ts += paused_dur
+                    # Advance _auto_evolve_disabled_ts strictly by the overlap [max(p0, d0), now]
+                    # so neither double-counting nor lost disabled time can occur.
+                    if not self.auto_evolve_enabled and getattr(self, "_auto_evolve_disabled_ts", None) is not None:
+                        d0 = self._auto_evolve_disabled_ts
+                        overlap = max(0.0, now - max(p0, d0))
+                        self._auto_evolve_disabled_ts = d0 + overlap
                     for pid in list(self.position_entry_ts):
                         self.position_entry_ts[pid] += paused_dur
                     self._pause_start_ts = None
-                    self._slice_ticks.clear()
+                    with self._quote_lock:
+                        self._slice_ticks.clear()
                 self.log_event("ENGINE", "Simulation & Evolution Timer RESUMED", "info")
-        self._publish_state_snapshot()
+        if changed:
+            self._publish_state_snapshot()
 
     def toggle_pause(self) -> bool:
-        self.paused = not self.paused
-        return self.paused
+        with self.lock:
+            new_val = not self._paused
+            self.paused = new_val
+            return self._paused
 
     def _auto_evolve_reason(self, now: Optional[float] = None) -> Optional[str]:
         """Why auto-evolution is due now: 'time' (6h cap), 'trades' (30 closed + 30m debounce), or None."""
@@ -1127,8 +1196,13 @@ class LiveArenaEngine(
                 self._auto_evolve_disabled_ts = now
             else:
                 if getattr(self, "_auto_evolve_disabled_ts", None) is not None:
-                    disabled_dur = max(0.0, now - self._auto_evolve_disabled_ts)
-                    self.last_evolve_ts += disabled_dur
+                    d0 = self._auto_evolve_disabled_ts
+                    if self._paused and getattr(self, "_pause_start_ts", None) is not None:
+                        # While paused, only shift the non-overlapping disabled span before pause began;
+                        # leave _pause_start_ts untouched so unpausing shifts both last_evolve_ts and position_entry_ts accurately.
+                        self.last_evolve_ts += max(0.0, self._pause_start_ts - d0)
+                    else:
+                        self.last_evolve_ts += max(0.0, now - d0)
                     self._auto_evolve_disabled_ts = None
             hours = self.auto_evolve_interval_sec / 3600.0
             hrs_text = f"{hours:g}h" if hours >= 1 else f"{self.auto_evolve_interval_sec // 60}m"
@@ -1160,7 +1234,7 @@ class LiveArenaEngine(
         self._publish_state_snapshot()
         return self.intel_refresh_interval_sec
 
-    def evolve_now(self, trigger: str = "manual") -> List[str]:
+    def evolve_now(self, trigger: str = "manual", _from_auto_loop: bool = False) -> List[str]:
         if not self._is_current_generation():
             logger.warning("Stale engine epoch %.3f: refusing to evolve from a superseded generation", self.engine_epoch)
             return []
@@ -1168,75 +1242,82 @@ class LiveArenaEngine(
             logger.warning("Engine stopped: refusing to evolve after shutdown")
             return []
         records_to_save = None
-        with self.lock:
-            self._harvest_fills()
-            rankings = Leaderboard.get_rankings(self.broker.portfolios)
-            prev_gen = max(c.genome.generation for c in self.competitors)
-            short = self.STRATEGY_SHORT
-            parent_order = GeneticEvolver.parent_order(rankings)
-            kept = [short.get(r.portfolio_id, r.portfolio_id) for r in parent_order[:2]]
-            rebuilt = [short.get(r.portfolio_id, r.portfolio_id) for r in parent_order[2:]]
-            leader_roi = float(rankings[0].roi_pct) if rankings else 0.0
+        with self._evolve_lock:
+            with self.lock:
+                if not self._is_current_generation() or self._stop_event.is_set():
+                    return []
+                if _from_auto_loop and self._auto_evolve_reason() is None:
+                    return []
+                self._harvest_fills()
+                rankings = Leaderboard.get_rankings(self.broker.portfolios)
+                prev_gen = max(c.genome.generation for c in self.competitors)
+                short = self.STRATEGY_SHORT
+                parent_order = GeneticEvolver.parent_order(rankings)
+                kept = [short.get(r.portfolio_id, r.portfolio_id) for r in parent_order[:2]]
+                rebuilt = [short.get(r.portfolio_id, r.portfolio_id) for r in parent_order[2:]]
+                leader_roi = float(rankings[0].roi_pct) if rankings else 0.0
 
-            entropy = sum(int(c.portfolio.total_equity * 100) for c in self.competitors) + sum(
-                c.portfolio.total_fills for c in self.competitors
-            )
-            logs, records_to_save = GeneticEvolver.evolve_generation_with_records(
-                self.competitors,
-                rankings,
-                preserve_portfolio=True,
-                save_history=False,
-                seed_entropy=entropy,
-            )
-            for c in self.competitors:
-                self.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
+                entropy = sum(int(c.portfolio.total_equity * 100) for c in self.competitors) + sum(
+                    c.portfolio.total_fills for c in self.competitors
+                )
+                logs, records_to_save = GeneticEvolver.evolve_generation_with_records(
+                    self.competitors,
+                    rankings,
+                    preserve_portfolio=True,
+                    save_history=False,
+                    seed_entropy=entropy,
+                )
+                for c in self.competitors:
+                    self.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
 
-            now = time.time()
-            self.last_evolve_ts = now
-            self._closed_trades_since_evolve = 0
-            new_gen = max(c.genome.generation for c in self.competitors)
-            summary = (
-                f"Preserved {', '.join(kept)}; Mutated {', '.join(rebuilt)} from Top 2"
-                if rebuilt else "Genome Updated"
-            )
-            self.evolution_events.append({
-                "ts": now,
-                "time": time.strftime("%H:%M", time.localtime(now)),
-                "from_gen": prev_gen,
-                "to_gen": new_gen,
-                "trigger": trigger,
-                "leader_roi_pct": round(leader_roi, 2),
-                "summary": summary,
-            })
-            self.evolution_events = self.evolution_events[-24:]
+                now = time.time()
+                self.last_evolve_ts = now
+                if not self.auto_evolve_enabled and getattr(self, "_auto_evolve_disabled_ts", None) is not None:
+                    self._auto_evolve_disabled_ts = now
+                self._closed_trades_since_evolve = 0
+                new_gen = max(c.genome.generation for c in self.competitors)
+                summary = (
+                    f"Preserved {', '.join(kept)}; Mutated {', '.join(rebuilt)} from Top 2"
+                    if rebuilt else "Genome Updated"
+                )
+                self.evolution_events.append({
+                    "ts": now,
+                    "time": time.strftime("%H:%M", time.localtime(now)),
+                    "from_gen": prev_gen,
+                    "to_gen": new_gen,
+                    "trigger": trigger,
+                    "leader_roi_pct": round(leader_roi, 2),
+                    "summary": summary,
+                })
+                self.evolution_events = self.evolution_events[-24:]
 
-            if rankings:
-                top = rankings[0]
-                self.tv_champion = {
-                    "strategy_id": top.portfolio_id,
-                    "name": self.STRATEGY_DISPLAY.get(top.portfolio_id, top.name),
-                    "generation": prev_gen,
-                    "roi_pct": round(float(top.roi_pct), 2),
-                    "fitness": round(float(top.fitness_score), 2),
-                    "status": f"Gen #{prev_gen} Champion (Win Rate {float(top.win_rate_pct):.0f}%)",
-                }
-                self.log_event("TV_AUTOPILOT", f"TradingView Auto-Pilot: Locked previous hour champion '{self.tv_champion['name']}'", "info")
-                self.log_event("STRATEGY_SYNTHESIS", f"Generation #{new_gen} online. Champion: {top.name} (ROI {float(top.roi_pct):+.2f}%, Sharpe {top.sharpe_ratio:+.2f})", "info")
+                if rankings:
+                    top = rankings[0]
+                    self.tv_champion = {
+                        "strategy_id": top.portfolio_id,
+                        "name": self.STRATEGY_DISPLAY.get(top.portfolio_id, top.name),
+                        "generation": prev_gen,
+                        "roi_pct": round(float(top.roi_pct), 2),
+                        "fitness": round(float(top.fitness_score), 2),
+                        "status": f"Gen #{prev_gen} Champion (Win Rate {float(top.win_rate_pct):.0f}%)",
+                    }
+                    self.log_event("TV_AUTOPILOT", f"TradingView Auto-Pilot: Locked previous hour champion '{self.tv_champion['name']}'", "info")
+                    self.log_event("STRATEGY_SYNTHESIS", f"Generation #{new_gen} online. Champion: {top.name} (ROI {float(top.roi_pct):+.2f}%, Sharpe {top.sharpe_ratio:+.2f})", "info")
 
-            for line in logs:
-                self.log_event("EVOLVE", line, "evolve")
+                for line in logs:
+                    self.log_event("EVOLVE", line, "evolve")
 
-        if records_to_save and records_to_save[0] and records_to_save[1]:
-            try:
-                with SessionCodecMixin._persistence_epoch_lock:
-                    if not self._stop_event.is_set() and self._is_current_generation():
-                        GeneticEvolver.save_history(records_to_save[0], records_to_save[1], storage=self.storage)
-            except Exception as e:
-                logger.warning("Failed to persist evolution history outside lock: %s", e)
+            if records_to_save and records_to_save[0] and records_to_save[1]:
+                try:
+                    with SessionCodecMixin._persistence_epoch_lock:
+                        if not self._stop_event.is_set() and self._is_current_generation():
+                            GeneticEvolver.save_history(records_to_save[0], records_to_save[1], storage=self.storage)
+                except Exception as e:
+                    logger.warning("Failed to persist evolution history outside lock: %s", e)
 
-        self._autosave_pending = True
-        self._publish_state_snapshot()
-        return logs
+            self._autosave_pending = True
+            self._publish_state_snapshot()
+            return logs
 
     STRATEGY_COLORS: Dict[str, str] = {
         "comp_agg": "#FF334B",
@@ -1299,25 +1380,25 @@ class LiveArenaEngine(
             "live_orders_enabled": self.live_orders_enabled,
             "candle_count": len(self.candles),
             "quote": {
-                "price": float(q.price) if q else 0.0,
-                "bid": float(q.bid) if q else 0.0,
-                "ask": float(q.ask) if q else 0.0,
-                "high_24h": float(q.high_24h) if q else 0.0,
-                "low_24h": float(q.low_24h) if q else 0.0,
-                "volume_24h": float(q.volume_24h) if q else 0.0,
-                "change_24h_pct": float(q.change_24h_pct) if q else 0.0,
+                "price": self._finite(q.price) if q else 0.0,
+                "bid": self._finite(q.bid) if q else 0.0,
+                "ask": self._finite(q.ask) if q else 0.0,
+                "high_24h": self._finite(q.high_24h) if q else 0.0,
+                "low_24h": self._finite(q.low_24h) if q else 0.0,
+                "volume_24h": self._finite(q.volume_24h) if q else 0.0,
+                "change_24h_pct": self._finite(q.change_24h_pct) if q else 0.0,
                 "source": q.source if q else "Connecting...",
                 "timestamp": time.strftime("%H:%M:%S", time.localtime(q.timestamp)) if q else "",
                 "is_offline": q.is_offline if q else True,
             },
             "indicators": {
-                "ema_fast": float(self.live_ema_fast),
-                "ema_slow": float(self.live_ema_slow),
-                "typical_mean": float(self.live_typical_mean),
-                "orb_high": float(self.live_orb_high),
-                "orb_low": float(self.live_orb_low),
-                "rsi": float(self.live_rsi),
-                "atr": float(self.live_atr),
+                "ema_fast": self._finite(self.live_ema_fast),
+                "ema_slow": self._finite(self.live_ema_slow),
+                "typical_mean": self._finite(self.live_typical_mean),
+                "orb_high": self._finite(self.live_orb_high),
+                "orb_low": self._finite(self.live_orb_low),
+                "rsi": self._finite(self.live_rsi, 50.0),
+                "atr": self._finite(self.live_atr, 12.0),
             },
         }
         state.update(self._build_view_model(rankings, gen))
@@ -1340,7 +1421,7 @@ class LiveArenaEngine(
         if snap is not None:
             return copy.deepcopy(snap)
         with self.lock:
-            return copy.deepcopy(self._build_snapshot_locked())
+            return self._build_snapshot_locked()
 
     def get_ui_state_delta(self, force_full: bool = False) -> Dict[str, Any]:
         """Diff-based IPC state delta publisher from the immutable snapshot."""

@@ -97,10 +97,19 @@ class ETHFeed:
             df.columns = df.columns.get_level_values(0)
 
         close_s = df["Close"].astype(float)
-        high_s = df["High"].astype(float)
-        low_s = df["Low"].astype(float)
+        raw_high_s = df["High"].astype(float)
+        raw_low_s = df["Low"].astype(float)
         open_s = df["Open"].astype(float)
         vol_s = df["Volume"].astype(float).fillna(0.0)
+        # Enforce OHLC invariant (low <= {open, close} <= high) so malformed provider rows never invert candles/TR.
+        high_s = pd.Series(
+            np.maximum.reduce([open_s.to_numpy(), raw_high_s.to_numpy(), raw_low_s.to_numpy(), close_s.to_numpy()]),
+            index=df.index,
+        )
+        low_s = pd.Series(
+            np.minimum.reduce([open_s.to_numpy(), raw_high_s.to_numpy(), raw_low_s.to_numpy(), close_s.to_numpy()]),
+            index=df.index,
+        )
 
         # EMA 20, EMA 50, EMA 200 (Macro Regime Filter)
         ema_fast_s = close_s.ewm(span=20, adjust=False).mean()
@@ -178,7 +187,15 @@ class ETHFeed:
         bars: List[CandleBar] = []
         for i in range(len(opens)):
             idx = indices[i]
-            ts = idx.timestamp() if hasattr(idx, "timestamp") else time.time() + i
+            if hasattr(idx, "tzinfo") and hasattr(idx, "tz_localize"):
+                ts = (idx.tz_localize("UTC") if idx.tzinfo is None else idx.tz_convert("UTC")).timestamp()
+            elif hasattr(idx, "tzinfo") and hasattr(idx, "replace"):
+                from datetime import timezone as _tz
+                ts = (idx.replace(tzinfo=_tz.utc) if idx.tzinfo is None else idx.astimezone(_tz.utc)).timestamp()
+            elif hasattr(idx, "timestamp"):
+                ts = idx.timestamp()
+            else:
+                continue
             bars.append(
                 CandleBar(
                     timestamp=float(ts),

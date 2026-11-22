@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -22,9 +23,9 @@ import urllib.parse
 import urllib.request
 import weakref
 import zipfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from src.intelligence.config_manager import parse_omni_env_line
+from src.intelligence.config_manager import PROVIDER_ENV_MAP, parse_omni_env_line
 
 logger = logging.getLogger("tradebot0.gateway_supervisor")
 _ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -111,6 +112,11 @@ class GatewaySupervisor:
     def _shutdown_all_at_exit(cls) -> None:
         for sup in list(cls._live_supervisors):
             try:
+                sup.cancel_runtime_install()
+            except Exception as e:
+                logger.debug("Gateway runtime install cancel at exit failed: %s", e)
+        for sup in list(cls._live_supervisors):
+            try:
                 sup.stop_watchdog()
             except Exception as e:
                 logger.debug("Gateway watchdog stop at exit failed: %s", e)
@@ -154,6 +160,7 @@ class GatewaySupervisor:
         # running npm child so it can be killed from another thread.
         self._install_cancel_event = threading.Event()
         self._install_proc: Optional[subprocess.Popen] = None
+        self._install_resp = None
         self._install_progress: Optional[int] = None  # 0-100 when real, else None
         self._install_phase: str = ""
         # Double-spawn guard for start_daemon (F5): two concurrent callers
@@ -164,6 +171,8 @@ class GatewaySupervisor:
         self._password_sync_lock = threading.Lock()
         self._daemon_starting: bool = False
         self._daemon_starting_thread: Optional[int] = None
+        self._abort_spawn_event = threading.Event()
+        self._watchdog_spawn_abort: Optional[Tuple[int, threading.Event]] = None
         self.install_status: str = "idle"  # idle | downloading-node | installing-omniroute | done | failed | cancelled
         self.install_message: str = ""
         # Auto-restart watchdog state (gateway diagnosis workstream),
@@ -215,13 +224,21 @@ class GatewaySupervisor:
                     return [node_bin, global_mjs]
 
             # 2. Relative to omniroute command if present in PATH
-            omni_path = shutil.which("omniroute.cmd") or shutil.which("omniroute")
+            omni_path = (
+                (shutil.which("omniroute.cmd") or shutil.which("omniroute"))
+                if sys.platform == "win32"
+                else (shutil.which("omniroute") or shutil.which("omniroute.cmd"))
+            )
             if omni_path:
                 rel_mjs = os.path.join(os.path.dirname(omni_path), "node_modules", "omniroute", "bin", "omniroute.mjs")
                 if os.path.exists(rel_mjs):
                     return [node_bin, rel_mjs]
 
-        omni_bin = shutil.which("omniroute") or shutil.which("omniroute.cmd")
+        omni_bin = (
+            (shutil.which("omniroute.cmd") or shutil.which("omniroute"))
+            if sys.platform == "win32"
+            else (shutil.which("omniroute") or shutil.which("omniroute.cmd"))
+        )
         if omni_bin:
             return [omni_bin]
         return None
@@ -232,15 +249,11 @@ class GatewaySupervisor:
         Builds the command line arguments to spawn OmniRoute in 100% headless background mode.
         On Windows, directly uses `node.exe <path_to_omniroute.mjs> serve --no-open --port <port>`
         to bypass `cmd.exe` and `omniroute.cmd` batch scripts which trigger Windows Terminal popups.
+        Never falls back to `npx` (which would silently trigger a 2.6 GB download).
         """
         base_cmd = cls._get_cli_base_command()
         if base_cmd:
             return base_cmd + ["serve", "--no-open", "--port", str(port)]
-
-        npx_bin = shutil.which("npx")
-        if npx_bin:
-            return [npx_bin, "-y", "omniroute", "serve", "--no-open", "--port", str(port)]
-
         return None
 
     @staticmethod
@@ -298,11 +311,20 @@ class GatewaySupervisor:
 
         with self._password_sync_lock:
             child_env = os.environ.copy()
-            for key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME"):
-                child_env.pop(key, None)
+            for key in list(child_env):
+                if (
+                    key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME", "INITIAL_PASSWORD", "LLM_API_KEY")
+                    or key.endswith("_API_KEY")
+                ):
+                    child_env.pop(key, None)
             child_env["DATA_DIR"] = str(target_dir)
             child_env["OMNIROUTE_CLI_SKIP_DEFAULT_DATA_ENV"] = "1"
+            child_env["OMNIROUTE_CLI_SKIP_REPO_ENV"] = "1"
             child_env["OMNIROUTE_NO_UPDATE_NOTIFIER"] = "1"
+            if cli_base and Path(cli_base[0]).is_file():
+                node_dir_str = str(Path(cli_base[0]).parent)
+                existing_path = child_env.get("PATH", "")
+                child_env["PATH"] = f"{node_dir_str}{os.pathsep}{existing_path}" if existing_path else node_dir_str
 
             db_path = target_dir / "storage.sqlite"
             if db_path.is_file():
@@ -374,10 +396,10 @@ class GatewaySupervisor:
 
     @classmethod
     def is_cli_available(cls) -> bool:
-        """Checks if omniroute CLI or direct node runner is found in system PATH."""
+        """Checks if a local omniroute CLI or direct node runner is installed (excludes npx)."""
         if cls._get_daemon_command(20128) is not None:
             return True
-        return bool(shutil.which("omniroute") or shutil.which("omniroute.cmd") or shutil.which("npx"))
+        return bool(shutil.which("omniroute.cmd") or shutil.which("omniroute"))
 
     # --- App-local runtime (item 10 A4 / B3) --------------------------------
     @staticmethod
@@ -411,10 +433,13 @@ class GatewaySupervisor:
         """npm next to the given node.exe (runtime install), else npm on PATH."""
         if node_bin:
             node_dir = Path(node_bin).parent
-            for name in ("npm.cmd", "npm"):
+            names = ("npm.cmd", "npm") if sys.platform == "win32" else ("npm", "npm.cmd")
+            for name in names:
                 cand = node_dir / name
                 if cand.is_file():
                     return str(cand)
+        if sys.platform == "win32":
+            return shutil.which("npm.cmd") or shutil.which("npm")
         return shutil.which("npm") or shutil.which("npm.cmd")
 
     @classmethod
@@ -540,6 +565,13 @@ class GatewaySupervisor:
             self._install_cancel_event.set()
             proc = self._install_proc
             self._install_proc = None
+            resp = self._install_resp
+            self._install_resp = None
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception as e:
+                logger.debug("Failed to close active Node download response during cancel: %s", e)
         if proc is not None and proc.poll() is None:
             self._terminate_install_proc(proc)
         return {"ok": True, "message": "Cancelling installation..."}
@@ -617,21 +649,37 @@ class GatewaySupervisor:
                 if not self.omniroute_installed():
                     raise RuntimeError("OmniRoute install finished but the package was not found.")
                 npm_succeeded = True
+            if self._install_cancel_event.is_set():
+                raise _InstallCancelledError("Installation cancelled.")
+            # If the user already configured INITIAL_PASSWORD in ~/.omniroute/.env,
+            # apply it directly to storage.sqlite before spawning so an older DB
+            # hash cannot shadow the configured password. Never auto-start an
+            # unprotected default-password gateway before the user sets one.
+            saved_pw = self._read_initial_password_from_env_file(self.omni_data_dir / ".env")
+            if not saved_pw:
+                self._set_install_status(
+                    "done",
+                    "OmniRoute installed. Enter your API key and admin password, then click Save & Launch.",
+                    progress=100,
+                    phase="Installed",
+                )
+                return
             self._set_install_status(
                 "installing-omniroute",
                 "OmniRoute installed. Starting the gateway...",
                 progress=99,
                 phase="Starting gateway",
             )
-            # If the user already configured INITIAL_PASSWORD in ~/.omniroute/.env,
-            # apply it directly to storage.sqlite before spawning so an older DB
-            # hash cannot shadow the configured password.
-            saved_pw = self._read_initial_password_from_env_file(self.omni_data_dir / ".env")
-            if saved_pw:
-                pw_sync = self.sync_admin_password(saved_pw, data_dir=self.omni_data_dir)
-                if not pw_sync.get("ok"):
-                    logger.warning("Post-install OmniRoute password sync failed: %s", pw_sync.get("error"))
+            pw_sync = self.sync_admin_password(saved_pw, data_dir=self.omni_data_dir)
+            if not pw_sync.get("ok"):
+                logger.warning("Post-install OmniRoute password sync failed: %s", pw_sync.get("error"))
+            if self._install_cancel_event.is_set():
+                raise _InstallCancelledError("Installation cancelled.")
             ok, msg = self.start_daemon(max_wait_sec=30.0)
+            if self._install_cancel_event.is_set():
+                if ok:
+                    self.shutdown()
+                raise _InstallCancelledError("Installation cancelled.")
             if ok:
                 self._set_install_status("done", "OmniRoute installed and the gateway is online.", progress=100, phase="Installed")
             else:
@@ -662,24 +710,36 @@ class GatewaySupervisor:
             RUNTIME_NODE_ZIP_URL, headers={"User-Agent": "TradeBot0-Installer/1.0"}
         )
         with urllib.request.urlopen(req, timeout=600) as resp, open(zip_path, "wb") as f:
-            total = None
+            with self._install_lock:
+                self._install_resp = resp
             try:
-                raw_total = resp.headers.get("Content-Length")
-                parsed_total = int(raw_total) if raw_total else 0
-                total = parsed_total if parsed_total > 0 else None
-            except Exception:
                 total = None
-            downloaded = 0
-            while True:
-                if self._install_cancel_event.is_set():
-                    raise _InstallCancelledError("Installation cancelled.")
-                chunk = resp.read(1024 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total:
-                    self._set_install_progress(min(100, int(downloaded * 100 / total)))
+                try:
+                    raw_total = resp.headers.get("Content-Length")
+                    parsed_total = int(raw_total) if raw_total else 0
+                    total = parsed_total if parsed_total > 0 else None
+                except Exception:
+                    total = None
+                downloaded = 0
+                while True:
+                    if self._install_cancel_event.is_set():
+                        raise _InstallCancelledError("Installation cancelled.")
+                    try:
+                        chunk = resp.read(1024 * 1024)
+                    except Exception:
+                        if self._install_cancel_event.is_set():
+                            raise _InstallCancelledError("Installation cancelled.")
+                        raise
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        self._set_install_progress(min(100, int(downloaded * 100 / total)))
+            finally:
+                with self._install_lock:
+                    if self._install_resp is resp:
+                        self._install_resp = None
         tmp_dir = base / "_node_tmp"
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir)
@@ -807,6 +867,10 @@ class GatewaySupervisor:
                             or key.endswith("_API_KEY")
                         ):
                             child_env.pop(key, None)
+                    npm_dir = str(Path(npm_bin).parent)
+                    if npm_dir and os.path.isdir(npm_dir):
+                        existing_path = child_env.get("PATH", "")
+                        child_env["PATH"] = f"{npm_dir}{os.pathsep}{existing_path}" if existing_path else npm_dir
                     startupinfo = None
                     creation_flags = 0
                     if sys.platform == "win32":
@@ -1063,7 +1127,14 @@ class GatewaySupervisor:
                 return
             self._watchdog_state = "restarting"
         # Restart outside the lock: start_daemon can block up to 30 s.
-        ok, msg = self.start_daemon(max_wait_sec=30.0)
+        with self._daemon_lock:
+            self._watchdog_spawn_abort = (threading.get_ident(), evt)
+        try:
+            ok, msg = self.start_daemon(max_wait_sec=30.0)
+        finally:
+            with self._daemon_lock:
+                if self._watchdog_spawn_abort is not None and self._watchdog_spawn_abort[0] == threading.get_ident():
+                    self._watchdog_spawn_abort = None
         with self._watchdog_lock:
             if ok:
                 self._watchdog_state = "ok"
@@ -1110,7 +1181,8 @@ class GatewaySupervisor:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
-                    return True, data
+                    if isinstance(data, dict) and bool(data.get("ok", True)):
+                        return True, data
         except Exception as e:
             logger.debug("Gateway health probe failed: %s", e)
         return False, {}
@@ -1121,10 +1193,15 @@ class GatewaySupervisor:
         Returns a clean dictionary with ok status, latency, and descriptive message.
         """
         norm_prov = provider.lower().strip()
-        key = "".join(ch for ch in (raw_key or "").strip() if ord(ch) >= 0x20 and ord(ch) != 0x7F)
+        cleaned = "".join(ch for ch in (raw_key or "").strip() if ord(ch) >= 0x20 and ord(ch) != 0x7F)
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"'):
+            cleaned = cleaned[1:-1].strip()
+        key = cleaned
 
         if not key:
             return {"ok": False, "message": "Key cannot be empty", "latency_ms": 0}
+        if not key.isascii():
+            return {"ok": False, "message": "API key contains invalid non-ASCII characters", "latency_ms": 0}
         if len(key) < 8:
             return {"ok": False, "message": "Key length is suspiciously short", "latency_ms": 0}
 
@@ -1164,8 +1241,22 @@ class GatewaySupervisor:
 
         except urllib.error.HTTPError as he:
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            err_body = ""
+            try:
+                err_body = (he.read(2048) or b"").decode("utf-8", errors="replace")
+            except Exception:
+                err_body = ""
+            finally:
+                try:
+                    he.close()
+                except Exception:
+                    pass
             if he.code in (401, 403):
-                return {"ok": False, "message": "Invalid Key / Unauthorized (HTTP 401)", "latency_ms": elapsed_ms}
+                return {"ok": False, "message": f"Invalid Key / Unauthorized (HTTP {he.code})", "latency_ms": elapsed_ms}
+            if norm_prov == "gemini" and he.code == 400 and (
+                "API_KEY_INVALID" in err_body or "api key not valid" in err_body.lower()
+            ):
+                return {"ok": False, "message": "Invalid Key / Unauthorized (HTTP 400)", "latency_ms": elapsed_ms}
             elif he.code == 429:
                 # 429 only proves the key was accepted far enough to be rate
                 # limited; it cannot prove the key is valid. Never report it
@@ -1203,7 +1294,45 @@ class GatewaySupervisor:
                     logger.debug("Failed to truncate daemon log after rotation failure: %s", e)
         return open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
 
-    def start_daemon(self, max_wait_sec: float = 30.0) -> Tuple[bool, str]:
+    def _is_spawn_aborted(self, abort_event: Optional[threading.Event] = None) -> bool:
+        if self._abort_spawn_event.is_set():
+            return True
+        if abort_event is not None and abort_event.is_set():
+            return True
+        wd = self._watchdog_spawn_abort
+        if wd is not None and wd[0] == threading.get_ident() and wd[1].is_set():
+            return True
+        return False
+
+    def _warn_if_missing_storage_encryption_key(self) -> None:
+        db_path = self.omni_data_dir / "storage.sqlite"
+        if not db_path.is_file():
+            return
+        if os.environ.get("STORAGE_ENCRYPTION_KEY", "").strip():
+            return
+        env_path = self.omni_data_dir / ".env"
+        has_key = False
+        if env_path.is_file():
+            try:
+                for raw_line in env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+                    parsed = parse_omni_env_line(raw_line)
+                    if parsed is not None and parsed[0] == "STORAGE_ENCRYPTION_KEY" and parsed[1].strip():
+                        has_key = True
+                        break
+            except Exception:
+                pass
+        if not has_key:
+            logger.warning(
+                "OmniRoute storage.sqlite exists in %s without STORAGE_ENCRYPTION_KEY set in .env; "
+                "provider secrets will use OmniRoute's built-in fallback key.",
+                self.omni_data_dir,
+            )
+
+    def start_daemon(
+        self,
+        max_wait_sec: float = 30.0,
+        abort_event: Optional[threading.Event] = None,
+    ) -> Tuple[bool, str]:
         """
         Ensures an OmniRoute daemon is active and listening on the designated port.
         If already active, reuses it immediately. If not active, launches it headless
@@ -1219,10 +1348,13 @@ class GatewaySupervisor:
             else:
                 self._daemon_starting = True
                 self._daemon_starting_thread = threading.get_ident()
+                self._abort_spawn_event.clear()
                 _already_starting = False
         if _already_starting:
             deadline = time.monotonic() + max_wait_sec
             while time.monotonic() < deadline:
+                if self._is_spawn_aborted(abort_event):
+                    return False, "OmniRoute daemon startup cancelled."
                 time.sleep(0.25)
                 if self.is_port_open(timeout=0.2):
                     healthy, _ = self.probe_health(timeout=2.0)
@@ -1238,26 +1370,46 @@ class GatewaySupervisor:
                     return False, "Concurrent OmniRoute daemon startup failed."
             return False, f"OmniRoute daemon did not respond within {max_wait_sec}s timeout."
         try:
-            return self._start_daemon_once(max_wait_sec)
+            return self._start_daemon_once(max_wait_sec, abort_event=abort_event)
         finally:
             with self._daemon_lock:
                 self._daemon_starting = False
                 self._daemon_starting_thread = None
 
-    def _start_daemon_once(self, max_wait_sec: float = 30.0) -> Tuple[bool, str]:
+    def _start_daemon_once(
+        self,
+        max_wait_sec: float = 30.0,
+        abort_event: Optional[threading.Event] = None,
+    ) -> Tuple[bool, str]:
         # Single spawn attempt (see start_daemon for the concurrency guard).
         # Step 1: Check if already running and healthy
         if self.is_port_open():
             healthy, _ = self.probe_health(timeout=2.0)
             if healthy:
                 return True, f"Connected to existing OmniRoute gateway at {self.host}:{self.port}"
-            # Port open but not responding to health check: foreign application conflict
-            return False, f"Port {self.port} is occupied by another application."
+            # If our own previously spawned child is wedged on the port, clean it up and respawn.
+            with self._daemon_lock:
+                own_hung = bool(self.is_self_spawned and self.child_process is not None)
+            if own_hung:
+                logger.warning("Self-spawned OmniRoute daemon on port %d failed health probe; recycling it.", self.port)
+                self.shutdown()
+                self._abort_spawn_event.clear()
+                release_deadline = time.monotonic() + 1.5
+                while time.monotonic() < release_deadline and self.is_port_open(timeout=0.15):
+                    time.sleep(0.1)
+                if self.is_port_open(timeout=0.15):
+                    return False, f"Port {self.port} is occupied by another application."
+            else:
+                # Port open but not responding to health check: foreign application conflict
+                return False, f"Port {self.port} is occupied by another application."
 
         # Step 2: Resolve command for 100% headless daemon execution
         cmd = self._get_daemon_command(self.port)
         if not cmd:
             return False, "OmniRoute CLI is not installed or not found in system PATH."
+
+        if self._is_spawn_aborted(abort_event):
+            return False, "OmniRoute daemon startup cancelled."
 
         # Step 3: Spawn background daemon cleanly without displaying console windows
         try:
@@ -1273,7 +1425,7 @@ class GatewaySupervisor:
             # so the child daemon never inherits or locks the PyInstaller _MEIPASS extraction directory.
             safe_cwd = os.path.expanduser("~")
             child_env = os.environ.copy()
-            for key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME"):
+            for key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME", "INITIAL_PASSWORD"):
                 child_env.pop(key, None)
             # Pin DATA_DIR to the same directory ConfigManager writes .env into
             # (~/.omniroute by default), preventing Windows split-brain with %APPDATA%\omniroute.
@@ -1282,11 +1434,15 @@ class GatewaySupervisor:
             except Exception as e:
                 logger.debug("Could not pre-create omni_data_dir %s: %s", self.omni_data_dir, e)
             child_env["DATA_DIR"] = str(self.omni_data_dir)
+            child_env["OMNIROUTE_SERVER_HOST"] = self.host or "127.0.0.1"
             child_env["OMNIROUTE_CLI_SKIP_DEFAULT_DATA_ENV"] = "1"
+            child_env["OMNIROUTE_CLI_SKIP_REPO_ENV"] = "1"
+            child_env["OMNIROUTE_NO_UPDATE_NOTIFIER"] = "1"
             if (self.omni_data_dir / ".env").is_file():
-                # Let OmniRoute read the canonical <DATA_DIR>/.env rather than a
-                # possibly stale INITIAL_PASSWORD inherited from os.environ.
-                child_env.pop("INITIAL_PASSWORD", None)
+                # Strip inherited secrets so <DATA_DIR>/.env is the canonical source of truth.
+                for env_var in (*PROVIDER_ENV_MAP.values(), "INITIAL_PASSWORD", "STORAGE_ENCRYPTION_KEY"):
+                    child_env.pop(env_var, None)
+            self._warn_if_missing_storage_encryption_key()
             # Ensure web dashboard is accessible when user clicks Launch Console
             child_env["OMNIROUTE_HEADLESS"] = "0"
 
@@ -1302,18 +1458,20 @@ class GatewaySupervisor:
                 except Exception as e:
                     logger.debug("Failed to close stale daemon log handle: %s", e)
             log_file = self._open_daemon_log()
+            popen_kwargs: Dict[str, Any] = {
+                "cwd": safe_cwd,
+                "env": child_env,
+                "close_fds": True,
+                "startupinfo": startupinfo,
+                "creationflags": creation_flags,
+                "stdin": subprocess.DEVNULL,
+                "stdout": log_file,
+                "stderr": log_file,
+            }
+            if sys.platform != "win32":
+                popen_kwargs["start_new_session"] = True
             try:
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=safe_cwd,
-                    env=child_env,
-                    close_fds=True,
-                    startupinfo=startupinfo,
-                    creationflags=creation_flags,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log_file,
-                    stderr=log_file,
-                )
+                proc = subprocess.Popen(cmd, **popen_kwargs)
             except Exception:
                 log_file.close()
                 raise
@@ -1333,11 +1491,18 @@ class GatewaySupervisor:
             logger.error("Failed to spawn OmniRoute daemon: %s", e)
             return False, f"Process execution failed: {e}"
 
-        # Step 4: Poll health with strict circuit breaker (and fail fast if child exits)
+        # Step 4: Poll health with strict circuit breaker (and fail fast if child exits or aborted)
         deadline = time.monotonic() + max_wait_sec
         exited_early_rc: Optional[int] = None
+        aborted = False
         while time.monotonic() < deadline:
+            if self._is_spawn_aborted(abort_event):
+                aborted = True
+                break
             time.sleep(0.25)
+            if self._is_spawn_aborted(abort_event):
+                aborted = True
+                break
             rc = proc.poll()
             if isinstance(rc, int):
                 exited_early_rc = rc
@@ -1347,11 +1512,26 @@ class GatewaySupervisor:
                 if healthy:
                     return True, f"OmniRoute daemon started and verified on port {self.port}"
 
-        # Step 5: Timed out or crashed early - tear down child process to prevent orphan leak
+        # Step 5: Timed out, aborted, or crashed early - tear down child process to prevent orphan leak
         self.shutdown()
+        if aborted:
+            return False, "OmniRoute daemon startup cancelled."
         if exited_early_rc is not None:
             return False, f"OmniRoute daemon exited early (code {exited_early_rc}). Check {self.daemon_log_path}."
         return False, f"OmniRoute daemon did not respond within {max_wait_sec}s timeout."
+
+    def _read_server_pid_file(self) -> Optional[int]:
+        pid_path = self.omni_data_dir / "server" / ".pid"
+        if not pid_path.is_file():
+            return None
+        try:
+            raw = pid_path.read_text(encoding="utf-8", errors="replace").strip()
+            if raw.isdigit():
+                val = int(raw)
+                return val if val > 0 else None
+        except Exception:
+            pass
+        return None
 
     def shutdown(self) -> None:
         """Terminates the spawned child process cleanly if created by this supervisor.
@@ -1360,6 +1540,10 @@ class GatewaySupervisor:
         (or any other program) the user started by hand on the same port is
         left alone: killing it would destroy someone else's process (item 6).
         """
+        # Signal any in-flight start_daemon wait loop to abort promptly instead
+        # of blocking shutdown for the full 30s health-poll timeout.
+        self._abort_spawn_event.set()
+
         # If another thread is mid-spawn, wait for it to finish
         # assigning child_process (bounded): snapshotting None now would
         # orphan the daemon it is about to spawn. The spawning thread
@@ -1377,15 +1561,23 @@ class GatewaySupervisor:
             time.sleep(0.1)
 
         with self._daemon_lock:
-            proc = self.child_process if self.is_self_spawned else None
+            was_self_spawned = self.is_self_spawned
+            proc = self.child_process if was_self_spawned else None
             self.child_process = None
             self.is_self_spawned = False
             log_file = self._daemon_log_file
             self._daemon_log_file = None
 
         owned_pid: Optional[int] = None
+        owned_pids: Set[int] = set()
         if proc is not None:
             owned_pid = proc.pid
+            if isinstance(owned_pid, int) and owned_pid > 0:
+                owned_pids.add(owned_pid)
+            if was_self_spawned:
+                srv_pid = self._read_server_pid_file()
+                if srv_pid is not None:
+                    owned_pids.add(srv_pid)
             pid = owned_pid
             try:
                 logger.info("Terminating self-spawned OmniRoute daemon (PID %d)", pid)
@@ -1403,19 +1595,38 @@ class GatewaySupervisor:
                         proc.wait(timeout=1.5)
                     except Exception as e:
                         logger.debug("Daemon did not exit within wait timeout during shutdown: %s", e)
+                    if proc.poll() is None:
+                        try:
+                            proc.kill()
+                            proc.wait(timeout=1.5)
+                        except Exception as e:
+                            logger.debug("Fallback proc.kill() during shutdown failed: %s", e)
                 else:
-                    proc.terminate()
-                    proc.wait(timeout=1.0)
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGTERM)
+                    except Exception:
+                        proc.terminate()
+                    try:
+                        proc.wait(timeout=1.5)
+                    except Exception:
+                        try:
+                            os.killpg(os.getpgid(pid), signal.SIGKILL)
+                        except Exception:
+                            proc.kill()
+                        try:
+                            proc.wait(timeout=1.0)
+                        except Exception:
+                            pass
             except Exception:
                 try:
                     proc.kill()
                 except Exception as e:
                     logger.debug("Failed to kill daemon process during shutdown: %s", e)
 
-        # Fail-safe cleanup: only if OUR OWN child is somehow still holding
-        # the port after termination. A foreign listener is never killed.
+        # Fail-safe cleanup: only if OUR OWN child (or its server/.pid worker)
+        # is somehow still holding the port after termination. A foreign listener is never killed.
         if owned_pid is not None and self.is_port_open(timeout=0.1):
-            self._kill_port_owner(self.port, owned_pid=owned_pid)
+            self._kill_port_owner(self.port, owned_pid=owned_pid, owned_pids=owned_pids)
 
         # Close the daemon log handle opened by start_daemon (if any). This
         # also runs on the timeout path, which calls shutdown() after the
@@ -1426,12 +1637,20 @@ class GatewaySupervisor:
             except Exception as e:
                 logger.debug("Failed to close daemon log handle during shutdown: %s", e)
 
-    def _kill_port_owner(self, port: int, owned_pid: Optional[int] = None) -> None:
+    def _kill_port_owner(
+        self,
+        port: int,
+        owned_pid: Optional[int] = None,
+        owned_pids: Optional[Set[int]] = None,
+    ) -> None:
         """Terminates a lingering listener on the port ONLY if it is our own
-        spawned child (PID match). With owned_pid=None (no child of ours) it
+        spawned child (PID match). With owned_pid=None and no owned_pids it
         does nothing: a foreign process on the port is never killed (item 6).
         """
-        if owned_pid is None:
+        allowed_pids: Set[int] = set(owned_pids) if owned_pids else set()
+        if owned_pid is not None:
+            allowed_pids.add(int(owned_pid))
+        if not allowed_pids:
             return
         if sys.platform == "win32":
             try:
@@ -1453,7 +1672,7 @@ class GatewaySupervisor:
                         and "LISTENING" in parts[3].upper()
                     ):
                         target_pid = parts[4]
-                        if target_pid.isdigit() and int(target_pid) == owned_pid:
+                        if target_pid.isdigit() and int(target_pid) in allowed_pids:
                             logger.info("Terminating lingering own daemon on port %d (PID %s)", port, target_pid)
                             subprocess.run(
                                 ["taskkill", "/F", "/T", "/PID", target_pid],

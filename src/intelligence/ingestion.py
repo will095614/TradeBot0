@@ -16,6 +16,7 @@ import os
 import re
 import time
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple, Union
+import weakref
 import xml.etree.ElementTree as ET
 import aiohttp
 
@@ -24,6 +25,7 @@ from src.intelligence.omniroute_client import OmniRouteClient
 logger = logging.getLogger(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 TradeBot0-Intelligence/1.0"
+SEC_EDGAR_USER_AGENT = "TradeBot0/2.5 (contact@tradebot0.local)"
 
 # [R3] Comprehensive Multi-Domain Feed Registry
 FEED_REGISTRY: List[Dict[str, Any]] = [
@@ -160,12 +162,112 @@ class DeduplicationBuffer:
         return len(self._seen)
 
 
+_SCRIPT_STYLE_RE = re.compile(r"<(?:script|style)\b[^>]*>.*?</(?:script|style)>", re.IGNORECASE | re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+
+
 def _clean_html_text(raw_html: str) -> str:
     if not raw_html:
         return ""
-    text = re.sub(r"<[^>]+>", " ", raw_html)
+    text = html.unescape(str(raw_html))
+    text = _SCRIPT_STYLE_RE.sub(" ", text)
+    text = _HTML_TAG_RE.sub(" ", text)
     text = html.unescape(text)
-    return re.sub(r"\s+", " ", text).strip()
+    return _WS_RE.sub(" ", text).strip()
+
+
+def _compile_word_group(words: Tuple[str, ...]) -> re.Pattern:
+    return re.compile(r"\b(?:" + "|".join(re.escape(w) for w in words) + r")\b")
+
+
+_BULL_WORDS = (
+    "surge", "soar", "gain", "rally", "rise", "jump", "record", "ath",
+    "inflow", "boost", "bull", "approve", "expand", "profit", "deal",
+    "launch", "breakout", "adoption",
+)
+_BEAR_WORDS = (
+    "crash", "plunge", "drop", "fall", "dump", "hack", "exploit", "lawsuit",
+    "sue", "ban", "freeze", "investigate", "fraud", "bear", "fine",
+    "outflow", "liquidation", "slump",
+)
+_BULL_RE = _compile_word_group(_BULL_WORDS)
+_BEAR_RE = _compile_word_group(_BEAR_WORDS)
+_URG9_RE = _compile_word_group(("emergency", "black swan", "halt", "freeze", "war", "ban", "indict", "indicted", "billion"))
+_URG7_RE = _compile_word_group(("lawsuit", "sues", "sued", "sec", "fed", "rate", "subpoena", "hack", "etf", "tariff", "tariffs", "sanction", "sanctions"))
+_URG6_RE = _compile_word_group(("deal", "tax", "report", "policy", "million", "launch", "upgrade"))
+_TICKER_RES: Tuple[Tuple[re.Pattern, str], ...] = (
+    (_compile_word_group(("eth", "ethereum", "ether")), "ETH"),
+    (_compile_word_group(("btc", "bitcoin")), "BTC"),
+    (_compile_word_group(("sol", "solana")), "SOL"),
+    (_compile_word_group(("xrp", "ripple")), "XRP"),
+    (_compile_word_group(("fed", "fomc", "rate", "powell")), "FED"),
+    (_compile_word_group(("sec", "cftc")), "SEC"),
+    (_compile_word_group(("ai", "anthropic", "openai", "nvidia")), "AI"),
+)
+_ENTITY_RES: Tuple[Tuple[re.Pattern, str], ...] = (
+    (_compile_word_group(("ethereum", "ether", "eth", "vitalik")), "以太坊 (ETH)"),
+    (_compile_word_group(("bitcoin", "btc")), "比特幣 (BTC)"),
+    (_compile_word_group(("solana", "sol")), "Solana (SOL)"),
+    (_compile_word_group(("xrp", "ripple")), "瑞波幣 (XRP)"),
+    (_compile_word_group(("dogecoin", "doge")), "狗狗幣 (DOGE)"),
+    (_compile_word_group(("stablecoin", "usdt", "usdc", "tether", "circle")), "穩定幣市場"),
+    (_compile_word_group(("etf", "blackrock", "fidelity", "grayscale")), "機構現貨 ETF"),
+    (_compile_word_group(("fed", "federal reserve", "fomc", "powell", "interest rate", "rate cut", "inflation", "cpi")), "聯準會與宏觀利率"),
+    (_compile_word_group(("sec", "cftc", "gensler", "regulation", "regulatory", "lawsuit", "sues", "court")), "美國金融監管機構"),
+    (_compile_word_group(("trump", "white house", "treasury", "tariff", "tariffs", "congress", "senate")), "美國政府與總經政策"),
+    (_compile_word_group(("binance", "coinbase", "kraken", "bybit", "robinhood", "exchange")), "主流加密交易所"),
+    (_compile_word_group(("defi", "layer 2", "l2", "rollup", "staking", "restaking", "airdrop")), "鏈上 DeFi 與二層擴容協議"),
+    (_compile_word_group(("ai", "artificial intelligence", "openai", "anthropic", "nvidia", "semiconductor", "chip")), "AI 算力與科技產業"),
+    (_compile_word_group(("hack", "hacked", "exploit", "phishing", "stolen", "breach", "security")), "區塊鏈資安與防護"),
+    (_compile_word_group(("whale", "institutional", "microstrategy", "strategy", "treasury reserve")), "機構與巨鯨部位"),
+)
+_THEME_RES: Tuple[Tuple[re.Pattern, str, str], ...] = (
+    (
+        _compile_word_group(("hack", "hacked", "exploit", "stolen", "breach", "phishing")),
+        "爆出資安漏洞與異常資金流動警報",
+        "鏈上監測顯示相關協議或平台出現安全事件，市場短線避險情緒升溫，建議留意資金外溢與波動風險",
+    ),
+    (
+        _compile_word_group(("lawsuit", "sues", "sued", "indict", "indicted", "probe", "subpoena", "ban", "banned", "crackdown", "fine", "fined")),
+        "面臨監管審查與法律合規挑戰",
+        "監管機構針對相關業務展開合規調查或訴訟程序，政策不確定性可能引發相關板塊短線波動",
+    ),
+    (
+        _compile_word_group(("etf", "inflow", "inflows", "institutional", "blackrock", "fidelity", "accumulate", "buy", "purchases")),
+        "機構資金配置與場外流動性動態更新",
+        "機構投資人與大型資金池持續調整數位資產部位，現貨市場籌碼結構與流動性深度出現顯著變化",
+    ),
+    (
+        _compile_word_group(("fed", "fomc", "powell", "rate", "cpi", "inflation", "jobs", "payroll", "yield", "treasury", "dollar", "dxy")),
+        "釋出最新總經政策與利率預期訊號",
+        "總體經濟指標與央行官員談話牽動美元流動性預期，跨市場風險資產與加密貨幣定價同步反應",
+    ),
+    (
+        _compile_word_group(("tariff", "tariffs", "trade war", "sanction", "sanctions", "geopolitical", "geopolitics", "war", "red sea", "middle east")),
+        "國際貿易政策與地緣局勢最新進展",
+        "跨國關稅政策與地緣局勢變動影響全球供應鏈與避險資金流向，市場密切評估通膨與風險溢價",
+    ),
+    (
+        _compile_word_group(("surge", "surged", "soar", "rally", "rallied", "jump", "breakout", "record", "ath", "gain", "bull", "bullish")),
+        "買盤動能強勁推動價格與活躍度攀升",
+        "受市場利多催化與資金流入帶動，相關資產買盤動能明顯轉強，短線多頭結構維持優勢",
+    ),
+    (
+        _compile_word_group(("crash", "crashed", "plunge", "plunged", "drop", "dropped", "fall", "dump", "slump", "liquidation", "liquidations", "outflow", "outflows", "bear", "bearish")),
+        "遭遇獲利了結與短線回調修正壓力",
+        "市場出現階段性賣壓與槓桿部位清算，短線價格回測支撐區間，量化策略維持嚴格風控止損",
+    ),
+    (
+        _compile_word_group(("launch", "launched", "upgrade", "partner", "partnership", "expand", "integrate", "mainnet", "testnet", "adopt", "adopted", "adoption")),
+        "宣布生態技術升級與重大策略合作",
+        "底層網路效能升級與跨平台機構合作持續推進，有助於提升鏈上結算效率與長期基本面價值",
+    ),
+)
+_METRICS_RE = re.compile(
+    r"(?:\$\d+(?:\.\d+)?\s*(?:billion|million|trillion|b|m|k)?|\d+(?:\.\d+)?%|\d+\s*bps)",
+    flags=re.IGNORECASE,
+)
 
 
 @functools.lru_cache(maxsize=256)
@@ -234,20 +336,28 @@ def parse_rss_atom(xml_text: Union[str, bytes], source_name: str, domain: str, t
         title_el = entry.find("atom:title", ns)
         if title_el is None:
             title_el = entry.find("title")
-        link_el = entry.find("atom:link", ns)
-        if link_el is None:
-            link_el = entry.find("link")
+        link_els = entry.findall("atom:link", ns) or entry.findall("link")
+        link_el = None
+        for cand in link_els:
+            rel = (cand.get("rel") or "").strip().lower()
+            if rel in ("", "alternate") and (cand.get("href") or (cand.text or "").strip()):
+                link_el = cand
+                break
+        if link_el is None and link_els:
+            link_el = link_els[0]
         sum_el = entry.find("atom:summary", ns)
         if sum_el is None:
             sum_el = entry.find("atom:content", ns)
         if sum_el is None:
             sum_el = entry.find("summary") or entry.find("content")
 
-        title = _clean_html_text(title_el.text) if (title_el is not None and title_el.text) else ""
-        desc = _clean_html_text(sum_el.text) if (sum_el is not None and sum_el.text) else ""
+        title_raw = "".join(title_el.itertext()) if title_el is not None else ""
+        desc_raw = "".join(sum_el.itertext()) if sum_el is not None else ""
+        title = _clean_html_text(title_raw)
+        desc = _clean_html_text(desc_raw)
         link = ""
         if link_el is not None:
-            link = link_el.get("href") or link_el.text or ""
+            link = (link_el.get("href") or link_el.text or "").strip()
 
         if title:
             events.append(RawEvent(
@@ -278,6 +388,8 @@ def parse_polymarket_events(data: Any) -> List[RawEvent]:
         title = item.get("title") or item.get("question") or ""
         try:
             vol = float(item.get("volume24hr") or 0.0)
+            if not math.isfinite(vol) or vol < 0.0:
+                vol = 0.0
         except (TypeError, ValueError):
             vol = 0.0
         slug = item.get("slug") or ""
@@ -300,8 +412,13 @@ def parse_polymarket_events(data: Any) -> List[RawEvent]:
                     outcome_prices = []
             if isinstance(outcomes, list) and isinstance(outcome_prices, list) and outcomes and outcome_prices:
                 try:
-                    pairs = [f"{o}: {float(p)*100:.0f}%" for o, p in zip(outcomes, outcome_prices)]
-                    odds_str = " | Odds: " + ", ".join(pairs)
+                    pairs = []
+                    for o, p in zip(outcomes, outcome_prices):
+                        pf = float(p)
+                        if math.isfinite(pf):
+                            pairs.append(f"{o}: {pf*100:.0f}%")
+                    if pairs:
+                        odds_str = " | Odds: " + ", ".join(pairs)
                 except Exception as e:
                     logger.debug("Failed to format Polymarket odds, omitting: %s", e)
 
@@ -327,16 +444,25 @@ def parse_reddit_posts(data: Any, subreddit: str, domain: str) -> List[RawEvent]
     if not isinstance(data, dict):
         return events
 
-    children = data.get("data", {}).get("children", [])
+    listing = data.get("data")
+    if not isinstance(listing, dict):
+        return events
+    children = listing.get("children")
+    if not isinstance(children, list):
+        return events
     now = time.time()
     for child in children:
-        d = child.get("data", {})
-        title = d.get("title", "").strip()
+        if not isinstance(child, dict):
+            continue
+        d = child.get("data")
+        if not isinstance(d, dict):
+            continue
+        title = str(d.get("title") or "").strip()
         try:
-            score = int(d.get("score", 0))
+            score = int(d.get("score") or 0)
         except (TypeError, ValueError):
             score = 0
-        permalink = d.get("permalink", "")
+        permalink = str(d.get("permalink") or "")
         url = f"https://reddit.com{permalink}" if permalink else f"https://reddit.com/r/{subreddit}"
 
         # Focus on posts with positive engagement
@@ -356,7 +482,10 @@ def _parse_iso_ts(value: Any) -> float:
     """Parses an ISO8601 timestamp to epoch seconds; now on failure."""
     if isinstance(value, str) and value:
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
         except (ValueError, TypeError):
             pass
     return time.time()
@@ -393,7 +522,8 @@ def parse_stocktwits_stream(data: Any, symbol: str) -> List[RawEvent]:
 
     # Title carries the latest message: dedup (title+URL) then only fires
     # when the stream moves, instead of once per fetch.
-    first_line = re.sub(r"\s+", " ", (latest.get("body") or "").strip().split("\n")[0])
+    latest_body = html.unescape(str(latest.get("body") or "")).strip()
+    first_line = _WS_RE.sub(" ", latest_body.split("\n")[0])
     title = f"[StockTwits {symbol}] {first_line[:80]}"
     url = (
         f"https://stocktwits.com/{latest_user}/message/{latest_id}"
@@ -403,7 +533,7 @@ def parse_stocktwits_stream(data: Any, symbol: str) -> List[RawEvent]:
 
     lines = []
     for m in top:
-        body = re.sub(r"\s+", " ", (m.get("body") or "").strip())
+        body = _WS_RE.sub(" ", html.unescape(str(m.get("body") or "")).strip())
         if not body:
             continue
         uname = ""
@@ -449,10 +579,11 @@ class InterruptDebouncer:
         self.dispatch_fn = dispatch_fn
         self.cooldown_sec = cooldown_sec
         self.pending_events: List[StructuredEvent] = []
-        self.last_dispatch_ts: float = 0.0
+        self.last_dispatch_ts: Optional[float] = None
         self.timer_task: Optional[asyncio.Task] = None
         self._bg_tasks: Set[asyncio.Task] = set()
-        self._lock = asyncio.Lock()
+        self._locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+        self._fallback_lock = asyncio.Lock()
         self._is_batch = False
         try:
             sig = inspect.signature(dispatch_fn)
@@ -465,6 +596,17 @@ class InterruptDebouncer:
         except Exception as e:
             logger.debug("Failed to inspect dispatch function signature, using per-event dispatch: %s", e)
 
+    def _get_lock(self) -> asyncio.Lock:
+        try:
+            loop = asyncio.get_running_loop()
+            lock = self._locks.get(loop)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[loop] = lock
+            return lock
+        except RuntimeError:
+            return self._fallback_lock
+
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
@@ -472,12 +614,16 @@ class InterruptDebouncer:
         return task
 
     async def trigger(self, event: StructuredEvent) -> None:
-        async with self._lock:
-            now = time.time()
+        async with self._get_lock():
+            now = time.monotonic()
             self.pending_events.append(event)
             timer_inactive = self.timer_task is None or self.timer_task.done()
             # If outside active cooldown window, dispatch immediately (<500ms latency)
-            if now - self.last_dispatch_ts >= self.cooldown_sec and timer_inactive:
+            cooldown_elapsed = (
+                self.last_dispatch_ts is None
+                or (now - self.last_dispatch_ts) >= self.cooldown_sec
+            )
+            if cooldown_elapsed and timer_inactive:
                 to_dispatch = list(self.pending_events)
                 self.pending_events.clear()
                 self.last_dispatch_ts = now
@@ -509,12 +655,12 @@ class InterruptDebouncer:
     async def _cooldown_timer(self) -> None:
         try:
             await asyncio.sleep(self.cooldown_sec)
-            async with self._lock:
+            async with self._get_lock():
                 self.timer_task = None
                 if self.pending_events:
                     to_dispatch = list(self.pending_events)
                     self.pending_events.clear()
-                    self.last_dispatch_ts = time.time()
+                    self.last_dispatch_ts = time.monotonic()
                     self._spawn(self._safe_dispatch(to_dispatch))
         finally:
             if self.timer_task is asyncio.current_task():
@@ -578,10 +724,11 @@ class IntelligenceHarvester:
         import requests
 
         etype = str(entry.get("type", ""))
+        ua = SEC_EDGAR_USER_AGENT if entry.get("id") == "sec_edgar_8k" else USER_AGENT
         resp = None
         try:
             resp = requests.get(
-                entry["url"], headers={"User-Agent": USER_AGENT}, timeout=timeout_sec
+                entry["url"], headers={"User-Agent": ua}, timeout=timeout_sec
             )
             if resp.status_code != 200:
                 logger.debug("Registry feed %s returned HTTP %d", entry.get("id"), resp.status_code)
@@ -736,13 +883,15 @@ class IntelligenceHarvester:
         iso_now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         if parsed_json and "events" in parsed_json and isinstance(parsed_json["events"], list):
+            processed_indices: Set[int] = set()
             for pos, item in enumerate(parsed_json["events"], start=1):
                 if not isinstance(item, dict):
                     continue
                 try:
                     raw_idx = item.get("index", pos)
                     idx = (int(raw_idx) - 1) if raw_idx is not None else (pos - 1)
-                    raw = batch[idx] if (0 <= idx < len(batch)) else batch[min(pos - 1, len(batch) - 1)]
+                    resolved_idx = idx if (0 <= idx < len(batch)) else min(pos - 1, len(batch) - 1)
+                    raw = batch[resolved_idx]
                     raw_urg = item.get("urgency_score")
                     urg_val = int(float(raw_urg)) if raw_urg is not None else 5
                     urgency = max(1, min(10, urg_val))
@@ -786,6 +935,7 @@ class IntelligenceHarvester:
                         consensus=consensus,
                     )
                     structured_results.append(se)
+                    processed_indices.add(resolved_idx)
                     self.recent_structured_events.append(se)
 
                     # Trigger out-of-band interrupt if event is critical
@@ -802,11 +952,15 @@ class IntelligenceHarvester:
                 except Exception as ex:
                     logger.debug("Failed parsing individual event extraction: %s", ex)
 
-            # Release dedup entries for overflow events not included in this LLM micro-batch
-            # so they are picked up on the next digest instead of being permanently dropped.
-            if structured_results and len(events) > len(batch):
-                for dropped in events[len(batch):]:
-                    self.dedup.forget(dropped.title, dropped.url)
+            # Release dedup entries for unprocessed items within this batch AND
+            # overflow events beyond the micro-batch cap so nothing is silently dropped.
+            if structured_results:
+                for b_idx, raw_item in enumerate(batch):
+                    if b_idx not in processed_indices:
+                        self.dedup.forget(raw_item.title, raw_item.url)
+                if len(events) > len(batch):
+                    for dropped in events[len(batch):]:
+                        self.dedup.forget(dropped.title, dropped.url)
 
         if not structured_results:
             # Genuine Local Deterministic NLP Extraction on real news headlines & content
@@ -816,12 +970,9 @@ class IntelligenceHarvester:
                 urgency = 5
                 sentiment = 0.0
 
-                # Real financial vocabulary polarity scoring
-                bull_words = ["surge", "soar", "gain", "rally", "rise", "jump", "record", "ath", "inflow", "boost", "bull", "approve", "expand", "profit", "deal", "launch", "breakout", "adoption"]
-                bear_words = ["crash", "plunge", "drop", "fall", "dump", "hack", "exploit", "lawsuit", "sue", "ban", "freeze", "investigate", "fraud", "bear", "fine", "outflow", "liquidation", "slump"]
-
-                bull_cnt = sum(1 for w in bull_words if _contains_word(combined_text, w))
-                bear_cnt = sum(1 for w in bear_words if _contains_word(combined_text, w))
+                # Real financial vocabulary polarity scoring (precompiled single-pass regexes)
+                bull_cnt = len({m.group(0) for m in _BULL_RE.finditer(combined_text)})
+                bear_cnt = len({m.group(0) for m in _BEAR_RE.finditer(combined_text)})
 
                 if bull_cnt > bear_cnt:
                     sentiment = min(0.85, 0.25 * (bull_cnt - bear_cnt) + 0.2)
@@ -829,29 +980,15 @@ class IntelligenceHarvester:
                     sentiment = max(-0.85, -0.25 * (bear_cnt - bull_cnt) - 0.2)
 
                 # Real urgency rubric
-                if any(_contains_word(combined_text, w) for w in ["emergency", "black swan", "halt", "freeze", "war", "ban", "indict", "billion"]):
+                if _URG9_RE.search(combined_text):
                     urgency = 9
-                elif any(_contains_word(combined_text, w) for w in ["lawsuit", "sues", "sec", "fed", "rate", "subpoena", "hack", "etf", "tariff"]):
+                elif _URG7_RE.search(combined_text):
                     urgency = 7
-                elif any(_contains_word(combined_text, w) for w in ["deal", "tax", "report", "policy", "million", "launch", "upgrade"]):
+                elif _URG6_RE.search(combined_text):
                     urgency = 6
 
                 # Ticker & Entity detection
-                tickers = []
-                if _contains_word(combined_text, "eth") or _contains_word(combined_text, "ethereum") or _contains_word(combined_text, "ether"):
-                    tickers.append("ETH")
-                if _contains_word(combined_text, "btc") or _contains_word(combined_text, "bitcoin"):
-                    tickers.append("BTC")
-                if _contains_word(combined_text, "sol") or _contains_word(combined_text, "solana"):
-                    tickers.append("SOL")
-                if _contains_word(combined_text, "xrp") or _contains_word(combined_text, "ripple"):
-                    tickers.append("XRP")
-                if _contains_word(combined_text, "fed") or _contains_word(combined_text, "fomc") or _contains_word(combined_text, "rate") or _contains_word(combined_text, "powell"):
-                    tickers.append("FED")
-                if _contains_word(combined_text, "sec") or _contains_word(combined_text, "cftc"):
-                    tickers.append("SEC")
-                if _contains_word(combined_text, "ai") or _contains_word(combined_text, "anthropic") or _contains_word(combined_text, "openai") or _contains_word(combined_text, "nvidia"):
-                    tickers.append("AI")
+                tickers = [sym for pat, sym in _TICKER_RES if pat.search(combined_text)]
                 if not tickers:
                     tickers.append("ETH" if raw.domain == "crypto" else "MACRO")
 
@@ -974,30 +1111,13 @@ class IntelligenceHarvester:
         combined = f"{clean_title} {clean_body}".lower()
 
         # Extract key numerical metrics (percentages, dollar amounts, bps)
-        nums = re.findall(r"(?:\$\d+(?:\.\d+)?\s*(?:billion|million|trillion|b|m|k)?|\d+(?:\.\d+)?%|\d+\s*bps)", f"{clean_title} {clean_body}", flags=re.IGNORECASE)
+        nums = _METRICS_RE.findall(f"{clean_title} {clean_body}")
         metrics_str = f"（關鍵數據：{', '.join(nums[:3])}）" if nums else ""
 
-        # Identify primary entities in Traditional Chinese
+        # Identify primary entities in Traditional Chinese (precompiled single-pass regexes)
         entities_zh: List[str] = []
-        entity_map = [
-            (("ethereum", "ether", "eth", "vitalik"), "以太坊 (ETH)"),
-            (("bitcoin", "btc"), "比特幣 (BTC)"),
-            (("solana", "sol"), "Solana (SOL)"),
-            (("xrp", "ripple"), "瑞波幣 (XRP)"),
-            (("dogecoin", "doge"), "狗狗幣 (DOGE)"),
-            (("stablecoin", "usdt", "usdc", "tether", "circle"), "穩定幣市場"),
-            (("etf", "blackrock", "fidelity", "grayscale"), "機構現貨 ETF"),
-            (("fed", "federal reserve", "fomc", "powell", "interest rate", "rate cut", "inflation", "cpi"), "聯準會與宏觀利率"),
-            (("sec", "cftc", "gensler", "regulation", "regulatory", "lawsuit", "sues", "court"), "美國金融監管機構"),
-            (("trump", "white house", "treasury", "tariff", "congress", "senate"), "美國政府與總經政策"),
-            (("binance", "coinbase", "kraken", "bybit", "robinhood", "exchange"), "主流加密交易所"),
-            (("defi", "layer 2", "l2", "rollup", "staking", "restaking", "airdrop"), "鏈上 DeFi 與二層擴容協議"),
-            (("ai", "artificial intelligence", "openai", "anthropic", "nvidia", "semiconductor", "chip"), "AI 算力與科技產業"),
-            (("hack", "exploit", "phishing", "stolen", "breach", "security"), "區塊鏈資安與防護"),
-            (("whale", "institutional", "microstrategy", "strategy", "treasury reserve"), "機構與巨鯨部位"),
-        ]
-        for keys, label_zh in entity_map:
-            if any(_contains_word(combined, k) for k in keys) and label_zh not in entities_zh:
+        for pat, label_zh in _ENTITY_RES:
+            if pat.search(combined) and label_zh not in entities_zh:
                 entities_zh.append(label_zh)
 
         domain_label_map = {
@@ -1011,33 +1131,13 @@ class IntelligenceHarvester:
         primary_subject = "、".join(entities_zh[:2]) if entities_zh else domain_label_map.get(domain, "全球金融市場")
 
         # Identify action / theme in Traditional Chinese
-        if any(_contains_word(combined, w) for w in ["hack", "exploit", "stolen", "breach", "phishing"]):
-            action_head = "爆出資安漏洞與異常資金流動警報"
-            action_body = "鏈上監測顯示相關協議或平台出現安全事件，市場短線避險情緒升溫，建議留意資金外溢與波動風險"
-        elif any(_contains_word(combined, w) for w in ["lawsuit", "sues", "sued", "indict", "probe", "subpoena", "ban", "crackdown", "fine"]):
-            action_head = "面臨監管審查與法律合規挑戰"
-            action_body = "監管機構針對相關業務展開合規調查或訴訟程序，政策不確定性可能引發相關板塊短線波動"
-        elif any(_contains_word(combined, w) for w in ["etf", "inflow", "institutional", "blackrock", "fidelity", "accumulate", "buy", "purchases"]):
-            action_head = "機構資金配置與場外流動性動態更新"
-            action_body = "機構投資人與大型資金池持續調整數位資產部位，現貨市場籌碼結構與流動性深度出現顯著變化"
-        elif any(_contains_word(combined, w) for w in ["fed", "fomc", "powell", "rate", "cpi", "inflation", "jobs", "payroll", "yield", "treasury", "dollar", "dxy"]):
-            action_head = "釋出最新總經政策與利率預期訊號"
-            action_body = "總體經濟指標與央行官員談話牽動美元流動性預期，跨市場風險資產與加密貨幣定價同步反應"
-        elif any(_contains_word(combined, w) for w in ["tariff", "trade war", "sanction", "geopolit", "war", "red sea", "middle east"]):
-            action_head = "國際貿易政策與地緣局勢最新進展"
-            action_body = "跨國關稅政策與地緣局勢變動影響全球供應鏈與避險資金流向，市場密切評估通膨與風險溢價"
-        elif any(_contains_word(combined, w) for w in ["surge", "soar", "rally", "jump", "breakout", "record", "ath", "gain", "bull"]):
-            action_head = "買盤動能強勁推動價格與活躍度攀升"
-            action_body = "受市場利多催化與資金流入帶動，相關資產買盤動能明顯轉強，短線多頭結構維持優勢"
-        elif any(_contains_word(combined, w) for w in ["crash", "plunge", "drop", "fall", "dump", "slump", "liquidation", "outflow", "bear"]):
-            action_head = "遭遇獲利了結與短線回調修正壓力"
-            action_body = "市場出現階段性賣壓與槓桿部位清算，短線價格回測支撐區間，量化策略維持嚴格風控止損"
-        elif any(_contains_word(combined, w) for w in ["launch", "upgrade", "partner", "expand", "integrate", "mainnet", "testnet", "adopt"]):
-            action_head = "宣布生態技術升級與重大策略合作"
-            action_body = "底層網路效能升級與跨平台機構合作持續推進，有助於提升鏈上結算效率與長期基本面價值"
-        else:
-            action_head = "最新市場動態與產業基本面快訊"
-            action_body = "外電快訊揭示最新產業政策與資金流向變化，量化引擎已將情緒權重納入多空風控評估"
+        action_head = "最新市場動態與產業基本面快訊"
+        action_body = "外電快訊揭示最新產業政策與資金流向變化，量化引擎已將情緒權重納入多空風控評估"
+        for pat, head, body in _THEME_RES:
+            if pat.search(combined):
+                action_head = head
+                action_body = body
+                break
 
         sentiment_tag = "偏多利好" if sentiment > 0.15 else ("偏空警示" if sentiment < -0.15 else "中性觀望")
         ticker_str = "、".join(tickers[:3]) if tickers else ("ETH" if domain == "crypto" else "MACRO")

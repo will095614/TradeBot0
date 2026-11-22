@@ -31,7 +31,8 @@ class ViewModelPublisher:
         self.last_candle_sig: Optional[str] = None
         self.last_fill_seq: int = -1
         self.last_fill_sig: Optional[Tuple[int, int, bool, str]] = None
-        self.last_history_sig: Optional[Tuple[int, float]] = None
+        self.last_history_sig: Optional[Tuple[Any, ...]] = None
+        self.last_intel_events_sig: Optional[Tuple[Any, ...]] = None
 
     def reset(self) -> None:
         with self._lock:
@@ -39,6 +40,7 @@ class ViewModelPublisher:
             self.last_fill_seq = -1
             self.last_fill_sig = None
             self.last_history_sig = None
+            self.last_intel_events_sig = None
 
     @staticmethod
     def finite(val: Any, default: float = 0.0) -> float:
@@ -55,8 +57,7 @@ class ViewModelPublisher:
             return "empty"
         last = candles[-1]
         first_t = candles[0].get("t", 0)
-        raw = f"{len(candles)}:{first_t}:{last.get('t')}:{last.get('o')}:{last.get('h')}:{last.get('l')}:{last.get('c')}"
-        return hashlib.md5(raw.encode("utf-8")).hexdigest()
+        return f"{len(candles)}:{first_t}:{last.get('t')}:{last.get('o')}:{last.get('h')}:{last.get('l')}:{last.get('c')}"
 
     @staticmethod
     def compute_fill_signature(fills: List[Dict[str, Any]]) -> Tuple[int, int, bool, str]:
@@ -70,14 +71,61 @@ class ViewModelPublisher:
             str(top.get("time", "")),
         )
 
+    @staticmethod
+    def compute_history_signature(state: Dict[str, Any]) -> Tuple[Any, ...]:
+        ph = state.get("price_history") or []
+        ef = state.get("ema_fast_history") or []
+        es = state.get("ema_slow_history") or []
+        return (
+            len(ph), ph[0] if ph else None, ph[-1] if ph else None,
+            len(ef), ef[-1] if ef else None,
+            len(es), es[-1] if es else None,
+        )
+
+    @staticmethod
+    def compute_intel_events_signature(state: Dict[str, Any]) -> Tuple[Any, ...]:
+        intel = state.get("intel_hub")
+        if not isinstance(intel, dict):
+            return ()
+        events = intel.get("events")
+        if not isinstance(events, list):
+            return ()
+        sig = []
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            acts = e.get("strategy_actions")
+            act_sig = (
+                tuple(
+                    (a.get("strat_id"), a.get("action"), a.get("time"))
+                    if isinstance(a, dict)
+                    else str(a)
+                    for a in acts
+                )
+                if isinstance(acts, list)
+                else ()
+            )
+            sig.append(
+                (
+                    e.get("id"),
+                    e.get("event_ts") if "event_ts" in e else e.get("timestamp"),
+                    e.get("headline") if "headline" in e else e.get("raw_title"),
+                    e.get("summary"),
+                    e.get("article_state"),
+                    e.get("urgency") if "urgency" in e else e.get("urgency_score"),
+                    e.get("sentiment"),
+                    act_sig,
+                )
+            )
+        return tuple(sig)
+
     def compute_delta_payload(
         self, full_state: Dict[str, Any], force_full: bool = False
     ) -> Dict[str, Any]:
         """
         Produces an incremental state-delta dictionary from a full UI state snapshot.
-        - If no candle has changed since the previous poll, omits the full `candles` array
-          and sets `candles_unchanged=True`.
-        - If no new fill has arrived, omits `fills` and sets `fills_unchanged=True`.
+        - Omits unchanged heavy arrays (`candles`, `fills`, price/EMA history, `intel_hub.events`)
+          and sets the corresponding `*_unchanged` flags.
         """
         delta = dict(full_state)
         candles = full_state.get("candles") or []
@@ -85,6 +133,8 @@ class ViewModelPublisher:
 
         candle_sig = self.compute_candle_signature(candles)
         fill_sig = self.compute_fill_signature(fills)
+        history_sig = self.compute_history_signature(full_state)
+        intel_sig = self.compute_intel_events_signature(full_state)
         top_fill_seq = fill_sig[1]
 
         with self._lock:
@@ -92,26 +142,48 @@ class ViewModelPublisher:
                 self.last_candle_sig = candle_sig
                 self.last_fill_seq = top_fill_seq
                 self.last_fill_sig = fill_sig
+                self.last_history_sig = history_sig
+                self.last_intel_events_sig = intel_sig
                 delta["is_delta"] = False
                 delta["candles_unchanged"] = False
                 delta["fills_unchanged"] = False
+                delta["history_unchanged"] = False
+                delta["intel_events_unchanged"] = False
                 return delta
 
             candles_same = candle_sig == self.last_candle_sig
             fills_same = fill_sig == self.last_fill_sig
+            history_same = history_sig == self.last_history_sig
+            intel_same = (
+                isinstance(full_state.get("intel_hub"), dict)
+                and "events" in full_state["intel_hub"]
+                and intel_sig == self.last_intel_events_sig
+            )
 
             self.last_candle_sig = candle_sig
             self.last_fill_seq = top_fill_seq
             self.last_fill_sig = fill_sig
+            self.last_history_sig = history_sig
+            self.last_intel_events_sig = intel_sig
 
-        delta["is_delta"] = bool(candles_same or fills_same)
+        delta["is_delta"] = bool(candles_same or fills_same or history_same or intel_same)
         delta["candles_unchanged"] = candles_same
         delta["fills_unchanged"] = fills_same
+        delta["history_unchanged"] = history_same
+        delta["intel_events_unchanged"] = intel_same
 
         if candles_same:
             delta.pop("candles", None)
         if fills_same:
             delta.pop("fills", None)
+        if history_same:
+            delta.pop("price_history", None)
+            delta.pop("ema_fast_history", None)
+            delta.pop("ema_slow_history", None)
+        if intel_same and isinstance(delta.get("intel_hub"), dict):
+            intel_copy = dict(delta["intel_hub"])
+            intel_copy.pop("events", None)
+            delta["intel_hub"] = intel_copy
 
         return delta
 
@@ -120,13 +192,16 @@ class ViewModelPublisher:
     ) -> Dict[str, Any]:
         """
         Audit §5.2: same output as compute_delta_payload, but any unchanged
-        heavy arrays (`candles` and/or `fills`) are excluded BEFORE the
-        deepcopy instead of popped after it. The snapshot itself is never mutated.
+        heavy arrays (`candles`, `fills`, price/EMA history, `intel_hub.events`)
+        are excluded BEFORE the deepcopy instead of popped after it. The snapshot
+        itself is never mutated.
         """
         candles = snapshot.get("candles") or []
         fills = snapshot.get("fills") or []
         candle_sig = self.compute_candle_signature(candles)
         fill_sig = self.compute_fill_signature(fills)
+        history_sig = self.compute_history_signature(snapshot)
+        intel_sig = self.compute_intel_events_signature(snapshot)
         top_fill_seq = fill_sig[1]
 
         with self._lock:
@@ -134,22 +209,36 @@ class ViewModelPublisher:
                 self.last_candle_sig = candle_sig
                 self.last_fill_seq = top_fill_seq
                 self.last_fill_sig = fill_sig
+                self.last_history_sig = history_sig
+                self.last_intel_events_sig = intel_sig
                 is_first = True
                 candles_same = False
                 fills_same = False
+                history_same = False
+                intel_same = False
             else:
                 is_first = False
                 candles_same = candle_sig == self.last_candle_sig
                 fills_same = fill_sig == self.last_fill_sig
+                history_same = history_sig == self.last_history_sig
+                intel_same = (
+                    isinstance(snapshot.get("intel_hub"), dict)
+                    and "events" in snapshot["intel_hub"]
+                    and intel_sig == self.last_intel_events_sig
+                )
                 self.last_candle_sig = candle_sig
                 self.last_fill_seq = top_fill_seq
                 self.last_fill_sig = fill_sig
+                self.last_history_sig = history_sig
+                self.last_intel_events_sig = intel_sig
 
         if is_first:
             delta = copy.deepcopy(snapshot)
             delta["is_delta"] = False
             delta["candles_unchanged"] = False
             delta["fills_unchanged"] = False
+            delta["history_unchanged"] = False
+            delta["intel_events_unchanged"] = False
             return delta
 
         omit = set()
@@ -157,14 +246,26 @@ class ViewModelPublisher:
             omit.add("candles")
         if fills_same:
             omit.add("fills")
+        if history_same:
+            omit.update(("price_history", "ema_fast_history", "ema_slow_history"))
+        if intel_same:
+            omit.add("intel_hub")
+
         if omit:
             delta = copy.deepcopy({k: v for k, v in snapshot.items() if k not in omit})
         else:
             delta = copy.deepcopy(snapshot)
 
-        delta["is_delta"] = bool(candles_same or fills_same)
+        if intel_same and isinstance(snapshot.get("intel_hub"), dict):
+            delta["intel_hub"] = copy.deepcopy(
+                {k: v for k, v in snapshot["intel_hub"].items() if k != "events"}
+            )
+
+        delta["is_delta"] = bool(candles_same or fills_same or history_same or intel_same)
         delta["candles_unchanged"] = candles_same
         delta["fills_unchanged"] = fills_same
+        delta["history_unchanged"] = history_same
+        delta["intel_events_unchanged"] = intel_same
         return delta
 
 
@@ -196,13 +297,15 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
                 upnl_pct = (p.avg_entry_price - spot) / p.avg_entry_price * Decimal("100")
             else:
                 upnl_pct = (spot - p.avg_entry_price) / p.avg_entry_price * Decimal("100")
-        tp_txt = f"{float(g.take_profit_pct) * 100:.1f}%" if g.take_profit_pct else "—"
+        tp_txt = f"{fz(g.take_profit_pct) * 100:.1f}%" if g.take_profit_pct else "—"
         stop_ord = engine.broker.active_stops.get(pid)
         tp_ord = engine.broker.active_targets.get(pid)
         sl_p = fz(stop_ord.price) if (in_pos and stop_ord and stop_ord.price) else None
         tp_p = fz(tp_ord.price) if (in_pos and tp_ord and tp_ord.price) else None
 
-
+        lev_f = fz(g.leverage, 1.0)
+        pos_ratio_f = fz(g.position_ratio, 0.0)
+        sl_pct_f = fz(g.stop_loss_pct, 0.0)
         strategies.append(
             {
                 "id": pid,
@@ -210,13 +313,13 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
                 "name": engine.STRATEGY_DISPLAY.get(pid, c.base_name),
                 "color": engine.STRATEGY_COLORS.get(pid, "#ECF2F8"),
                 "generation": g.generation,
-                "leverage": fz(g.leverage),
+                "leverage": lev_f,
                 "leverage_enabled": bool(g.leverage_enabled),
-                "leverage_label": f"{float(g.leverage):.1f}x Lev" if g.leverage_enabled else "Spot 1x",
+                "leverage_label": f"{lev_f:.1f}x Lev" if g.leverage_enabled else "Spot 1x",
                 "genome": (
-                    f"{'Lev ' + str(round(float(g.leverage), 1)) + 'x' if g.leverage_enabled else 'Spot 1x'} | "
-                    f"Size {float(g.position_ratio) * 100:.0f}% | "
-                    f"SL {float(g.stop_loss_pct) * 100:.2f}% | TP {tp_txt}"
+                    f"{'Lev ' + str(round(lev_f, 1)) + 'x' if g.leverage_enabled else 'Spot 1x'} | "
+                    f"Size {pos_ratio_f * 100:.0f}% | "
+                    f"SL {sl_pct_f * 100:.2f}% | TP {tp_txt}"
                 ),
                 "equity": fz(r.equity),
                 "cash": fz(p.cash),
@@ -328,11 +431,12 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         f"EMA {fz(engine.live_ema_fast):,.2f}/{fz(engine.live_ema_slow):,.2f}"
     ) if leader else "Synchronizing live orderflow..."
 
-    now = time.time()
+    freeze_candidates = []
     if engine.paused and getattr(engine, "_pause_start_ts", None) is not None:
-        now = engine._pause_start_ts
-    elif not engine.auto_evolve_enabled and getattr(engine, "_auto_evolve_disabled_ts", None) is not None:
-        now = engine._auto_evolve_disabled_ts
+        freeze_candidates.append(engine._pause_start_ts)
+    if not engine.auto_evolve_enabled and getattr(engine, "_auto_evolve_disabled_ts", None) is not None:
+        freeze_candidates.append(engine._auto_evolve_disabled_ts)
+    now = min(freeze_candidates) if freeze_candidates else time.time()
     elapsed_since_evolve = max(0.0, now - engine.last_evolve_ts)
     # P2-A: honest countdown. Evolution fires on the EARLIER of the
     # time cap and N closed trades (live_engine._auto_evolve_reason),
@@ -367,7 +471,7 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         f"\u9084\u5dee {trades_remaining} \u7b46" if trades_remaining > 0 else "\u5373\u5c07\u89f8\u767c"
     )
 
-    if rankings and (engine.tv_champion.get("generation") == 1 or not engine.tv_champion.get("strategy_id")):
+    if rankings and (gen == 1 or not engine.tv_champion.get("strategy_id")):
         top = rankings[0]
         active_tv_champ = {
             "strategy_id": top.portfolio_id,
@@ -380,7 +484,11 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
             "status": "Hourly Leader (Active Dispatch)",
         }
     else:
-        active_tv_champ = dict(engine.tv_champion)
+        raw_champ = dict(engine.tv_champion)
+        for num_k in ("roi_pct", "fitness", "win_rate_pct"):
+            if num_k in raw_champ and raw_champ[num_k] is not None:
+                raw_champ[num_k] = fz(raw_champ[num_k])
+        active_tv_champ = raw_champ
 
     champ_id = active_tv_champ.get("strategy_id", "comp_agg")
     tv_payloads = []
@@ -418,7 +526,14 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         "closed_trades_to_next_evolve": int(trades_remaining),
         "next_evolve_sec_note": next_evolve_note,
         "next_evolve_trades_label": next_evolve_trades_label,
-        "evolution_events": [dict(e) for e in engine.evolution_events],
+        "evolution_events": [
+            {
+                **dict(e),
+                **({"ts": fz(e["ts"])} if "ts" in e and e["ts"] is not None else {}),
+                **({"leader_roi_pct": fz(e["leader_roi_pct"])} if "leader_roi_pct" in e and e["leader_roi_pct"] is not None else {}),
+            }
+            for e in engine.evolution_events
+        ],
         "macro_commander": macro_state_safe,
         "intel_hub": intel_hub,
         "mtf": {
@@ -429,7 +544,7 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         },
         "candles": [
             {
-                "t": c["t"],
+                "t": fz(c["t"]),
                 "o": fz(c["o"]),
                 "h": fz(c["h"]),
                 "l": fz(c["l"]),

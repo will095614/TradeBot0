@@ -9,6 +9,7 @@ from src.arena.order import FillEvent, OrderSide, PositionSide
 
 PRECISION_CASH = Decimal("0.01")
 PRECISION_CRYPTO = Decimal("0.0001")
+PRECISION_AVG_PRICE = Decimal("0.000001")
 _ZERO = Decimal("0")
 _ZERO_CASH = Decimal("0.00")
 _ZERO_QTY = Decimal("0.0000")
@@ -17,7 +18,46 @@ _HUNDRED = Decimal("100")
 
 
 class _SliceableDeque(deque):
-    """O(1)-append bounded deque that also supports Python list slicing (e.g. hist[-100:])."""
+    """O(1)-append bounded deque that also supports Python list slicing (e.g. hist[-100:])
+    and tracks structural mutations so derived float mirrors stay synchronized."""
+
+    def __init__(self, iterable=(), maxlen=None):
+        super().__init__(iterable, maxlen=maxlen)
+        self._mut_gen: int = 0
+
+    def append(self, x) -> None:
+        super().append(x)
+        self._mut_gen += 1
+
+    def appendleft(self, x) -> None:
+        super().appendleft(x)
+        self._mut_gen += 1
+
+    def extend(self, iterable) -> None:
+        super().extend(iterable)
+        self._mut_gen += 1
+
+    def extendleft(self, iterable) -> None:
+        super().extendleft(iterable)
+        self._mut_gen += 1
+
+    def pop(self):
+        val = super().pop()
+        self._mut_gen += 1
+        return val
+
+    def popleft(self):
+        val = super().popleft()
+        self._mut_gen += 1
+        return val
+
+    def clear(self) -> None:
+        super().clear()
+        self._mut_gen += 1
+
+    def __setitem__(self, index, value) -> None:
+        super().__setitem__(index, value)
+        self._mut_gen += 1
 
     def __getitem__(self, item):
         if isinstance(item, slice):
@@ -53,6 +93,7 @@ class Portfolio:
         self.open_position_entry_fee: Decimal = Decimal("0.00")
         self.leverage: Decimal = leverage
         self.leverage_enabled: bool = leverage_enabled
+        self.position_is_leveraged: bool = False
         self.margin_locked: Decimal = Decimal("0.00")
 
         self.realized_pnl: Decimal = Decimal("0.00")
@@ -80,6 +121,7 @@ class Portfolio:
         self.trade_history: List[FillEvent] = []
         self.equity_history: List[Tuple[float, Decimal]] = _SliceableDeque(maxlen=2000)  # type: ignore[assignment]
         self._equity_floats: deque[float] = deque(maxlen=2000)
+        self._equity_floats_sync_gen: int = 0
         # Audit §5.5: version of the equity history, bumped whenever the
         # history is wholesale replaced (reset/restore). The leaderboard
         # Sharpe/Sortino cache keys on it, so a stale cache can never
@@ -152,6 +194,7 @@ class Portfolio:
         self.position_side = PositionSide.FLAT
         self.avg_entry_price = Decimal("0.00")
         self.open_position_entry_fee = Decimal("0.00")
+        self.position_is_leveraged = False
         self.margin_locked = Decimal("0.00")
 
         self.realized_pnl = Decimal("0.00")
@@ -170,6 +213,7 @@ class Portfolio:
         self.trade_history.clear()
         self.equity_history = _SliceableDeque(maxlen=2000)  # type: ignore[assignment]
         self._equity_floats.clear()
+        self._equity_floats_sync_gen = 0
         # Audit §5.5: the counters are zeroed too, so without a version
         # bump the leaderboard cache key would collide with the
         # pre-reset one and serve stale metrics for the new history.
@@ -184,8 +228,10 @@ class Portfolio:
         and the fill counters are unchanged.
         """
         trimmed = list(points)[-2000:]
-        self.equity_history = _SliceableDeque(trimmed, maxlen=2000)  # type: ignore[assignment]
+        new_hist = _SliceableDeque(trimmed, maxlen=2000)
+        self.equity_history = new_hist  # type: ignore[assignment]
         self._equity_floats = deque((float(eq) for _, eq in trimmed), maxlen=2000)
+        self._equity_floats_sync_gen = new_hist._mut_gen
         self._equity_history_version += 1
 
     def update_market_price(
@@ -254,16 +300,25 @@ class Portfolio:
         hist = self.equity_history
         eq_f = float(current_eq)
         if hist and hist[-1][0] == ts:
+            prev_gen = getattr(hist, "_mut_gen", -1)
             hist[-1] = (ts, current_eq)
-            if isinstance(hist, _SliceableDeque) and len(self._equity_floats) == len(hist):
-                self._equity_floats[-1] = eq_f
+            if isinstance(hist, _SliceableDeque):
+                if len(self._equity_floats) == len(hist) and self._equity_floats_sync_gen == prev_gen:
+                    self._equity_floats[-1] = eq_f
+                else:
+                    self._equity_floats = deque((float(e) for _, e in hist), maxlen=2000)
+                self._equity_floats_sync_gen = hist._mut_gen
         else:
+            prev_gen = getattr(hist, "_mut_gen", -1)
             hist.append((ts, current_eq))
             if isinstance(hist, _SliceableDeque):
-                if len(self._equity_floats) == len(hist) - 1 or len(self._equity_floats) == 2000:
+                if self._equity_floats_sync_gen == prev_gen and (
+                    len(self._equity_floats) == len(hist) - 1 or len(self._equity_floats) == 2000
+                ):
                     self._equity_floats.append(eq_f)
                 else:
                     self._equity_floats = deque((float(e) for _, e in hist), maxlen=2000)
+                self._equity_floats_sync_gen = hist._mut_gen
             elif len(hist) > 2000:
                 del hist[:-2000]
 
@@ -287,7 +342,11 @@ class Portfolio:
             raise ValueError(f"Invalid quantized fill price in {self.portfolio_id}: {fill.price}")
         fee_q = fill.fee.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
         trade_val = (qty_q * price_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
-        eff_lev = self.leverage if self.leverage_enabled and self.leverage > _ZERO else _ONE
+        eff_lev = (
+            self.leverage
+            if (self.leverage_enabled and self.leverage.is_finite() and self.leverage > _ZERO)
+            else _ONE
+        )
         enriched_fill = replace(fill, qty=qty_q, price=price_q, fee=fee_q)
 
         # Case 1: Currently FLAT -> Open a new position (BUY opens LONG, SELL opens SHORT)
@@ -301,6 +360,7 @@ class Portfolio:
             self.position_qty = qty_q
             self.avg_entry_price = price_q
             self.open_position_entry_fee = fee_q
+            self.position_is_leveraged = eff_lev > _ONE
             self.margin_locked = required_margin
             self.cash = (self.cash - total_initial_cost).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
             enriched_fill = replace(enriched_fill, position_side=self.position_side)
@@ -316,10 +376,11 @@ class Portfolio:
                 new_qty = (self.position_qty + qty_q).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
                 if new_qty <= _ZERO:
                     raise ValueError(f"Invalid resulting qty in {self.portfolio_id}: {new_qty}")
-                new_avg = ((self.position_qty * self.avg_entry_price) + trade_val) / new_qty
-                self.avg_entry_price = new_avg.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                new_avg = ((self.position_qty * self.avg_entry_price) + (qty_q * price_q)) / new_qty
+                self.avg_entry_price = new_avg.quantize(PRECISION_AVG_PRICE, rounding=ROUND_HALF_UP)
                 self.position_qty = new_qty
                 self.open_position_entry_fee += fee_q
+                self.position_is_leveraged = self.position_is_leveraged or (eff_lev > _ONE)
                 self.margin_locked += required_margin
                 self.cash = (self.cash - total_initial_cost).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 enriched_fill = replace(enriched_fill, position_side=PositionSide.LONG)
@@ -369,6 +430,7 @@ class Portfolio:
                     self.position_side = PositionSide.FLAT
                     self.avg_entry_price = _ZERO_CASH
                     self.open_position_entry_fee = _ZERO_CASH
+                    self.position_is_leveraged = False
                     self.margin_locked = _ZERO_CASH
 
         # Case 3: Currently SHORT
@@ -382,10 +444,11 @@ class Portfolio:
                 new_qty = (self.position_qty + qty_q).quantize(PRECISION_CRYPTO, rounding=ROUND_HALF_UP)
                 if new_qty <= _ZERO:
                     raise ValueError(f"Invalid resulting qty in {self.portfolio_id}: {new_qty}")
-                new_avg = ((self.position_qty * self.avg_entry_price) + trade_val) / new_qty
-                self.avg_entry_price = new_avg.quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
+                new_avg = ((self.position_qty * self.avg_entry_price) + (qty_q * price_q)) / new_qty
+                self.avg_entry_price = new_avg.quantize(PRECISION_AVG_PRICE, rounding=ROUND_HALF_UP)
                 self.position_qty = new_qty
                 self.open_position_entry_fee += fee_q
+                self.position_is_leveraged = self.position_is_leveraged or (eff_lev > _ONE)
                 self.margin_locked += required_margin
                 self.cash = (self.cash - total_initial_cost).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)
                 enriched_fill = replace(enriched_fill, position_side=PositionSide.SHORT)
@@ -436,6 +499,7 @@ class Portfolio:
                     self.position_side = PositionSide.FLAT
                     self.avg_entry_price = _ZERO_CASH
                     self.open_position_entry_fee = _ZERO_CASH
+                    self.position_is_leveraged = False
                     self.margin_locked = _ZERO_CASH
 
         self.total_fees_paid = (self.total_fees_paid + fee_q).quantize(PRECISION_CASH, rounding=ROUND_HALF_UP)

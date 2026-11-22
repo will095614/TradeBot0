@@ -2430,6 +2430,15 @@ body.arena-paused #pauseBtn:hover,
   stroke-width: 2.2;
 }
 
+@keyframes toastRingDrain {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 44;
+  }
+}
+
 .toast-ring-fill {
   fill: none;
   stroke: var(--toast-color, #00F2FE);
@@ -2437,7 +2446,10 @@ body.arena-paused #pauseBtn:hover,
   stroke-linecap: round;
   stroke-dasharray: 44;
   stroke-dashoffset: 0;
-  transition: stroke-dashoffset 0.1s linear;
+}
+
+.chart-toast:hover .toast-ring-fill {
+  animation-play-state: paused !important;
 }
 
 .toast-close {
@@ -3452,7 +3464,7 @@ tbody td {
 
 /* Dynamic View Stage Transitions */
 .view-entering {
-  animation: viewStageFadeIn 1.32s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
+  animation: viewStageFadeIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
   will-change: opacity, transform;
 }
 
@@ -5674,13 +5686,13 @@ body:not(.arena-ready) .lg-glass {
 }
 
 @media (max-width: 1480px) {
-  .spatial-dock-bar .title-sub { display: none; }
+  .spatial-dock-bar .title-sub { display: none !important; }
   .spatial-dock-bar .btn, .spatial-dock-bar .lg-btn { padding: 0 7px; font-size: 10px; }
   .spatial-dock-bar .auto-evolve-pill { padding: 4px 6px; gap: 5px; }
 }
 
 @media (max-width: 1300px) {
-  .spatial-dock-bar .auto-evolve-pill select { display: none; }
+  .spatial-dock-bar .auto-evolve-pill .lg-dropdown { display: none; }
 }
 
 

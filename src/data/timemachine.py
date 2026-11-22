@@ -103,7 +103,7 @@ class TimeMachineArena:
         self.chop_gate_blocked = 0
 
     def _rebuild_broker(self) -> None:
-        self.broker = BrokerSim(symbol=self.symbol, slippage_pct=Decimal("0.0002"))
+        self.broker = BrokerSim(symbol=self.symbol, slippage_pct=Decimal("0.0002"), max_audit_size=5000)
         for c in self.competitors:
             self.broker.register_portfolio(c.portfolio, max_position_ratio=c.max_position_ratio)
 
@@ -291,7 +291,9 @@ class TimeMachineArena:
         for g in range(1, generations + 1):
             rankings = self.run_simulation(bars, chop_gate=chop_gate)
             if g < generations:
-                evo_logs = self.evolve_next_generation(rankings)
+                # Reset portfolios between replay seasons on the same historical tape
+                # so open positions & equity timestamps never teleport backward to bars[0].
+                evo_logs = self.evolve_next_generation(rankings, preserve_portfolio=False)
                 for log_line in evo_logs:
                     print(f"    -> {log_line}")
         return rankings
@@ -487,22 +489,23 @@ class MonteCarloOddsEvaluator:
 
         breakeven_win_rate = 1.0 / (1.0 + r_mult)
 
-        # Estimate empirical volatility, drift & return history from recent candles or ATR
+        # Estimate empirical volatility, drift & standardized return history from recent candles or ATR
         sigma = 0.0015
         drift = 0.0
-        empirical_ret_arr = None
-        empirical_mean = 0.0
-        empirical_std = 0.0
+        empirical_std_rets = None
         used_empirical = False
         if recent_candles and len(recent_candles) >= 5:
             cache_key = (
+                id(recent_candles),
                 len(recent_candles),
                 recent_candles[0].get("t"),
+                recent_candles[0].get("c"),
+                recent_candles[-2].get("c"),
                 recent_candles[-1].get("t"),
                 recent_candles[-1].get("c"),
             )
             if self._ret_cache_key == cache_key and self._ret_cache_val is not None:
-                empirical_ret_arr, empirical_mean, empirical_std, sigma, drift, used_empirical = self._ret_cache_val
+                empirical_std_rets, sigma, drift, used_empirical = self._ret_cache_val
             else:
                 closes: List[float] = []
                 for c in recent_candles:
@@ -518,18 +521,22 @@ class MonteCarloOddsEvaluator:
                     emp_rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
                     if len(emp_rets) >= 4:
                         if np is not None:
-                            empirical_ret_arr = np.asarray(emp_rets, dtype=float)
+                            empirical_ret_arr = np.asarray(emp_rets, dtype=np.float64)
                             std_val = float(np.std(empirical_ret_arr))
                             empirical_mean = float(np.mean(empirical_ret_arr))
                         else:
+                            empirical_ret_arr = None
                             std_val = 0.0015
                             empirical_mean = 0.0
-                        empirical_std = std_val
-                        sigma = max(0.0006, min(0.008, std_val))
-                        drift = max(-0.001, min(0.001, empirical_mean * 0.5))
-                        used_empirical = True
+                        if std_val > 1e-12:
+                            sigma = max(0.0006, min(0.008, std_val))
+                            drift = max(-0.001, min(0.001, empirical_mean * 0.5))
+                            used_empirical = True
+                            if empirical_ret_arr is not None and len(empirical_ret_arr) >= 20:
+                                # Cache pre-standardized returns so per-call shift is a single multiply+add.
+                                empirical_std_rets = ((empirical_ret_arr - empirical_mean) / std_val).astype(np.float32)
                 self._ret_cache_key = cache_key
-                self._ret_cache_val = (empirical_ret_arr, empirical_mean, empirical_std, sigma, drift, used_empirical)
+                self._ret_cache_val = (empirical_std_rets, sigma, drift, used_empirical)
 
         if not used_empirical and atr is not None:
             try:
@@ -545,19 +552,19 @@ class MonteCarloOddsEvaluator:
 
         # Vectorized path simulation via NumPy (fat-tailed bootstrap + antithetic variance reduction)
         if np is not None and self._rng is not None:
-            if empirical_ret_arr is not None and len(empirical_ret_arr) >= 20 and empirical_std > 1e-12:
-                shifted_rets = (empirical_ret_arr - empirical_mean) * (sigma / empirical_std) + eff_drift
+            if empirical_std_rets is not None:
+                shifted_rets = (empirical_std_rets * np.float32(sigma)) + np.float32(eff_drift)
                 shocks = self._rng.choice(shifted_rets, size=(n_sims, n_steps), replace=True)
             else:
                 # Heavy-tailed Student-t(df=6) shocks variance-matched to sigma
                 # Paired with antithetic variates [-z, +z] to eliminate small-sample drift noise.
                 df = 6.0
-                scale_t = sigma * math.sqrt((df - 2.0) / df)
+                scale_t = np.float32(sigma * math.sqrt((df - 2.0) / df))
                 half = max(1, n_sims // 2)
-                raw = self._rng.standard_t(df=df, size=(half, n_steps)) * scale_t
-                shocks = eff_drift + np.concatenate([raw, -raw], axis=0)
+                raw = self._rng.standard_t(df=df, size=(half, n_steps)).astype(np.float32) * scale_t
+                shocks = np.float32(eff_drift) + np.concatenate([raw, -raw], axis=0)
                 if len(shocks) < n_sims:
-                    extra = eff_drift + self._rng.standard_t(df=df, size=(1, n_steps)) * scale_t
+                    extra = np.float32(eff_drift) + (self._rng.standard_t(df=df, size=(1, n_steps)).astype(np.float32) * scale_t)
                     shocks = np.concatenate([shocks, extra], axis=0)
                 elif len(shocks) > n_sims:
                     shocks = shocks[:n_sims]
@@ -593,19 +600,20 @@ class MonteCarloOddsEvaluator:
             rows = np.arange(n_sims)
             stop_idx = np.argmax(stop_hit, axis=1)
             target_idx = np.argmax(target_hit, axis=1)
-            first_stop = np.where(stop_hit[rows, stop_idx], stop_idx, 999999)
-            first_target = np.where(target_hit[rows, target_idx], target_idx, 999999)
+            no_hit = n_steps
+            first_stop = np.where(stop_hit[rows, stop_idx], stop_idx, no_hit)
+            first_target = np.where(target_hit[rows, target_idx], target_idx, no_hit)
 
             # Conservative tie-breaker matching BrokerSim.on_tick: stop wins equal-step touches
-            stop_first = (first_stop <= first_target) & (first_stop < 999999)
-            target_first = (first_target < first_stop) & (first_target < 999999)
+            stop_first = (first_stop <= first_target) & (first_stop < no_hit)
+            target_first = (first_target < first_stop) & (first_target < no_hit)
             neither = (~stop_first) & (~target_first)
 
-            payoffs = np.zeros(n_sims, dtype=float)
+            payoffs = np.zeros(n_sims, dtype=np.float64)
             payoffs[stop_first] = -1.0
             payoffs[target_first] = r_mult
             if neither.any():
-                term_prices = entry_f * np.exp(log_paths[neither, -1])
+                term_prices = entry_f * np.exp(log_paths[neither, -1].astype(np.float64))
                 if is_short:
                     payoffs[neither] = (entry_f - term_prices) / stop_dist
                 else:

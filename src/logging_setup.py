@@ -38,11 +38,27 @@ def get_log_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "data" / "logs"
 
 
+class _SafeRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler resilient to transient Windows WinError 32 lock contention."""
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except (PermissionError, OSError):
+            # If AV or a log viewer holds the file open during rotation, keep logging
+            # to the current handle instead of raising unhandled errors into callers.
+            if self.stream is None:
+                try:
+                    self.stream = self._open()
+                except Exception:
+                    pass
+
+
 def configure_logging(log_dir: Optional[Path] = None) -> Path:
     """Configure the root logger. Returns the log directory actually used.
 
     Always attaches a RotatingFileHandler (created under ``log_dir``);
-    attaches a StreamHandler only when ``sys.stdout`` is not None (a
+    attaches a StreamHandler only when ``sys.stdout`` is open (a
     windowed PyInstaller build has stdout == None). Never raises: if the
     log directory cannot be created or the file cannot be opened, startup
     must continue with whatever handlers could be attached. Re-runnable
@@ -53,7 +69,7 @@ def configure_logging(log_dir: Optional[Path] = None) -> Path:
     file_handler_attached = False
     try:
         resolved.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
+        file_handler = _SafeRotatingFileHandler(
             resolved / LOG_FILENAME,
             maxBytes=LOG_MAX_BYTES,
             backupCount=LOG_BACKUP_COUNT,
@@ -66,7 +82,13 @@ def configure_logging(log_dir: Optional[Path] = None) -> Path:
         # No file logging possible (read-only dir, etc.): keep going with
         # the stream handler if one exists; logging must never kill startup.
         pass
-    if sys.stdout is not None:
+    if sys.stdout is not None and not getattr(sys.stdout, "closed", False):
+        reconf = getattr(sys.stdout, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(errors="replace")
+            except Exception:
+                pass
         handlers.append(logging.StreamHandler(sys.stdout))
     if not handlers:
         handlers.append(logging.NullHandler())

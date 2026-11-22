@@ -20,8 +20,9 @@ import asyncio
 import logging
 import os
 import re
+import threading
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from src.intelligence.ingestion import (
     FEED_REGISTRY,
@@ -66,9 +67,11 @@ class ForumCollector:
         self.symbols = list(symbols) if symbols else _symbols_from_registry()
         self.collect_interval_sec = FORUM_COLLECT_INTERVAL_SEC
         self.max_summaries_per_hour = FORUM_MAX_SUMMARIES_PER_HOUR
+        self._lock = threading.Lock()
         self._last_collect_ts: float = 0.0
         self._summary_window_start: float = 0.0
         self._summary_count: int = 0
+        self._last_fetch_had_transport_error: bool = False
 
     def fetch_stocktwits_stream(self, symbol: str, timeout_sec: float = 5.0) -> Optional[RawEvent]:
         """Fetches one public StockTwits stream (no login) -> one RawEvent."""
@@ -80,11 +83,14 @@ class ForumCollector:
             resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout_sec)
             if resp.status_code != 200:
                 logger.debug("StockTwits stream %s returned HTTP %d", symbol, resp.status_code)
+                self._last_fetch_had_transport_error = True
                 return None
+            self._last_fetch_had_transport_error = False
             parsed = parse_stocktwits_stream(resp.json(), symbol)
             return parsed[0] if parsed else None
         except Exception as ex:
             logger.debug("StockTwits stream fetch failed for %s: %s", symbol, ex)
+            self._last_fetch_had_transport_error = True
             return None
         finally:
             if resp is not None:
@@ -94,21 +100,28 @@ class ForumCollector:
                     pass
 
     def _hourly_cap_reached(self, now: float) -> bool:
-        if now - self._summary_window_start >= 3600.0:
-            self._summary_window_start = now
-            self._summary_count = 0
-        return self._summary_count >= self.max_summaries_per_hour
+        with self._lock:
+            if now - self._summary_window_start >= 3600.0:
+                self._summary_window_start = now
+                self._summary_count = 0
+            return self._summary_count >= self.max_summaries_per_hour
 
     def _collect_stocktwits(self) -> List[RawEvent]:
         events: List[RawEvent] = []
         now = time.time()
+        any_ok = False
         for symbol in self.symbols:
             if self._hourly_cap_reached(now):
                 break
+            self._last_fetch_had_transport_error = False
             ev = self.fetch_stocktwits_stream(symbol)
+            if not self._last_fetch_had_transport_error:
+                any_ok = True
             if ev is not None:
                 events.append(ev)
-                self._summary_count += 1
+                with self._lock:
+                    self._summary_count += 1
+        self._last_collect_all_failed = (bool(self.symbols) and not any_ok and not events)
         return events
 
     async def collect_async(self) -> List[RawEvent]:
@@ -121,19 +134,27 @@ class ForumCollector:
         if os.environ.get("ARENA_FAST_TEST") == "1":
             return []
         now = time.time()
-        if now - self._last_collect_ts < self.collect_interval_sec:
-            return []
+        with self._lock:
+            if self._last_collect_ts > 0.0 and (now - self._last_collect_ts) < self.collect_interval_sec:
+                return []
         if self._hourly_cap_reached(now):
             logger.debug(
                 "Forum hourly summary cap reached (%d), skipping", self.max_summaries_per_hour
             )
             return []
-        prev_ts = self._last_collect_ts
-        self._last_collect_ts = now
+        with self._lock:
+            prev_ts = self._last_collect_ts
+            self._last_collect_ts = now
         try:
+            self._last_collect_all_failed = False
             events: List[RawEvent] = []
             events.extend(await asyncio.to_thread(self._collect_stocktwits))
+            if getattr(self, "_last_collect_all_failed", False):
+                # Short 60s retry backoff on full transport failure instead of a 15m lockout.
+                with self._lock:
+                    self._last_collect_ts = max(0.0, now - self.collect_interval_sec + min(60.0, self.collect_interval_sec))
             return events
         except BaseException:
-            self._last_collect_ts = prev_ts
+            with self._lock:
+                self._last_collect_ts = prev_ts
             raise

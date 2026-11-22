@@ -106,18 +106,21 @@ def compare_versions(a: str, b: str) -> int:
     them the other way -- 2026 > 2 in the first segment -- so a stale
     date-stamped manifest looked newer than any V release.)
     """
-    def _parts(version: str) -> tuple:
+    def _parse(version: str) -> tuple[tuple[int, ...], Optional[str]]:
         text = (version or "").strip()
         if text.startswith(("v", "V")):
             text = text[1:]
+        # Strip optional build metadata (+...) and split optional -prerelease suffix.
+        text = text.split("+", 1)[0]
+        core, _, prerelease = text.partition("-")
         parts = []
-        for segment in text.split("."):
+        for segment in core.split("."):
             match = re.match(r"(\d+)", segment)
             parts.append(int(match.group(1)) if match else 0)
-        return tuple(parts)
+        return tuple(parts), (prerelease.strip().lower() or None)
 
-    left = _parts(a)
-    right = _parts(b)
+    left, left_pre = _parse(a)
+    right, right_pre = _parse(b)
     if _is_date_version(left) != _is_date_version(right):
         return -1 if _is_date_version(left) else 1
     width = max(len(left), len(right))
@@ -126,6 +129,17 @@ def compare_versions(a: str, b: str) -> int:
     if left < right:
         return -1
     if left > right:
+        return 1
+    # Core versions are equal: stable release > pre-release (SemVer 2.0.0 §11).
+    if left_pre is None and right_pre is None:
+        return 0
+    if left_pre is None:
+        return 1
+    if right_pre is None:
+        return -1
+    if left_pre < right_pre:
+        return -1
+    if left_pre > right_pre:
         return 1
     return 0
 
@@ -173,7 +187,10 @@ def check_for_updates(
         manifest = response.json()
         if not isinstance(manifest, dict):
             raise ValueError("update manifest is not a JSON object")
-        latest = str(manifest.get("version") or "").strip()
+        raw_version = manifest.get("version")
+        if not isinstance(raw_version, str):
+            raise ValueError("update manifest version must be a string")
+        latest = raw_version.strip()
         if not latest:
             raise ValueError("update manifest has no version")
     except Exception as exc:  # network, HTTP, JSON, or shape errors
