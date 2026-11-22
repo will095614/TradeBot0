@@ -4,12 +4,13 @@ import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import hashlib
+import inspect
 import logging
 import math
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import weakref
 
 from src.arena.order import OrderSide
@@ -646,6 +647,35 @@ class MacroCommander:
                 self._article_locks[event_id] = entry
             return entry[0]
 
+    def _set_article_progress(self, evt: Dict[str, Any], progress: int, stage: str) -> None:
+        pct = max(0, min(100, int(progress)))
+        stage_txt = str(stage or "")
+        with self._events_lock:
+            if evt.get("article_progress") != pct or evt.get("article_stage") != stage_txt:
+                evt["article_progress"] = pct
+                evt["article_stage"] = stage_txt
+                self._curated_version += 1
+
+    def get_event_article_progress(self, event_id: str) -> Dict[str, Any]:
+        """Returns real-time generation progress and stage for one curated event."""
+        with self._events_lock:
+            evt = next((x for x in self.curated_events if x.get("id") == event_id), None)
+            if evt is None:
+                return {"ok": False, "event_id": event_id, "state": "none", "progress": 0, "stage": ""}
+            state = str(evt.get("article_state") or "none")
+            progress = int(evt.get("article_progress", 0) or 0)
+            stage = str(evt.get("article_stage") or "")
+            if state == "ready":
+                progress = 100
+                stage = stage or "Complete"
+            return {
+                "ok": True,
+                "event_id": event_id,
+                "state": state,
+                "progress": max(0, min(100, progress)),
+                "stage": stage,
+            }
+
     def get_event_article(self, event_id: str) -> Dict[str, Any]:
         """Returns the cached ~1000-word article for one curated event.
 
@@ -676,52 +706,84 @@ class MacroCommander:
                     if state == "ready" and isinstance(article, str) and article.strip():
                         return {"ok": True, "event_id": event_id, "state": "ready", "article": article}
                     evt["article_state"] = "loading"
+                    evt["article_progress"] = 8
+                    evt["article_stage"] = "Preparing event context"
                     evt["article"] = None
                     evt.pop("article_error", None)
                     self._curated_version += 1
                     evt_copy = dict(evt)
+
+                def _on_progress(_stage_key: str, pct: int, detail: str) -> None:
+                    self._set_article_progress(evt, pct, detail)
+
                 try:
-                    article_text, error = self._generate_article_sync(evt_copy)
+                    article_text, error = self._generate_article_sync(evt_copy, on_progress=_on_progress)
                 except Exception as ex:
                     article_text, error = None, f"article generation failed: {ex}"
                 with self._events_lock:
                     if article_text is None:
                         evt["article_state"] = "failed"
+                        evt["article_progress"] = 0
+                        evt["article_stage"] = ""
                         evt["article_error"] = error or "article generation failed"
                         self._curated_version += 1
                         logger.warning("Event article generation failed for %s: %s", event_id, evt["article_error"])
                         return {"ok": False, "event_id": event_id, "state": "failed", "reason": evt["article_error"]}
                     evt["article"] = article_text
                     evt["article_state"] = "ready"
+                    evt["article_progress"] = 100
+                    evt["article_stage"] = "Complete"
                     self._curated_version += 1
                     return {"ok": True, "event_id": event_id, "state": "ready", "article": article_text}
         finally:
             self._release_article_lock_entry(event_id, entry)
 
-    async def _generate_article_async(self, evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    async def _generate_article_async(
+        self,
+        evt: Dict[str, Any],
+        on_progress: Optional[Callable[[str, int, str], None]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
         """One LLM call for one article. Returns (article_text, error).
 
         The error half is a short human-readable reason (gateway
         offline / no usable JSON / no article text / too short); the
         caller stores it as "article_error" and reports ok False.
         """
+        def _emit(stage: str, pct: int, detail: str) -> None:
+            if on_progress is None:
+                return
+            try:
+                on_progress(stage, pct, detail)
+            except Exception:
+                pass
+
         if getattr(self.client, "is_gateway_online", False) is not True:
             return None, "gateway offline"
+        _emit("preparing", 14, "Building market context")
         system_prompt, user_prompt = build_event_article_prompts(evt)
+        chat_kwargs: Dict[str, Any] = {
+            "model": self.client.model_ingest,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "temperature": 0.0,
+            "max_tokens": 2500,
+            "timeout_sec": 150.0,
+        }
+        try:
+            sig = inspect.signature(self.client.chat_json)
+            if "stream_progress" in sig.parameters and "on_progress" in sig.parameters:
+                chat_kwargs["on_progress"] = on_progress
+                chat_kwargs["stream_progress"] = True
+        except (TypeError, ValueError):
+            pass
         try:
             # Article timeout 150s (2026-11-15 A/B probe: the routed
             # model takes 69-100s to generate a ~1000-word article, so
             # the 60s client default can never complete it).
-            parsed = await self.client.chat_json(
-                model=self.client.model_ingest,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.0,
-                max_tokens=2500,
-                timeout_sec=150.0,
-            )
+            parsed = await self.client.chat_json(**chat_kwargs)
         except Exception as ex:
             return None, f"LLM call failed: {ex}"
+        _emit("validating", 95, "Verifying report quality")
         if not isinstance(parsed, dict):
             return None, "LLM returned no usable JSON"
         article = parsed.get("article")
@@ -730,9 +792,14 @@ class MacroCommander:
         article = article.strip()
         if len(article) < ARTICLE_MIN_CHARS:
             return None, "LLM returned an article too short to be an article"
+        _emit("finalizing", 99, "Finalizing article")
         return article, None
 
-    async def _run_article_with_cleanup(self, evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    async def _run_article_with_cleanup(
+        self,
+        evt: Dict[str, Any],
+        on_progress: Optional[Callable[[str, int, str], None]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
         """Generate one article, then close THIS loop's LLM session.
 
         Every asyncio.run() creates a loop; a session created on it must
@@ -741,7 +808,7 @@ class MacroCommander:
         never close a session another thread is still using.
         """
         try:
-            return await self._generate_article_async(evt)
+            return await self._generate_article_async(evt, on_progress=on_progress)
         finally:
             closer = getattr(self.client, "close_loop_session", None)
             if callable(closer):
@@ -750,7 +817,11 @@ class MacroCommander:
                 except Exception as ex:
                     logger.debug("Article loop-session cleanup failed: %s", ex)
 
-    def _generate_article_sync(self, evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    def _generate_article_sync(
+        self,
+        evt: Dict[str, Any],
+        on_progress: Optional[Callable[[str, int, str], None]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
         """Runs _generate_article_async from sync code (bridge thread).
 
         The bridge runs on a pywebview worker thread with no running
@@ -765,12 +836,12 @@ class MacroCommander:
         except RuntimeError:
             loop = None
         if loop is None:
-            return asyncio.run(self._run_article_with_cleanup(evt))
+            return asyncio.run(self._run_article_with_cleanup(evt, on_progress=on_progress))
         result: Dict[str, Any] = {}
 
         def _runner() -> None:
             try:
-                result["value"] = asyncio.run(self._run_article_with_cleanup(evt))
+                result["value"] = asyncio.run(self._run_article_with_cleanup(evt, on_progress=on_progress))
             except BaseException as ex:
                 result["error"] = ex
 
@@ -1006,6 +1077,8 @@ class MacroCommander:
                             "tickers": _dedup_tickers(e.entities_tickers),
                             "article": None,
                             "article_state": "none",
+                            "article_progress": 0,
+                            "article_stage": "",
                         })
                         inserted = True
                 if len(self.curated_events) > 60:

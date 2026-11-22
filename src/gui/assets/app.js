@@ -3873,14 +3873,186 @@ function updateUiClockDisplay() {
       .map(function (x) { return x.evt; });
   }
 
+  let intelSortSeq = 0;
+  let intelSortCollapseTimer = null;
+  let intelSortTransitionPending = false;
+  let intelSortTargetMode = null;
+
+  function formatIntelEventTime(rawTime) {
+    const txt = String(rawTime || '').trim();
+    if (!txt) return '';
+    const m = txt.match(/(\d{1,2}:\d{2}):\d{2}/);
+    return m ? m[1] : txt;
+  }
+
+  function reorderIntelEventCards(listContainer, sorted) {
+    if (!listContainer || !Array.isArray(sorted)) return;
+    const reduceMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const firstRects = new Map();
+    if (!reduceMotion && listContainer.children.length > 0) {
+      sorted.forEach(function (evt) {
+        const key = intelEventKey(evt);
+        const card = intelEventNodes[key];
+        if (!card || card.parentNode !== listContainer) return;
+        card.classList.remove('intel-card-reordering');
+        card.style.transform = '';
+        card.style.zIndex = '';
+        firstRects.set(key, card.getBoundingClientRect());
+      });
+    }
+    sorted.forEach(function (evt) {
+      const card = intelEventNodes[intelEventKey(evt)];
+      if (card) listContainer.appendChild(card);
+    });
+    if (reduceMotion || firstRects.size === 0) return;
+    const moved = [];
+    sorted.forEach(function (evt) {
+      const key = intelEventKey(evt);
+      const card = intelEventNodes[key];
+      const first = firstRects.get(key);
+      if (!card || !first) return;
+      const last = card.getBoundingClientRect();
+      const dx = first.left - last.left;
+      const dy = first.top - last.top;
+      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+        card.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
+        card.style.zIndex = dy < 0 ? '2' : '1';
+        moved.push(card);
+      }
+    });
+    if (moved.length === 0) return;
+    void listContainer.offsetHeight;
+    const flipToken = performance.now();
+    moved.forEach(function (card) {
+      card._flipToken = flipToken;
+      card.classList.add('intel-card-reordering');
+    });
+    requestAnimationFrame(function () {
+      moved.forEach(function (card) {
+        if (card._flipToken !== flipToken) return;
+        card.style.transform = '';
+      });
+    });
+    setTimeout(function () {
+      moved.forEach(function (card) {
+        if (card._flipToken !== flipToken) return;
+        card.classList.remove('intel-card-reordering');
+        card.style.transform = '';
+        card.style.zIndex = '';
+      });
+    }, 460);
+  }
+
   function setIntelSortMode(mode) {
     if (mode !== 'time' && mode !== 'impact') return;
-    if (intelSortMode === mode) return;
-    intelSortMode = mode;
-    syncSegThumb('intelSortSeg', mode === 'impact' ? 1 : 0);
-    const list = document.getElementById('intelEventsList');
-    if (list) list._intelOrder = '';
-    if (latestState) renderIntelHub(latestState);
+    const effectiveCurrent = intelSortTransitionPending ? intelSortTargetMode : intelSortMode;
+    if (effectiveCurrent === mode) return;
+    intelSortSeq += 1;
+    const seq = intelSortSeq;
+    intelSortTargetMode = mode;
+    if (intelSortCollapseTimer) {
+      clearTimeout(intelSortCollapseTimer);
+      intelSortCollapseTimer = null;
+    }
+    const isTimeMode = mode === 'time';
+    const isImpactMode = mode === 'impact';
+    syncSegThumb('intelSortSeg', isImpactMode ? 1 : 0);
+    const timeBtn = document.getElementById('intelSortTime');
+    const impactBtn = document.getElementById('intelSortImpact');
+    if (timeBtn) {
+      timeBtn.classList.toggle('active', isTimeMode);
+      if (isTimeMode) timeBtn.setAttribute('data-on', '');
+      else timeBtn.removeAttribute('data-on');
+    }
+    if (impactBtn) {
+      impactBtn.classList.toggle('active', isImpactMode);
+      if (isImpactMode) impactBtn.setAttribute('data-on', '');
+      else impactBtn.removeAttribute('data-on');
+    }
+
+    const applySortNow = function () {
+      if (seq !== intelSortSeq) return;
+      intelSortTransitionPending = false;
+      intelSortTargetMode = null;
+      intelSortCollapseTimer = null;
+      intelSortMode = mode;
+      const list = document.getElementById('intelEventsList');
+      if (list) list._intelOrder = '';
+      if (latestState) renderIntelHub(latestState);
+    };
+
+    const hadExpanded = intelExpandedIds.size > 0;
+    if (hadExpanded) {
+      intelExpandedIds.forEach(function (openId) {
+        const openCard = intelEventNodes[openId];
+        if (openCard) openCard.classList.remove('is-open');
+      });
+      intelExpandedIds.clear();
+      const reduceMotion = typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduceMotion) {
+        applySortNow();
+      } else {
+        intelSortTransitionPending = true;
+        intelSortCollapseTimer = setTimeout(applySortNow, 360);
+      }
+      return;
+    }
+
+    applySortNow();
+  }
+
+  const intelArticleProgressTimers = {};
+
+  function stopIntelArticleProgressPoll(eventId) {
+    const t = intelArticleProgressTimers[eventId];
+    if (t) {
+      clearInterval(t);
+      delete intelArticleProgressTimers[eventId];
+    }
+  }
+
+  function updateIntelArticleLoadingUi(eventId, pct, stage) {
+    const body = intelArticleBodyEl(eventId);
+    if (!body || !body.classList.contains('is-loading')) return;
+    const prevPct = typeof body._articlePct === 'number' ? body._articlePct : 0;
+    const rawPct = Number(pct);
+    const nextPct = Number.isFinite(rawPct) ? Math.max(prevPct, Math.min(100, Math.round(rawPct))) : prevPct;
+    body._articlePct = nextPct;
+    const stageEl = body.querySelector('.intel-article-stage');
+    if (stageEl && typeof stage === 'string' && stage.trim()) {
+      const nextStageTxt = ' \u00b7 ' + stage.trim();
+      if (stageEl.textContent !== nextStageTxt) stageEl.textContent = nextStageTxt;
+    }
+    const pctEl = body.querySelector('.intel-article-pct');
+    if (pctEl) {
+      const nextPctTxt = nextPct + '%';
+      if (pctEl.textContent !== nextPctTxt) pctEl.textContent = nextPctTxt;
+    }
+    const barEl = body.querySelector('.intel-article-progress');
+    if (barEl) barEl.setAttribute('aria-valuenow', String(nextPct));
+    const fillEl = body.querySelector('.intel-article-progress-fill');
+    if (fillEl) fillEl.style.width = nextPct + '%';
+  }
+
+  function startIntelArticleProgressPoll(eventId) {
+    stopIntelArticleProgressPoll(eventId);
+    if (!window.pywebview || !window.pywebview.api || typeof window.pywebview.api.get_event_article_progress !== 'function') {
+      return;
+    }
+    const tick = function () {
+      if (!intelArticlePending[eventId]) {
+        stopIntelArticleProgressPoll(eventId);
+        return;
+      }
+      window.pywebview.api.get_event_article_progress(eventId).then(function (prog) {
+        if (!intelArticlePending[eventId] || !prog || prog.ok !== true) return;
+        updateIntelArticleLoadingUi(eventId, prog.progress, prog.stage);
+      }).catch(function () {});
+    };
+    tick();
+    intelArticleProgressTimers[eventId] = setInterval(tick, 400);
   }
 
   function intelArticleBodyEl(eventId) {
@@ -3899,6 +4071,7 @@ function updateUiClockDisplay() {
     // (same object reference; the cache never replaces a result for an id).
     if (body._renderedResult === result) return;
     body._renderedResult = result;
+    body._articlePct = result.state === 'ready' ? 100 : 0;
     if (result.state === 'ready') {
       const paras = String(result.article || '').split(/\n\s*\n/);
       const blocks = paras.length > 1 ? paras : String(result.article || '').split('\n');
@@ -3928,9 +4101,14 @@ function updateUiClockDisplay() {
     if (intelArticlePending[eventId]) return;
     const body = intelArticleBodyEl(eventId);
     if (body) {
-      body.innerHTML = '<div class="intel-article-loading">Loading article\u2026</div>'
-        + '<div class="intel-article-progress" role="progressbar" aria-label="Loading article">'
-        + '<div class="digest-refresh-progress-track"><div class="digest-refresh-progress-fill indeterminate"></div></div>'
+      body._renderedResult = null;
+      body._articlePct = 8;
+      body.innerHTML = '<div class="intel-article-loading-row">'
+        + '<div class="intel-article-loading">Loading article\u2026<span class="intel-article-stage"> \u00b7 Preparing event context</span></div>'
+        + '<span class="intel-article-pct num">8%</span>'
+        + '</div>'
+        + '<div class="intel-article-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="8" aria-label="Loading article">'
+        + '<div class="digest-refresh-progress-track"><div class="digest-refresh-progress-fill intel-article-progress-fill" style="width:8%"></div></div>'
         + '</div>';
       body.classList.add('is-loading');
     }
@@ -3944,10 +4122,13 @@ function updateUiClockDisplay() {
     }
     const p = window.pywebview.api.get_event_article(eventId);
     intelArticlePending[eventId] = p;
+    startIntelArticleProgressPoll(eventId);
     p.then(function (res) {
+      stopIntelArticleProgressPoll(eventId);
       delete intelArticlePending[eventId];
       let result;
       if (res && res.ok === true && typeof res.article === 'string' && res.article.trim()) {
+        updateIntelArticleLoadingUi(eventId, 100, 'Complete');
         result = { state: 'ready', article: res.article };
       } else {
         result = { state: 'failed', reason: (res && res.reason) || 'Article unavailable' };
@@ -3960,6 +4141,7 @@ function updateUiClockDisplay() {
         }
       }
     }).catch(function (err) {
+      stopIntelArticleProgressPoll(eventId);
       delete intelArticlePending[eventId];
       const result = { state: 'failed', reason: 'Article request failed: ' + (err && err.message ? err.message : String(err)) };
       if (intelEventNodes[eventId]) {
@@ -4063,8 +4245,10 @@ function updateUiClockDisplay() {
     // header spans) is never rebuilt, so caching the reference is safe.
     const urgEl = card._urgEl || (card._urgEl = head.querySelector('.intel-urgency-badge'));
     const sentEl = card._intelSentEl || (card._intelSentEl = head.querySelector('.intel-sentiment-badge'));
-    const nextTime = evt.time || '';
+    const rawTime = evt.time || '';
+    const nextTime = formatIntelEventTime(rawTime);
     if (timeEl.textContent !== nextTime) timeEl.textContent = nextTime;
+    if (rawTime && timeEl.title !== rawTime) timeEl.title = rawTime;
     const nextDom = (evt.domain || 'macro').toUpperCase();
     if (domEl.textContent !== nextDom) domEl.textContent = nextDom;
     const nextSrc = evt.source || 'News Wire';
@@ -4118,6 +4302,9 @@ function updateUiClockDisplay() {
     const eventId = intelEventKey(evt);
     const isOpen = intelExpandedIds.has(eventId);
     card.classList.toggle('is-open', isOpen);
+    if (evt.article_state === 'loading' && intelArticlePending[eventId]) {
+      updateIntelArticleLoadingUi(eventId, evt.article_progress, evt.article_stage);
+    }
     if (isOpen) requestIntelArticle(eventId);
   }
 
@@ -4375,11 +4562,8 @@ function updateUiClockDisplay() {
           }
         });
         const nextOrder = sorted.map(intelEventKey).join('|');
-        if (listContainer._intelOrder !== nextOrder) {
-          sorted.forEach(function (evt) {
-            const card = intelEventNodes[intelEventKey(evt)];
-            if (card) listContainer.appendChild(card);
-          });
+        if (!intelSortTransitionPending && listContainer._intelOrder !== nextOrder) {
+          reorderIntelEventCards(listContainer, sorted);
           listContainer._intelOrder = nextOrder;
         }
         // Preload articles for the collapsed cards (see preloadIntelArticles):
@@ -4415,6 +4599,16 @@ function updateUiClockDisplay() {
         }
         const card = e.target.closest('.intel-event-card');
         if (card) toggleIntelEventCard(card);
+      });
+    }
+
+    const pwdBadgeEl = document.getElementById('omniConsolePwd');
+    if (pwdBadgeEl) {
+      pwdBadgeEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          copyOmniPassword();
+        }
       });
     }
 
@@ -4685,28 +4879,84 @@ function updateUiClockDisplay() {
     }
   }
 
-  function copyOmniPassword() {
-    // The password value never enters the frontend (item 7): the bridge
-    // copies it to the OS clipboard server-side and only reports success.
-    // Success feedback is shown ON the button itself (2026-11-13): the
-    // chart toast lives in the Arena view, so it is invisible while the
-    // user is on the Intel Hub page where this button sits.
+  let omniPwdRevealed = false;
+  let omniPwdCachedValue = '';
+
+  function syncOmniPwdDisplay() {
     const pwdBadge = document.getElementById('omniConsolePwd');
-    const flashBadgeFeedback = (text, isSuccess) => {
-      if (!pwdBadge) return;
-      if (pwdBadge._copiedTimer) clearTimeout(pwdBadge._copiedTimer);
-      if (pwdBadge._copiedOriginal === undefined) pwdBadge._copiedOriginal = pwdBadge.innerHTML;
+    const pwdText = document.getElementById('omniConsolePwdText');
+    const eyeBtn = document.getElementById('btnToggleOmniPwd');
+    if (pwdText && (!pwdBadge || !pwdBadge._copiedTimer)) {
+      pwdText.textContent = (omniPwdRevealed && omniPwdCachedValue) ? omniPwdCachedValue : '********';
+    }
+    if (pwdBadge && !pwdBadge._copiedTimer) {
+      pwdBadge.classList.toggle('pwd-revealed', Boolean(omniPwdRevealed && omniPwdCachedValue));
+    }
+    if (eyeBtn) {
+      const openSvg = eyeBtn.querySelector('.pwd-eye-open');
+      const offSvg = eyeBtn.querySelector('.pwd-eye-off');
+      eyeBtn.classList.toggle('is-revealed', omniPwdRevealed);
+      eyeBtn.setAttribute('aria-pressed', omniPwdRevealed ? 'true' : 'false');
+      eyeBtn.setAttribute('aria-label', omniPwdRevealed ? 'Hide password' : 'Show password');
+      eyeBtn.title = omniPwdRevealed ? 'Hide password' : 'Show password';
+      if (openSvg) openSvg.style.display = omniPwdRevealed ? 'none' : '';
+      if (offSvg) offSvg.style.display = omniPwdRevealed ? '' : 'none';
+    }
+  }
+
+  function flashOmniPwdBadge(text, isSuccess) {
+    const pwdBadge = document.getElementById('omniConsolePwd');
+    const pwdText = document.getElementById('omniConsolePwdText');
+    if (!pwdBadge) return;
+    if (pwdBadge._copiedTimer) clearTimeout(pwdBadge._copiedTimer);
+    if (pwdText) {
+      pwdText.textContent = text;
+    } else {
       pwdBadge.textContent = text;
-      pwdBadge.classList.toggle('pwd-copied', Boolean(isSuccess));
-      pwdBadge._copiedTimer = setTimeout(() => {
-        pwdBadge.innerHTML = pwdBadge._copiedOriginal;
-        pwdBadge.classList.remove('pwd-copied');
-        pwdBadge._copiedOriginal = undefined;
-        pwdBadge._copiedTimer = undefined;
-      }, 2000);
+    }
+    pwdBadge.classList.remove('pwd-revealed');
+    pwdBadge.classList.toggle('pwd-copied', Boolean(isSuccess));
+    pwdBadge._copiedTimer = setTimeout(() => {
+      pwdBadge._copiedTimer = undefined;
+      pwdBadge.classList.remove('pwd-copied');
+      syncOmniPwdDisplay();
+    }, 2000);
+  }
+
+  function toggleOmniPasswordVisibility() {
+    if (omniPwdRevealed) {
+      omniPwdRevealed = false;
+      omniPwdCachedValue = '';
+      syncOmniPwdDisplay();
+      return;
+    }
+    const onUnavailable = () => {
+      omniPwdRevealed = false;
+      omniPwdCachedValue = '';
+      syncOmniPwdDisplay();
+      flashOmniPwdBadge('not set', false);
     };
+    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.reveal_omniroute_password === 'function') {
+      window.pywebview.api.reveal_omniroute_password().then((res) => {
+        if (res && res.status === 'ok' && typeof res.password === 'string' && res.password.length > 0) {
+          omniPwdCachedValue = res.password;
+          omniPwdRevealed = true;
+          syncOmniPwdDisplay();
+        } else {
+          onUnavailable();
+        }
+      }, onUnavailable);
+      return;
+    }
+    onUnavailable();
+  }
+
+  function copyOmniPassword() {
+    // The clipboard copy stays server-side via copy_omniroute_password:
+    // clicking the badge copies the admin password and flashes "copied!"
+    // on the badge itself, then restores either the masked or revealed text.
     const showEnvHint = () => {
-      flashBadgeFeedback('copy failed', false);
+      flashOmniPwdBadge('copy failed', false);
       if (typeof showChartToast === 'function') {
         showChartToast({ triggerReason: 'Console password saved', action: 'INFO' });
       }
@@ -4714,7 +4964,7 @@ function updateUiClockDisplay() {
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.copy_omniroute_password === 'function') {
       window.pywebview.api.copy_omniroute_password().then((res) => {
         if (res && res.status === 'ok') {
-          flashBadgeFeedback('copied!', true);
+          flashOmniPwdBadge('copied!', true);
           if (typeof showChartToast === 'function') showChartToast({ triggerReason: 'copied!', action: 'COPY' });
         } else {
           showEnvHint();
@@ -4726,6 +4976,7 @@ function updateUiClockDisplay() {
   }
 
   window.copyOmniPassword = copyOmniPassword;
+  window.toggleOmniPasswordVisibility = toggleOmniPasswordVisibility;
 
   function handleWizardOverlayClick(e) {
     if (e && e.target && e.target.id === 'setupWizardModal') {

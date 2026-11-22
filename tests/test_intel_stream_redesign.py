@@ -258,19 +258,24 @@ def test_summary_prefix_matches_backend():
     )
 
 
-def test_article_loading_shows_indeterminate_progress_bar():
-    # Article loading (user request 2026-11-16): the lazy load shows
-    # an indeterminate sliding bar under "Loading article...", the
-    # same honest pattern as the digest refresh -- one LLM call, no
-    # trustworthy percent, so never a fabricated %.
+def test_article_loading_shows_determinate_stage_progress_bar():
+    # Article loading (V2.5.2 upgrade): displays "Loading article..." plus
+    # the live backend step label and a real determinate progress bar driven
+    # by backend pipeline stages and SSE streaming progress.
     js = _js()
     load_body = _fn_body(js, "requestIntelArticle")
     assert "Loading article" in load_body
+    assert "intel-article-stage" in load_body
+    assert "intel-article-pct" in load_body
     assert "intel-article-progress" in load_body
-    assert "indeterminate" in load_body
+    assert "intel-article-progress-fill" in load_body
     assert 'role="progressbar"' in load_body
+    assert 'aria-valuemin="0"' in load_body
+    assert 'aria-valuemax="100"' in load_body
+    assert "startIntelArticleProgressPoll" in load_body
     css = _css()
     assert ".intel-article-progress" in css
+    assert ".intel-article-progress-fill" in css
 
 
 def test_article_renders_with_fade_in():

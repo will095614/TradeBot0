@@ -112,6 +112,8 @@ class ViewModelPublisher:
                     e.get("headline") if "headline" in e else e.get("raw_title"),
                     e.get("summary"),
                     e.get("article_state"),
+                    e.get("article_progress"),
+                    e.get("article_stage"),
                     e.get("urgency") if "urgency" in e else e.get("urgency_score"),
                     e.get("sentiment"),
                     act_sig,

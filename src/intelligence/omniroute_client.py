@@ -10,7 +10,7 @@ import re
 import sys
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 import weakref
 import aiohttp
 
@@ -756,16 +756,29 @@ class OmniRouteClient:
         temperature: float = 0.0,
         max_tokens: int = 1500,
         timeout_sec: Optional[float] = None,
+        on_progress: Optional[Callable[[str, int, str], None]] = None,
+        stream_progress: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Sends an OpenAI-compatible chat completion request and returns a parsed JSON dictionary.
         Applies exponential backoff on transient 429/502/503. Falls back safely to None on failure.
+        When `stream_progress` is True and `on_progress` is supplied, requests SSE streaming so
+        real token/character arrival advances progress live, falling back transparently to
+        standard JSON responses whenever a provider does not stream.
         """
+        def _emit(stage: str, pct: int, detail: str) -> None:
+            if on_progress is None:
+                return
+            try:
+                on_progress(stage, int(max(0, min(100, pct))), detail)
+            except Exception as cb_err:
+                logger.debug("chat_json progress callback error: %s", cb_err)
+
         if self.is_shutting_down():
             return None
         sess = await self.get_session()
         call_timeout = timeout_sec if timeout_sec is not None else self.timeout_sec
-        payload = {
+        payload: Dict[str, Any] = {
             "model": model,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -779,6 +792,8 @@ class OmniRouteClient:
             skip_json_mode = (not self._is_dynamic_route_alias(model_key)) and (model_key in self._json_mode_unsupported)
         if not skip_json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if stream_progress:
+            payload["stream"] = True
         # Item 10 A3: never send a placeholder key. With no key configured
         # the request goes out without an Authorization header at all.
         headers = {"Content-Type": "application/json"}
@@ -787,6 +802,7 @@ class OmniRouteClient:
         endpoint = f"{self.base_url}/chat/completions"
         self.total_requests += 1
         format_retried = False
+        stream_retried = False
         attempt = 0
 
         while attempt <= self.max_retries:
@@ -795,10 +811,13 @@ class OmniRouteClient:
             need_repair = False
             retry_delay: Optional[float] = None
             retry_format = False
+            retry_nonstream = False
             try:
                 if getattr(sess, "closed", False):
                     sess = await self.get_session()
+                _emit("connecting", 18, "Connecting to AI gateway")
                 async with self._get_semaphore():
+                    _emit("waiting", 26, "Waiting for AI response")
                     async with sess.post(
                         endpoint,
                         json=payload,
@@ -814,28 +833,99 @@ class OmniRouteClient:
                             self.note_rate_limit(retry_after)
 
                         if status == 200:
-                            body = await self._parse_ok_json_body(resp)
-                            if not isinstance(body, dict):
-                                self.failed_requests += 1
-                                logger.warning("OmniRoute 200 OK returned non-JSON or non-object body")
-                                return None
-                            self.is_gateway_online = True
-                            self.note_success()
-                            self._record_token_usage(body.get("usage"))
-                            choices = body.get("choices")
-                            if isinstance(choices, list) and choices and isinstance(choices[0], dict) and "message" in choices[0]:
-                                msg = choices[0].get("message") or {}
-                                raw_content = msg.get("content") if isinstance(msg, dict) else ""
-                                content = raw_content if isinstance(raw_content, str) else ""
+                            ctype = str(resp.headers.get("Content-Type") or "").lower()
+                            if payload.get("stream") and "text/event-stream" in ctype:
+                                chunks: List[str] = []
+                                total_chars = 0
+                                target_chars = max(1200, int(max_tokens * 0.72))
+                                last_pct = 28
+                                usage_obj: Any = None
+                                _emit("analyzing", 32, "Analyzing market context")
+                                async for raw_line in resp.content:
+                                    if self.is_shutting_down():
+                                        return None
+                                    line = raw_line.decode("utf-8", errors="replace").strip()
+                                    if not line or line.startswith(":") or not line.startswith("data:"):
+                                        continue
+                                    data_str = line[5:].strip()
+                                    if data_str == "[DONE]":
+                                        break
+                                    try:
+                                        frame = json.loads(data_str)
+                                    except Exception:
+                                        continue
+                                    if isinstance(frame, dict):
+                                        if frame.get("usage"):
+                                            usage_obj = frame.get("usage")
+                                        f_choices = frame.get("choices")
+                                        if isinstance(f_choices, list) and f_choices and isinstance(f_choices[0], dict):
+                                            delta = f_choices[0].get("delta") or {}
+                                            if isinstance(delta, dict):
+                                                piece = delta.get("content")
+                                                if isinstance(piece, str) and piece:
+                                                    chunks.append(piece)
+                                                    total_chars += len(piece)
+                                                    frac = min(1.0, total_chars / float(target_chars))
+                                                    pct = 32 + int(frac * 56)
+                                                    if pct > last_pct:
+                                                        last_pct = pct
+                                                        if pct < 50:
+                                                            _emit("analyzing", pct, "Analyzing market context")
+                                                        elif pct < 74:
+                                                            _emit("drafting", pct, "Drafting in-depth report")
+                                                        else:
+                                                            _emit("structuring", pct, "Structuring key takeaways")
+                                self.is_gateway_online = True
+                                self.note_success()
+                                if usage_obj is not None:
+                                    self._record_token_usage(usage_obj)
+                                content = "".join(chunks)
+                                _emit("parsing", 91, "Parsing & validating report")
                                 parsed = extract_json(content)
                                 if parsed is not None:
                                     self.successful_requests += 1
                                     return parsed
-                                logger.warning("OmniRoute 200 OK returned unparseable content: %s", content[:150])
+                                logger.warning("OmniRoute 200 SSE returned unparseable content: %s", content[:150])
                                 need_repair = True
                             else:
-                                self.failed_requests += 1
-                                return None
+                                _emit("receiving", 72, "Receiving AI response")
+                                body = await self._parse_ok_json_body(resp)
+                                if not isinstance(body, dict):
+                                    self.failed_requests += 1
+                                    logger.warning("OmniRoute 200 OK returned non-JSON or non-object body")
+                                    return None
+                                self.is_gateway_online = True
+                                self.note_success()
+                                self._record_token_usage(body.get("usage"))
+                                _emit("parsing", 90, "Parsing & validating report")
+                                choices = body.get("choices")
+                                if isinstance(choices, list) and choices and isinstance(choices[0], dict) and "message" in choices[0]:
+                                    msg = choices[0].get("message") or {}
+                                    raw_content = msg.get("content") if isinstance(msg, dict) else ""
+                                    content = raw_content if isinstance(raw_content, str) else ""
+                                    parsed = extract_json(content)
+                                    if parsed is not None:
+                                        self.successful_requests += 1
+                                        return parsed
+                                    logger.warning("OmniRoute 200 OK returned unparseable content: %s", content[:150])
+                                    need_repair = True
+                                else:
+                                    self.failed_requests += 1
+                                    return None
+                        elif (
+                            status in (400, 422)
+                            and payload.get("stream")
+                            and not stream_retried
+                            and not _looks_like_format_rejection(err_body)
+                        ):
+                            payload.pop("stream", None)
+                            stream_retried = True
+                            retry_nonstream = True
+                            _emit("waiting", 24, "Switching to standard response mode")
+                            logger.info(
+                                "Provider rejected streaming mode (HTTP %d); retrying without stream",
+                                status,
+                            )
                         elif (
                             status in (400, 422)
                             and "response_format" in payload
@@ -870,6 +960,7 @@ class OmniRouteClient:
                             ):
                                 self.retried_requests += 1
                                 retry_delay = compute_backoff(attempt, retry_after)
+                                _emit("retrying", 22, f"Gateway busy, retrying ({attempt + 1}/{self.max_retries})")
                                 logger.info(
                                     "OmniRoute status %d on attempt %d/%d. Backoff %.2fs",
                                     status, attempt + 1, self.max_retries, retry_delay
@@ -883,14 +974,17 @@ class OmniRouteClient:
                 # performing a repair call or sleeping for retry backoff (prevents
                 # max_concurrent=1 self-deadlock and connection-pool starvation).
                 if need_repair:
+                    _emit("repairing", 94, "Formatting response structure")
+                    repair_payload = dict(payload)
+                    repair_payload.pop("stream", None)
                     repaired = await self._repair_json_once(
-                        sess, endpoint, headers, payload, call_timeout
+                        sess, endpoint, headers, repair_payload, call_timeout
                     )
                     if repaired is not None:
                         self.successful_requests += 1
                         return repaired
                     return None
-                if retry_format:
+                if retry_nonstream or retry_format:
                     continue
                 if retry_delay is not None:
                     if self.is_shutting_down():

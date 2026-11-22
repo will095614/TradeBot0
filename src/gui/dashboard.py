@@ -270,6 +270,14 @@ class _ArenaBridgeApi:
             logger.error("Event article fetch failed for %s: %s", event_id, e)
             return {"ok": False, "event_id": event_id, "state": "failed", "reason": str(e) or e.__class__.__name__}
 
+    def get_event_article_progress(self, event_id: str) -> Dict[str, Any]:
+        """Returns live article generation percentage and stage for an event. Never raises."""
+        try:
+            return self._dashboard.engine.macro_commander.get_event_article_progress(str(event_id or ""))
+        except Exception as e:
+            logger.debug("Event article progress read failed for %s: %s", event_id, e)
+            return {"ok": False, "event_id": str(event_id or ""), "state": "none", "progress": 0, "stage": ""}
+
     def toggle_fullscreen(self) -> bool:
         if self._dashboard.window:
             self._dashboard.window.toggle_fullscreen()
@@ -366,6 +374,22 @@ class _ArenaBridgeApi:
         if not ok:
             return {"status": "error", "message": "clipboard unavailable"}
         return {"status": "ok"}
+
+    def reveal_omniroute_password(self) -> Dict[str, Any]:
+        """Returns the configured OmniRoute admin password ONLY on explicit eye-toggle click.
+
+        Separated from copy_omniroute_password and get_setup_status so passive polling
+        and clipboard copies never expose the password; never logged.
+        """
+        try:
+            env_map = self._dashboard.config_manager.read_omniroute_env()
+        except Exception as e:
+            logger.error("Failed to read omniroute env for password reveal: %s", e)
+            return {"status": "error", "message": "could not read password store"}
+        password = (env_map.get("INITIAL_PASSWORD") or "").strip()
+        if not password:
+            return {"status": "error", "message": "password not configured"}
+        return {"status": "ok", "password": password}
 
     def check_for_updates(self) -> Dict[str, Any]:
         """Checks whether a newer TradeBot0 release is available.

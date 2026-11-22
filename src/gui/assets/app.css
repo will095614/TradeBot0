@@ -497,9 +497,9 @@ body.arena-ready .app-shell {
 .lg-dock-pod--brand {
   flex: 0 0 auto !important;
   flex-shrink: 0 !important;
-  width: 531px !important;
-  min-width: 531px !important;
-  max-width: 531px !important;
+  width: auto !important;
+  min-width: max-content !important;
+  max-width: none !important;
   box-sizing: border-box !important;
 }
 
@@ -539,11 +539,11 @@ body.arena-ready .app-shell {
   flex-direction: column;
   justify-content: center;
   gap: 1px;
-  width: 175px !important;
-  min-width: 175px !important;
-  max-width: 175px !important;
+  width: max-content !important;
+  min-width: 214px !important;
+  max-width: none !important;
   flex-shrink: 0 !important;
-  overflow: hidden !important;
+  overflow: visible !important;
 }
 
 .app-wordmark {
@@ -578,11 +578,11 @@ body.arena-ready .app-shell {
   font-size: 10px;
   color: var(--ss-ink-2);
   white-space: nowrap !important;
-  width: 175px !important;
-  min-width: 175px !important;
-  max-width: 175px !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
+  width: max-content !important;
+  min-width: 214px !important;
+  max-width: none !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
   display: block !important;
 }
 
@@ -3775,6 +3775,11 @@ tbody td {
     0 0 20px rgba(0, 242, 254, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.45);
 }
+/* FLIP reorder swap transition for Intel Hub event cards */
+.intel-event-card.intel-card-reordering {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
 /* ==========================================================================
    INTEL HUB STREAM REDESIGN (Phase B): full-width rows, expand, chips
    ========================================================================== */
@@ -3834,9 +3839,28 @@ tbody td {
 .intel-article-para:last-child {
   margin-bottom: 0;
 }
+.intel-article-loading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
 .intel-article-loading {
   color: #67E8F9;
-  animation: intel-article-pulse 1.2s ease-in-out infinite;
+  font-weight: 600;
+  animation: intel-article-pulse 1.6s ease-in-out infinite;
+}
+.intel-article-stage {
+  color: #94A3B8;
+  font-weight: 500;
+}
+.intel-article-pct {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #67E8F9;
+  font-variant-numeric: tabular-nums;
 }
 /* Article fade-in (user request 2026-11-16): the lazy article
    replaced the loading text instantly. Same house fade as the
@@ -3853,14 +3877,28 @@ tbody td {
     transform: translateY(0);
   }
 }
-/* Article loading bar (user request 2026-11-16): the lazy article
-   load is one LLM call with no trustworthy percent, so the bar is
-   indeterminate -- the same sliding fill as the digest refresh --
-   never a fabricated %. It sits under the "Loading article..."
-   line and is replaced by the article (or the honest error) when
-   the bridge resolves. */
+/* Real determinate article loading progress bar (V2.5.2): driven by
+   backend pipeline stages and live SSE streaming progress. */
 .intel-article-progress {
-  margin-top: 10px;
+  margin-top: 8px;
+}
+.intel-article-progress-fill {
+  position: relative;
+  overflow: hidden;
+  width: 0%;
+  transition: width 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.intel-article-progress-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.45) 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: intel-progress-sheen 1.8s ease-in-out infinite;
+}
+@keyframes intel-progress-sheen {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
 }
 @keyframes intel-article-pulse {
   0%, 100% { opacity: 0.55; }
@@ -4231,10 +4269,13 @@ body:not(.arena-ready) .lg-glass {
     transform: none !important;
   }
   .intel-event-detail,
-  .intel-expand-chevron {
+  .intel-expand-chevron,
+  .intel-event-card.intel-card-reordering,
+  .intel-article-progress-fill {
     transition: none !important;
   }
-  .intel-article-loading {
+  .intel-article-loading,
+  .intel-article-progress-fill::after {
     animation: none !important;
   }
   .intel-article-para,
@@ -5609,29 +5650,50 @@ body:not(.arena-ready) .lg-glass {
   .setup-keys-intro { line-height: 1.3; }
 }
 
+.pwd-row-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .pwd-badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 8px;
+  height: 22px;
+  box-sizing: border-box;
+  padding: 0 8px;
   font-family: var(--font-mono);
   font-size: 10.5px;
   font-weight: 700;
   color: #38BDF8;
   background: rgba(56, 189, 248, 0.14);
   border: 1px solid rgba(56, 189, 248, 0.36);
-  border-radius: 4px;
+  border-radius: 5px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
   cursor: pointer;
   user-select: none;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   vertical-align: middle;
 }
 
+.pwd-copy-svg {
+  flex: 0 0 auto;
+  opacity: 0.9;
+}
+
+.pwd-badge.pwd-revealed {
+  color: #E0F2FE;
+  background: rgba(56, 189, 248, 0.20);
+  border-color: rgba(56, 189, 248, 0.56);
+  letter-spacing: 0.02em;
+}
+
 .pwd-badge:hover {
   background: rgba(56, 189, 248, 0.26);
   border-color: #38BDF8;
   color: #FFFFFF;
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.28);
   transform: translateY(-0.5px);
 }
 
@@ -5646,34 +5708,70 @@ body:not(.arena-ready) .lg-glass {
   box-shadow: 0 0 14px rgba(16, 245, 160, 0.45) !important;
 }
 
+.pwd-eye-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  box-sizing: border-box;
+  border-radius: 5px;
+  color: #7DD3FC;
+  background: rgba(56, 189, 248, 0.10);
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  vertical-align: middle;
+}
+
+.pwd-eye-btn:hover {
+  background: rgba(56, 189, 248, 0.24);
+  border-color: #38BDF8;
+  color: #FFFFFF;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transform: translateY(-0.5px);
+}
+
+.pwd-eye-btn:active {
+  transform: scale(0.94);
+}
+
+.pwd-eye-btn.is-revealed {
+  color: #67E8F9;
+  background: rgba(0, 242, 254, 0.22);
+  border-color: rgba(0, 242, 254, 0.65);
+  box-shadow: 0 0 12px rgba(0, 242, 254, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.30);
+}
+
+.pwd-eye-open,
+.pwd-eye-off {
+  pointer-events: none;
+}
+
 /* ==========================================================================
    RESPONSIVE TOP DOCK & SPATIAL POD COLLISION GUARDS (strictly descending)
    Progressive collapse, dock-scoped only so wizard/modal buttons keep full size.
    ========================================================================== */
 @media (max-width: 2150px) {
-  /* L1 compact: brand 531 -> 482, tighter island/controls padding + gaps,
-     dock buttons 13px -> 9px. Fits viewports >= ~1987px. */
+  /* L1 compact: tighter pod padding + gaps without squeezing the brand subtitle. */
   .spatial-dock-bar { gap: 6px; }
   .spatial-dock-bar .lg-dock-pod { padding: 0 10px; gap: 6px; }
-  .spatial-dock-bar .lg-dock-pod--brand { width: 482px !important; min-width: 482px !important; max-width: 482px !important; }
-  .spatial-dock-bar .title-group, .spatial-dock-bar .title-sub { width: 140px !important; min-width: 140px !important; max-width: 140px !important; }
   .spatial-dock-bar .lg-dock-pod--island { padding: 0 20px 0 16px !important; gap: 8px; }
   .spatial-dock-bar .btn, .spatial-dock-bar .lg-btn { padding: 0 9px; font-size: 10.5px; }
 }
 
 @media (max-width: 1986px) {
-  /* L2: hide the clock pill, brand 482 -> 380. Bid/ask + 24h high/low
-     stay visible. Fits viewports >= ~1885px. */
+  /* L2: hide the clock pill so brand subtitle + island stay unclipped. */
   .spatial-dock-bar #isoClockPill { display: none !important; }
-  .spatial-dock-bar .lg-dock-pod--brand { width: 380px !important; min-width: 380px !important; max-width: 380px !important; }
 }
 
 @media (max-width: 1884px) {
   /* L3: hide island micro-metrics (bid/ask, 24h high/low) + dividers,
-     brand 380 -> 320, island padding tighter. Fits viewports >= ~1529px. */
+     keeping the brand subtitle readable without ellipsis. */
   .spatial-dock-bar .lg-dock-pod--island .island-micro-metrics { display: none; }
   .spatial-dock-bar .lg-dock-pod--island .stat-divider { display: none; }
-  .spatial-dock-bar .lg-dock-pod--brand { width: 320px !important; min-width: 320px !important; max-width: 320px !important; }
   .spatial-dock-bar .lg-dock-pod--island { padding: 0 12px !important; }
 }
 
