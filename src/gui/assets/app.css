@@ -204,8 +204,8 @@ body.arena-paused .app-shell {
               opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-body.arena-paused .workspace-grid,
-body.arena-paused #intelHubMainView,
+body.arena-paused .workspace-grid:not(.view-transition-leaving):not(.view-transition-entering),
+body.arena-paused #intelHubMainView:not(.view-transition-leaving):not(.view-transition-entering),
 body.arena-paused .spatial-dock-bar .lg-dock-pod--island,
 body.arena-paused .spatial-dock-bar .lg-dock-pod--brand > *:not(#liveBadge),
 body.arena-paused .spatial-dock-bar .lg-dock-pod--controls > *:not(#pauseBtn) {
@@ -226,7 +226,10 @@ body.arena-paused .live-dot,
 body.arena-paused .ss-badge__dot,
 body.arena-paused .catalyst-pulse-orb,
 body.arena-paused .orb-ring,
+body.arena-paused .idle-dot,
+body.arena-paused .toast-pulse-dot,
 body.arena-paused .border-beam-ring,
+body.arena-paused .border-beam-ring::before,
 body.arena-paused .thinking-orb {
   animation-play-state: paused !important;
 }
@@ -508,9 +511,9 @@ body[data-backdrop-mode="minimal"] .lg-ambient-grainient {
               transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-body.arena-ready .app-shell {
-  opacity: 1 !important;
-  transform: translate3d(0, 0, 0) scale(1) !important;
+body.arena-ready .app-shell:not(.arena-entering) {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
 }
 
 /* ==========================================================================
@@ -2301,7 +2304,7 @@ body.arena-paused #pauseBtn:hover,
     max-height 1.0s cubic-bezier(0.16, 1, 0.3, 1),
     margin-bottom 1.0s cubic-bezier(0.16, 1, 0.3, 1),
     filter 1.0s cubic-bezier(0.16, 1, 0.3, 1);
-  animation: toastSpringIn 1.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: toastSpringIn 1.25s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 .chart-toast:hover {
@@ -2879,6 +2882,11 @@ body.arena-paused #pauseBtn:hover,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.ledger-table-scroll table thead th {
+  font-size: 8px;
+  padding: 3.5px 2px;
 }
 
 .console-sigil {
@@ -3753,9 +3761,23 @@ tbody td {
   flex: 1;
 }
 
+.intel-events-section .panel-header {
+  gap: 8px;
+  min-width: 0;
+}
+
+.intel-events-section .panel-tools {
+  flex-shrink: 1;
+  min-width: 0;
+}
+
 .intel-feed-desc {
   font-size: 10px;
   color: var(--ss-ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .intel-count-badge {
@@ -3763,6 +3785,11 @@ tbody td {
   font-weight: 700;
   padding: 3px 9px;
   color: #67E8F9;
+  flex-shrink: 0;
+}
+
+.intel-events-section .intel-sort-seg {
+  flex-shrink: 0;
 }
 
 .intel-events-scroll {
@@ -4234,6 +4261,8 @@ tbody td {
   }
   .strategies-bento-dock {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    height: auto;
+    grid-auto-rows: minmax(156px, auto);
   }
   .workspace-grid {
     grid-template-rows: minmax(0, 1fr) 248px;
@@ -4313,6 +4342,7 @@ body.is-splash-transitioning .lg-ambient-blob,
 body.is-splash-transitioning .lg-orbit-ring,
 body.is-splash-transitioning .splash-icon,
 body.is-splash-transitioning .border-beam-ring,
+body.is-splash-transitioning .border-beam-ring::before,
 body.is-splash-transitioning .thinking-orb,
 .splash-overlay.fade-out .lg-orbit-ring,
 .splash-overlay.fade-out .splash-icon {
@@ -6009,15 +6039,29 @@ body:not(.arena-ready) .lg-glass {
 /* ==========================================================================
    PHASE 0-4 COMPONENT OPTIMIZATIONS (Option B — Unslop Studio Discipline)
    ========================================================================== */
-@property --beam-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
+@keyframes borderBeamSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
-@keyframes borderBeamSpin {
-  from { --beam-angle: 0deg; }
-  to   { --beam-angle: 360deg; }
+@keyframes nfRollCurrUp {
+  from { transform: translateY(105%); opacity: 0.25; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes nfRollCurrDown {
+  from { transform: translateY(-105%); opacity: 0.25; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes nfRollPrevUp {
+  from { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(-105%); opacity: 0; }
+}
+
+@keyframes nfRollPrevDown {
+  from { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(105%); opacity: 0; }
 }
 
 @keyframes textMorphIn {
@@ -6060,17 +6104,12 @@ body:not(.arena-ready) .lg-glass {
 
 .nf-digit-curr {
   display: inline-block;
-  transition: transform 0.24s var(--arc-ease-spring), opacity 0.22s var(--arc-ease-out);
-  transition-delay: calc(var(--nf-i, 0) * 16ms);
+  animation: nfRollCurrUp 0.24s var(--arc-ease-spring) calc(var(--nf-i, 0) * 16ms) both;
+  will-change: transform, opacity;
 }
 
-.nf-digit-col:not(.nf-is-rolling) .nf-digit-curr {
-  transform: translateY(105%);
-  opacity: 0.25;
-}
-
-.nf-digit-col.nf-dir-down:not(.nf-is-rolling) .nf-digit-curr {
-  transform: translateY(-105%);
+.nf-digit-col.nf-dir-down .nf-digit-curr {
+  animation-name: nfRollCurrDown;
 }
 
 .nf-digit-prev {
@@ -6078,24 +6117,12 @@ body:not(.arena-ready) .lg-glass {
   left: 0;
   top: 0;
   pointer-events: none;
-  opacity: 0;
-  transform: translateY(-105%);
-  transition: transform 0.24s var(--arc-ease-spring), opacity 0.18s var(--arc-ease-out);
-  transition-delay: calc(var(--nf-i, 0) * 16ms);
+  animation: nfRollPrevUp 0.22s var(--arc-ease-out) calc(var(--nf-i, 0) * 16ms) both;
+  will-change: transform, opacity;
 }
 
-.nf-digit-col:not(.nf-is-rolling) .nf-digit-prev {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.nf-digit-col.nf-is-rolling .nf-digit-curr {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.nf-digit-col.nf-dir-down.nf-is-rolling .nf-digit-prev {
-  transform: translateY(105%);
+.nf-digit-col.nf-dir-down .nf-digit-prev {
+  animation-name: nfRollPrevDown;
 }
 
 /* Strategy Card Inline Equity Sparkline (uiarc.dev sparkline) */
@@ -6300,6 +6327,10 @@ body:not(.arena-ready) .lg-glass {
   transform: scale(1);
 }
 
+.thinking-orbs--mini:not(.macro-is-thinking) .thinking-orb {
+  animation-play-state: paused !important;
+}
+
 .digest-refresh-head {
   display: flex;
   align-items: center;
@@ -6322,15 +6353,7 @@ body:not(.arena-ready) .lg-glass {
   pointer-events: none;
   z-index: 3;
   opacity: 0;
-  background: conic-gradient(
-    from var(--beam-angle),
-    transparent 0deg,
-    transparent 245deg,
-    rgba(0, 242, 254, 0.72) 295deg,
-    rgba(255, 255, 255, 0.85) 325deg,
-    rgba(16, 245, 160, 0.55) 348deg,
-    transparent 360deg
-  );
+  overflow: hidden;
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
@@ -6338,8 +6361,27 @@ body:not(.arena-ready) .lg-glass {
   transition: opacity 0.35s ease;
 }
 
+.border-beam-ring::before {
+  content: "";
+  position: absolute;
+  inset: -100%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 245deg,
+    rgba(0, 242, 254, 0.72) 295deg,
+    rgba(255, 255, 255, 0.85) 325deg,
+    rgba(16, 245, 160, 0.55) 348deg,
+    transparent 360deg
+  );
+  will-change: transform;
+}
+
 .is-champion-beam > .border-beam-ring {
   opacity: 0.78;
+}
+
+.is-champion-beam > .border-beam-ring::before {
   animation: borderBeamSpin 5.5s linear infinite;
 }
 
@@ -6398,6 +6440,7 @@ body:not(.arena-ready) .lg-glass {
 }
 
 .view-stage-host.is-view-transitioning .border-beam-ring,
+.view-stage-host.is-view-transitioning .border-beam-ring::before,
 .view-stage-host.is-view-transitioning .thinking-orb {
   animation-play-state: paused !important;
 }
@@ -6590,6 +6633,15 @@ body:not(.arena-ready) .lg-glass {
   width: 196px;
   border-color: rgba(0, 242, 254, 0.45);
   background: rgba(4, 12, 30, 0.72);
+}
+
+.intel-search-wrap.has-query {
+  border-color: rgba(0, 242, 254, 0.55);
+  box-shadow: 0 0 10px rgba(0, 242, 254, 0.2);
+}
+
+.intel-search-wrap.has-query:not(.is-open) {
+  background: rgba(0, 242, 254, 0.14);
 }
 
 .intel-search-btn {
@@ -6851,6 +6903,8 @@ body:not(.arena-ready) .lg-glass {
   z-index: 10006;
   align-items: flex-start;
   padding-top: min(14vh, 110px);
+  transition: opacity 0.22s var(--arc-ease-out),
+              visibility 0.22s var(--arc-ease-out);
 }
 
 .cmd-palette-card {
@@ -7041,13 +7095,17 @@ body.window-hidden .lg-ambient-blob,
 body.window-hidden .lg-ambient-caustics,
 body.window-hidden .lg-lens-ring,
 body.window-hidden .lg-orbit-ring,
+body.window-hidden .lg-tube-meniscus,
 body.window-hidden .lg-tube-bubbles i,
 body.window-hidden .lg-wave-bars i,
 body.window-hidden .pulse-dot,
 body.window-hidden .live-dot,
 body.window-hidden .catalyst-pulse-orb,
 body.window-hidden .orb-ring,
+body.window-hidden .idle-dot,
+body.window-hidden .toast-pulse-dot,
 body.window-hidden .border-beam-ring,
+body.window-hidden .border-beam-ring::before,
 body.window-hidden .thinking-orb,
 body.window-hidden .lg-ambient-shader {
   animation-play-state: paused !important;
@@ -7058,16 +7116,27 @@ body.window-hidden .lg-ambient-shader {
   .lg-ambient-caustics,
   .lg-lens-ring,
   .lg-orbit-ring,
+  .lg-tube-meniscus,
   .lg-tube-bubbles i,
   .lg-wave-bars i,
   .pulse-dot,
   .live-dot,
   .catalyst-pulse-orb,
   .orb-ring,
+  .idle-dot,
+  .toast-pulse-dot,
   .border-beam-ring,
+  .border-beam-ring::before,
   .thinking-orb,
   .lg-ambient-shader {
     animation-play-state: paused !important;
+  }
+  .nf-digit-curr {
+    animation: none !important;
+  }
+  .nf-digit-prev {
+    display: none !important;
+    animation: none !important;
   }
   .view-transition-entering,
   .view-transition-leaving,

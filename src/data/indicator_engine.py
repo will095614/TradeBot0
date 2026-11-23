@@ -183,8 +183,8 @@ class IndicatorEngineMixin:
             except (TypeError, ValueError):
                 vol_f = None
         minute = float(int(ts // 60) * 60)
-        bar_h = max(h, lo)
-        bar_l = min(h, lo)
+        bar_h = max(h, lo) if high is not None else max(h, lo, c)
+        bar_l = min(h, lo) if low is not None else min(h, lo, c)
         if self.candles and minute < self.candles[-1]["t"]:
             return
         if self.candles and self.candles[-1]["t"] == minute:

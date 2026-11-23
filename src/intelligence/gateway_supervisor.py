@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 import weakref
 import zipfile
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from src.intelligence.config_manager import PROVIDER_ENV_MAP, parse_omni_env_line
 
@@ -133,9 +133,11 @@ class GatewaySupervisor:
         daemon_log_path: Optional[Path] = None,
         install_log_path: Optional[Path] = None,
         omni_data_dir: Optional[Path] = None,
+        on_gateway_recovered: Optional[Callable[[], None]] = None,
     ) -> None:
         self.host = host
         self.port = port
+        self._on_gateway_recovered = on_gateway_recovered
         self.omni_data_dir: Path = (
             Path(omni_data_dir) if omni_data_dir is not None else (Path.home() / ".omniroute")
         )
@@ -1135,13 +1137,19 @@ class GatewaySupervisor:
             with self._daemon_lock:
                 if self._watchdog_spawn_abort is not None and self._watchdog_spawn_abort[0] == threading.get_ident():
                     self._watchdog_spawn_abort = None
+        recovered = False
         with self._watchdog_lock:
+            if evt.is_set():
+                if self._watchdog_state == "restarting":
+                    self._watchdog_state = "ok"
+                return
             if ok:
                 self._watchdog_state = "ok"
                 self._watchdog_failures = 0
                 self._watchdog_next_retry_ts = 0.0
                 self._watchdog_last_restart_ts = time.time()
                 self._watchdog_healthy = True
+                recovered = True
                 logger.info("Gateway watchdog restarted the OmniRoute gateway.")
             else:
                 self._watchdog_failures += 1
@@ -1159,6 +1167,11 @@ class GatewaySupervisor:
                 else:
                     self._watchdog_state = "ok"
                     self._watchdog_next_retry_ts = time.monotonic() + self._watchdog_backoff_sec(failures)
+        if recovered and callable(self._on_gateway_recovered):
+            try:
+                self._on_gateway_recovered()
+            except Exception as rec_cb_err:
+                logger.debug("Gateway recovered callback failed: %s", rec_cb_err)
 
     def is_port_open(self, timeout: float = 0.35) -> bool:
         """Fast TCP socket probe to verify if port is actively listening."""
@@ -1427,6 +1440,11 @@ class GatewaySupervisor:
             child_env = os.environ.copy()
             for key in ("_MEIPASS", "_MEIPASS2", "PYTHONPATH", "PYTHONHOME", "INITIAL_PASSWORD"):
                 child_env.pop(key, None)
+            if cmd and Path(cmd[0]).is_file():
+                node_dir = str(Path(cmd[0]).parent)
+                cur_path = child_env.get("PATH", "")
+                if node_dir and node_dir not in cur_path.split(os.pathsep):
+                    child_env["PATH"] = f"{node_dir}{os.pathsep}{cur_path}" if cur_path else node_dir
             # Pin DATA_DIR to the same directory ConfigManager writes .env into
             # (~/.omniroute by default), preventing Windows split-brain with %APPDATA%\omniroute.
             try:
@@ -1658,6 +1676,8 @@ class GatewaySupervisor:
                     ["netstat", "-ano"],
                     shell=False,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=15,
                     stderr=subprocess.DEVNULL,
                     creationflags=0x08000000,

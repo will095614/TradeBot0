@@ -103,7 +103,7 @@ class StreamingCryptoFeed:
                     except Exception as e:
                         logger.debug("WebSocket close failed during stop: %s", e)
             if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=2.0)
+                self._thread.join(timeout=2.5)
             if self._thread is None or not self._thread.is_alive():
                 self._thread = None
 
@@ -150,7 +150,7 @@ class StreamingCryptoFeed:
                     open_timeout=5,
                     ping_interval=20,
                     ping_timeout=10,
-                    close_timeout=5,
+                    close_timeout=1.5,
                 ) as ws:
                     if not self.running:
                         break

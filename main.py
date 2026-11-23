@@ -75,8 +75,12 @@ def _set_windows_app_user_model_id(app_id: str = "TradeBot0.QuantArena") -> bool
         return False
     try:
         import ctypes
+        from ctypes import wintypes
 
-        hr = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [wintypes.LPCWSTR]
+        shell32.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_long
+        hr = int(shell32.SetCurrentProcessExplicitAppUserModelID(app_id))
         return hr == 0
     except Exception as e:
         logger.debug("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
@@ -95,12 +99,16 @@ def main() -> None:
         import webview
         import json
         from src.data.live_engine import LiveArenaEngine
+        from src.gui.dashboard import HTML_TEMPLATE, _get_app_icon_path
+
         app = ArenaDashboard(initial_cash=Decimal("100000.00"))
         try:
+            assert HTML_TEMPLATE and "Asset loading failed" not in HTML_TEMPLATE, "GUI HTML assets failed to bundle"
+            assert _get_app_icon_path() is not None, "App icon .ico asset missing"
             json.dumps(app.engine.get_ui_state(), allow_nan=False)
             print("SELF_TEST_OK")
         finally:
-            app.engine.stop()
+            app.stop()
         return
 
     if "--cli" in sys.argv:

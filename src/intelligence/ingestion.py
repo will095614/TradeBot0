@@ -320,9 +320,10 @@ def _parse_feed_ts(value: Any, now: Optional[float] = None) -> Optional[float]:
     ref_now = time.time() if now is None else float(now)
     dt: Optional[datetime] = None
 
-    if re.match(r"^\d{4}-\d{2}-\d{2}", raw):
+    norm = f"{raw[:-1]}+00:00" if raw.endswith(("Z", "z")) else raw
+    if re.match(r"^\d{4}-\d{2}-\d{2}", norm):
         try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(norm)
         except (ValueError, TypeError):
             dt = None
     if dt is None:
@@ -332,7 +333,7 @@ def _parse_feed_ts(value: Any, now: Optional[float] = None) -> Optional[float]:
             dt = None
     if dt is None:
         try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(norm)
         except (ValueError, TypeError):
             return None
 
@@ -566,16 +567,9 @@ def parse_reddit_posts(data: Any, subreddit: str, domain: str) -> List[RawEvent]
 
 
 def _parse_iso_ts(value: Any) -> float:
-    """Parses an ISO8601 timestamp to epoch seconds; now on failure."""
-    if isinstance(value, str) and value:
-        try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
-        except (ValueError, TypeError):
-            pass
-    return time.time()
+    """Compatibility wrapper returning epoch seconds; now on failure."""
+    res = _parse_feed_ts(value)
+    return res if res is not None else time.time()
 
 
 def parse_stocktwits_stream(data: Any, symbol: str) -> List[RawEvent]:

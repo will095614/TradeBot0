@@ -171,7 +171,9 @@ class LiveStrategyRunnerMixin:
             if tp != ticket.take_profit:
                 ticket = replace(ticket, take_profit=tp)
         else:
-            qty = competitor.compute_r_multiple_qty(price, sl, self.broker, risk_budget=risk_budget, sizing_multiplier=sizing_mult)
+            qty = competitor.compute_r_multiple_qty(
+                price, sl, self.broker, risk_budget=risk_budget, sizing_multiplier=sizing_mult, side=side
+            )
             if qty <= Decimal("0"):
                 return False
             ticket = OrderTicket(

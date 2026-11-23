@@ -50,6 +50,17 @@ from src.intelligence.omniroute_client import OmniRouteClient
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_fmt_hms(ts: Any) -> str:
+    """Format an epoch timestamp as HH:MM:SS without raising on Windows invalid/negative dates."""
+    try:
+        val = float(ts)
+        if not math.isfinite(val) or val < 0.0:
+            return ""
+        return time.strftime("%H:%M:%S", time.localtime(val))
+    except (OSError, OverflowError, ValueError, TypeError):
+        return ""
+
 # A SQLite candle cache is fresh only while its newest 1-minute bar is
 # recent. 600s = 10 bars of slack for a brief feed gap: a cache older
 # than that belongs to a dead session, and warming indicators (RSI / ATR
@@ -798,11 +809,11 @@ class LiveArenaEngine(
 
     def _record_series_point(self, price: Decimal, ts: float) -> None:
         self._harvest_fills()
-        t_label = time.strftime("%H:%M:%S", time.localtime(ts))
+        t_label = _safe_fmt_hms(ts)
         self.tick_timestamps.append(t_label)
-        self.eth_price_series.append(float(price))
-        self.ema_fast_series.append(float(self.live_ema_fast))
-        self.ema_slow_series.append(float(self.live_ema_slow))
+        self.eth_price_series.append(self._finite(price))
+        self.ema_fast_series.append(self._finite(self.live_ema_fast))
+        self.ema_slow_series.append(self._finite(self.live_ema_slow))
 
         max_pts = 180
         if not isinstance(self.tick_timestamps, deque) and len(self.tick_timestamps) > max_pts:
@@ -1037,17 +1048,34 @@ class LiveArenaEngine(
                                                 self.live_start_ts = time.time()
                                             if self.last_evolve_ts <= 0.0:
                                                 self.last_evolve_ts = time.time()
+                                            # Match any already-restored positions against the slice before
+                                            # opening new LIVE_START positions so pre-entry bar lows/highs
+                                            # never phantom-stop newly entered positions on the same tick.
+                                            pre_fills = self.broker.on_tick(
+                                                price=cadenced_quote.price,
+                                                high=max(high_p, cadenced_quote.price, cadenced_quote.ask),
+                                                low=min(low_p, cadenced_quote.price, cadenced_quote.bid),
+                                                timestamp=float(current_slot),
+                                                open_price=prev_p,
+                                            )
                                             self._ensure_active_live_positions(cadenced_quote.price, float(current_slot))
                                             self._harvest_fills()
                                             self.log_event("LIVE_START", f"Arena revealed. Live order dispatch active @ ${cadenced_quote.price:,.2f}", "buy")
-
-                                        fills = self.broker.on_tick(
-                                            price=cadenced_quote.price,
-                                            high=max(high_p, cadenced_quote.price, cadenced_quote.ask),
-                                            low=min(low_p, cadenced_quote.price, cadenced_quote.bid),
-                                            timestamp=float(current_slot),
-                                            open_price=prev_p,
-                                        )
+                                            fills = list(pre_fills) + self.broker.on_tick(
+                                                price=cadenced_quote.price,
+                                                high=cadenced_quote.price,
+                                                low=cadenced_quote.price,
+                                                timestamp=float(current_slot),
+                                                open_price=cadenced_quote.price,
+                                            )
+                                        else:
+                                            fills = self.broker.on_tick(
+                                                price=cadenced_quote.price,
+                                                high=max(high_p, cadenced_quote.price, cadenced_quote.ask),
+                                                low=min(low_p, cadenced_quote.price, cadenced_quote.bid),
+                                                timestamp=float(current_slot),
+                                                open_price=prev_p,
+                                            )
                                         for f in fills:
                                             if f.is_closing_fill:
                                                 self.strategy_cooldown[f.portfolio_id] = float(current_slot) + 60.0
@@ -1094,7 +1122,7 @@ class LiveArenaEngine(
                                 self._defer_sql_flush = False
 
                         # Flush deferred SQLite writes and auto-evolution outside self.lock (§3.2).
-                        self._flush_sql_queues()
+                        self._flush_sql_queues(allow_when_stopping=True)
                         if _evolve_reason is not None:
                             self.evolve_now(trigger=f"auto:{_evolve_reason}", _from_auto_loop=True)
                         if _should_refresh_intel:
@@ -1115,7 +1143,7 @@ class LiveArenaEngine(
                 self._stop_event.wait(0.1)  # High-frequency poll to align cleanly with the cadence slot without drift
         finally:
             try:
-                self._flush_sql_queues()
+                self._flush_sql_queues(allow_when_stopping=True)
             except Exception as e:
                 logger.debug("Final SQL flush skipped during loop exit: %s", e)
             self.running = False
@@ -1388,7 +1416,7 @@ class LiveArenaEngine(
                 "volume_24h": self._finite(q.volume_24h) if q else 0.0,
                 "change_24h_pct": self._finite(q.change_24h_pct) if q else 0.0,
                 "source": q.source if q else "Connecting...",
-                "timestamp": time.strftime("%H:%M:%S", time.localtime(q.timestamp)) if q else "",
+                "timestamp": _safe_fmt_hms(q.timestamp) if q else "",
                 "is_offline": q.is_offline if q else True,
             },
             "indicators": {

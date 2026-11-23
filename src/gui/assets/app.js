@@ -584,8 +584,9 @@ function syncToastStackLayout() {
   let frontH = 92;
   // Most recent toast sits at the front (index 0)
   const ordered = items.slice().reverse();
+  const heights = ordered.map(el => el.offsetHeight || 96);
   ordered.forEach((el, idx) => {
-    const h = el.offsetHeight || 96;
+    const h = heights[idx];
     if (idx === 0) frontH = h;
     const collapsedY = idx * 10;
     const scale = Math.max(0.86, 1 - idx * 0.045);
@@ -687,22 +688,53 @@ function attachToastInteractions(toast, container, totalDurationMs = 5500) {
       dismissToast(toast);
     }, Math.max(0, ms));
   };
-  scheduleDismiss(totalDurationMs);
 
-  toast.addEventListener('mouseenter', () => {
-    if (toast._isDismissing) return;
+  const pauseToast = () => {
+    if (toast._isDismissing || toast._isPaused) return;
     toast._isPaused = true;
     if (toast._dismissTimeout) {
       clearTimeout(toast._dismissTimeout);
       toast._dismissTimeout = null;
     }
     toast._remainingMs = Math.max(0, toast._remainingMs - (Date.now() - toast._startTime));
-  });
+    if (ringFill) ringFill.style.animationPlayState = 'paused';
+  };
 
-  toast.addEventListener('mouseleave', () => {
-    if (toast._isDismissing) return;
+  const resumeToast = () => {
+    if (toast._isDismissing || !toast._isPaused) return;
     toast._isPaused = false;
+    if (ringFill) ringFill.style.animationPlayState = 'running';
     scheduleDismiss(toast._remainingMs);
+  };
+
+  toast._pauseDismiss = pauseToast;
+  toast._resumeDismiss = resumeToast;
+
+  if (container && container.matches && container.matches(':hover')) {
+    toast._isPaused = true;
+    if (ringFill) ringFill.style.animationPlayState = 'paused';
+  } else {
+    scheduleDismiss(totalDurationMs);
+  }
+
+  if (container && !container._stackHoverBound) {
+    container._stackHoverBound = true;
+    container.addEventListener('mouseenter', () => {
+      Array.from(container.children).forEach(el => {
+        if (typeof el._pauseDismiss === 'function') el._pauseDismiss();
+      });
+    });
+    container.addEventListener('mouseleave', () => {
+      Array.from(container.children).forEach(el => {
+        if (typeof el._resumeDismiss === 'function') el._resumeDismiss();
+      });
+    });
+  }
+
+  toast.addEventListener('mouseenter', pauseToast);
+  toast.addEventListener('mouseleave', () => {
+    if (container && container.matches && container.matches(':hover')) return;
+    resumeToast();
   });
 }
 
@@ -710,10 +742,10 @@ function attachToastInteractions(toast, container, totalDurationMs = 5500) {
 toastWatchdogInterval = setInterval(() => {
   if (document.hidden) return;
   const container = document.getElementById('chartNotificationContainer');
-  if (!container) return;
+  if (!container || (container.matches && container.matches(':hover'))) return;
   const now = Date.now();
   Array.from(container.children).forEach(toast => {
-    if (!toast._isDismissing && (now - (toast._createdAt || now) > 18000) && !toast.matches(':hover')) {
+    if (!toast._isDismissing && !toast._isPaused && (now - (toast._createdAt || now) > 18000) && !toast.matches(':hover')) {
       dismissToast(toast);
     }
   });
@@ -1396,8 +1428,27 @@ async function resetArena() {
   lastHoverSnapY = -1;
   lastPausedCanvasSig = '';
   Object.keys(intelArticleCache).forEach((k) => { delete intelArticleCache[k]; });
+  Object.keys(intelArticleProgressTimers).forEach((k) => stopIntelArticleProgressPoll(k));
   intelExpandedIds.clear();
   intelArticlePreloadQueue.length = 0;
+  stratEquityHistory.clear();
+  stratCardDomMap.forEach((card) => {
+    if (!card) return;
+    card._lastSpkSig = '';
+    card._lastSpkColor = '';
+    card._lastEquity = undefined;
+    card._lastRoi = undefined;
+    const refs = card._refs;
+    if (refs) {
+      [refs.equity, refs.roi].forEach((el) => {
+        if (el) {
+          if (el._rollingTimer) { clearTimeout(el._rollingTimer); el._rollingTimer = null; }
+          el._rollingInitialized = false;
+          el._rollingValue = undefined;
+        }
+      });
+    }
+  });
 
   // Immediately start the reload progress overlay to hide the teardown/rebuild
   startSplashSequence(true);
@@ -1485,8 +1536,10 @@ function isReducedMotionPreferred() {
 function morphText(el, nextText) {
   if (!el) return;
   const val = String(nextText == null ? '' : nextText);
+  const prevVal = el._morphedValue !== undefined ? el._morphedValue : el.textContent;
   if (el._morphedValue === val && el.textContent === val) return;
   const shouldAnimate = el._morphedValue !== undefined
+    && prevVal !== val
     && !document.hidden
     && !(document.body && document.body.classList.contains('window-hidden'))
     && !isReducedMotionPreferred();
@@ -1517,7 +1570,8 @@ function updateRollingText(el, nextText, trend = 0) {
     && !document.hidden
     && !(document.body && document.body.classList.contains('window-hidden'))
     && !isReducedMotionPreferred()
-    && Boolean(el.offsetParent);
+    && el.isConnected
+    && (currentMainView === 'arena' || !el.closest('.workspace-grid'));
 
   el._rollingInitialized = true;
   if (el._rollingTimer) {
@@ -1583,20 +1637,12 @@ function updateRollingText(el, nextText, trend = 0) {
   el.textContent = '';
   el.appendChild(wrap);
 
-  requestAnimationFrame(() => {
-    if (el._rollingToken !== token) return;
-    cols.forEach((node) => {
-      if (node.classList && node.classList.contains('nf-digit-col')) {
-        node.classList.add('nf-is-rolling');
-      }
-    });
-  });
-
+  const settleMs = Math.max(320, 260 + Math.min(staggerIdx, 6) * 16 + 40);
   el._rollingTimer = setTimeout(() => {
     el._rollingTimer = null;
     if (el._rollingToken !== token) return;
     el.textContent = nextVal;
-  }, 270);
+  }, settleMs);
 }
 
 function renderMacroRibbon(state) {
@@ -1793,7 +1839,11 @@ function renderHeader(state) {
   }
 
   const isPaused = Boolean(state.paused);
+  const wasPaused = document.body.classList.contains('arena-paused');
   document.body.classList.toggle('arena-paused', isPaused);
+  if (wasPaused !== isPaused && typeof syncAmbientShaderMotion === 'function') {
+    syncAmbientShaderMotion();
+  }
 
   // Auto Evolve Countdown & Interval Sync
   const cdEl = _hdrRefs.cdEl;
@@ -2175,7 +2225,8 @@ function renderStrategies(state) {
       const baseVal = eqHist[0] || equityNum || 100000;
       const winPct = baseVal > 0 ? ((equityNum - baseVal) / baseVal) * 100 : 0;
       refs.spkDelta.textContent = `${winPct >= 0 ? '+' : ''}${winPct.toFixed(2)}%`;
-      refs.spkDelta.style.color = spkColor;
+      const deltaColor = winPct > 0.005 ? '#10F5A0' : (winPct < -0.005 ? '#FF4D79' : spkColor);
+      refs.spkDelta.style.color = deltaColor;
     }
 
     if (card._lastBracketHtml !== bracketHtml) {
@@ -2470,35 +2521,92 @@ function renderLeaderboard(state) {
     const fitnessNum = Number(s.fitness) || 0;
     const roiCls = roiNum >= 0 ? 'up' : 'down';
     const upnlCls = upnlNum >= 0 ? 'up' : 'down';
-    const stratCode = escapeHtml(leadShortCodes[s.id] || (s.name ? s.name.slice(0, 5) : 'STRAT'));
-    const rowInner = `
-        <td style="font-weight:700;color:${sColor}">#${Number(s.rank) || 0}</td>
-        <td title="${escapeHtml(s.name)}">
-          <span style="display:inline-flex;align-items:center;gap:4px;">
-            <i style="width:5px;height:5px;border-radius:50%;background:${sColor};display:inline-block;flex-shrink:0;"></i>
-            <span style="font-weight:700;color:var(--ss-text-strong);">${stratCode}</span>
-          </span>
-        </td>
-        <td class="text-right" style="font-weight:700">${fmtUsd(s.equity, 0)}</td>
-        <td class="text-right ${roiCls}">${fmtPct(roiNum)}</td>
-        <td class="text-right ${upnlCls}">${fmtSignedUsd(upnlNum)}</td>
-        <td class="text-right down">${ddNum.toFixed(1)}%</td>
-        <td class="text-right" style="color:var(--ss-text)" title="${Number(s.closed_trades) || 0} trades">${wrNum.toFixed(0)}%</td>
-        <td class="text-right" style="color:var(--ss-text)">${sharpeNum.toFixed(1)}</td>
-        <td class="text-right" style="font-weight:700">${fitnessNum >= 0 ? '+' : ''}${fitnessNum.toFixed(1)}</td>
-      `;
+    const stratCode = leadShortCodes[s.id] || (s.name ? s.name.slice(0, 5) : 'STRAT');
+    const rankStr = `#${Number(s.rank) || 0}`;
+    const stratNameStr = s.name || '';
+    const eqStr = fmtUsd(s.equity, 0);
+    const roiStr = fmtPct(roiNum);
+    const roiFullCls = `text-right ${roiCls}`;
+    const upnlStr = fmtSignedUsd(upnlNum);
+    const upnlFullCls = `text-right ${upnlCls}`;
+    const ddStr = `${ddNum.toFixed(1)}%`;
+    const wrTitle = `${Number(s.closed_trades) || 0} trades`;
+    const wrStr = `${wrNum.toFixed(0)}%`;
+    const shpStr = sharpeNum.toFixed(1);
+    const fitStr = `${fitnessNum >= 0 ? '+' : ''}${fitnessNum.toFixed(1)}`;
 
     let tr = leaderRowDomMap.get(s.id);
     if (!tr) {
       tr = document.createElement('tr');
       tr.className = 'num';
       tr.dataset.stratId = s.id;
+
+      const tdRank = document.createElement('td');
+      tdRank.style.fontWeight = '700';
+
+      const tdStrat = document.createElement('td');
+      const wrap = document.createElement('span');
+      wrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;';
+      const dot = document.createElement('i');
+      dot.style.cssText = 'width:5px;height:5px;border-radius:50%;display:inline-block;flex-shrink:0;';
+      const codeEl = document.createElement('span');
+      codeEl.style.cssText = 'font-weight:700;color:var(--ss-text-strong);';
+      wrap.appendChild(dot);
+      wrap.appendChild(codeEl);
+      tdStrat.appendChild(wrap);
+
+      const tdEq = document.createElement('td');
+      tdEq.className = 'text-right';
+      tdEq.style.fontWeight = '700';
+
+      const tdRoi = document.createElement('td');
+      const tdUpnl = document.createElement('td');
+
+      const tdDd = document.createElement('td');
+      tdDd.className = 'text-right down';
+
+      const tdWr = document.createElement('td');
+      tdWr.className = 'text-right';
+      tdWr.style.color = 'var(--ss-text)';
+
+      const tdShp = document.createElement('td');
+      tdShp.className = 'text-right';
+      tdShp.style.color = 'var(--ss-text)';
+
+      const tdFit = document.createElement('td');
+      tdFit.className = 'text-right';
+      tdFit.style.fontWeight = '700';
+
+      tr.appendChild(tdRank);
+      tr.appendChild(tdStrat);
+      tr.appendChild(tdEq);
+      tr.appendChild(tdRoi);
+      tr.appendChild(tdUpnl);
+      tr.appendChild(tdDd);
+      tr.appendChild(tdWr);
+      tr.appendChild(tdShp);
+      tr.appendChild(tdFit);
+
+      tr._cells = { tdRank, tdStrat, dot, codeEl, tdEq, tdRoi, tdUpnl, tdDd, tdWr, tdShp, tdFit };
       leaderRowDomMap.set(s.id, tr);
     }
-    if (tr._lastHtml !== rowInner) {
-      tr.innerHTML = rowInner;
-      tr._lastHtml = rowInner;
-    }
+
+    const c = tr._cells;
+    if (c.tdRank.textContent !== rankStr) c.tdRank.textContent = rankStr;
+    if (c.tdRank._sColor !== sColor) { c.tdRank.style.color = sColor; c.tdRank._sColor = sColor; }
+    if (c.tdStrat.title !== stratNameStr) c.tdStrat.title = stratNameStr;
+    if (c.dot._sColor !== sColor) { c.dot.style.background = sColor; c.dot._sColor = sColor; }
+    if (c.codeEl.textContent !== stratCode) c.codeEl.textContent = stratCode;
+    if (c.tdEq.textContent !== eqStr) c.tdEq.textContent = eqStr;
+    if (c.tdRoi.className !== roiFullCls) c.tdRoi.className = roiFullCls;
+    if (c.tdRoi.textContent !== roiStr) c.tdRoi.textContent = roiStr;
+    if (c.tdUpnl.className !== upnlFullCls) c.tdUpnl.className = upnlFullCls;
+    if (c.tdUpnl.textContent !== upnlStr) c.tdUpnl.textContent = upnlStr;
+    if (c.tdDd.textContent !== ddStr) c.tdDd.textContent = ddStr;
+    if (c.tdWr.title !== wrTitle) c.tdWr.title = wrTitle;
+    if (c.tdWr.textContent !== wrStr) c.tdWr.textContent = wrStr;
+    if (c.tdShp.textContent !== shpStr) c.tdShp.textContent = shpStr;
+    if (c.tdFit.textContent !== fitStr) c.tdFit.textContent = fitStr;
     if (!tr.parentNode || orderChanged) {
       tbody.appendChild(tr);
     }
@@ -2587,6 +2695,9 @@ function renderFills(state) {
         </td>
       </tr>
     `;
+    if (typeof updateScrollAreaFades === 'function') {
+      updateScrollAreaFades(document.querySelector('.orderflow-table-scroll'));
+    }
     return;
   }
 
@@ -2667,6 +2778,9 @@ function renderFills(state) {
       </tr>
     `;
   }).join('');
+  if (typeof updateScrollAreaFades === 'function') {
+    updateScrollAreaFades(document.querySelector('.orderflow-table-scroll'));
+  }
 }
 
 /* HiDPI Vector Canvas Helpers */
@@ -2867,7 +2981,7 @@ function drawPriceChart(state) {
   // values to their targets so switching back to the arena shows the
   // current chart immediately (no catch-up glide).
   const intelEl = document.getElementById('intelHubMainView');
-  if (intelEl && intelEl.style.display !== 'none' && !intelEl.classList.contains('view-transition-leaving')) {
+  if (intelEl && intelEl.style.display !== 'none' && !intelEl.classList.contains('view-transition-leaving') && !intelEl.classList.contains('view-transition-leaving-base')) {
     animSpot = targetSpot;
     animMinP = targetMinP;
     animMaxP = targetMaxP;
@@ -3694,7 +3808,9 @@ window.addEventListener('pointermove', (e) => {
       const gxTarget = cursorBackdropEl || document.documentElement;
       gxTarget.style.setProperty('--gx', `${latestPointerEvent.clientX}px`);
       gxTarget.style.setProperty('--gy', `${latestPointerEvent.clientY}px`);
-      trackLgSpotlight(latestPointerEvent);
+      if (!isViewTransitioning && !isSplashTransitioning) {
+        trackLgSpotlight(latestPointerEvent);
+      }
     });
   }
 }, { passive: true });
@@ -3934,9 +4050,10 @@ window.addEventListener('keydown', function (e) {
   const tag = (target && target.tagName) ? target.tagName.toUpperCase() : '';
   const isTextInput = (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA');
 
-  // Ctrl+K / Cmd+K Command Palette (never intercepts when inside Setup Wizard inputs)
+  // Ctrl+K / Cmd+K Command Palette (never intercepts when inside Setup Wizard inputs or other modals)
   if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K' || e.code === 'KeyK')) {
-    if (!isWizardOpen && splashCompleted) {
+    const blockingModalOpen = Boolean(document.querySelector('.ss-modal-overlay.modal-visible:not(#commandPaletteModal)'));
+    if (!isWizardOpen && splashCompleted && !blockingModalOpen) {
       e.preventDefault();
       e.stopPropagation();
       toggleCommandPalette('commands');
@@ -3959,6 +4076,7 @@ window.addEventListener('keydown', function (e) {
   }
   if (target && target.getAttribute && target.getAttribute('role') === 'button' && (e.key === 'Enter' || e.code === 'Space')) {
     e.preventDefault();
+    e.stopPropagation();
     target.click();
     return;
   }
@@ -4182,10 +4300,9 @@ function updateUiClockDisplay() {
     if (viewName === 'intel') {
       if (latestState) renderIntelHub(latestState);
     } else {
+      invalidateCanvasSizeCache();
       if (latestState) {
         renderAll(latestState);
-        invalidateCanvasSizeCache();
-        drawPriceChart(latestState);
       }
     }
 
@@ -4846,10 +4963,12 @@ function updateUiClockDisplay() {
   window.toggleIntelSearch = toggleIntelSearch;
 
   function clearIntelSearch() {
+    const wrap = document.getElementById('intelSearchWrap');
     const input = document.getElementById('intelSearchInput');
     const clearBtn = document.getElementById('btnIntelSearchClear');
     intelSearchQuery = '';
     if (input) input.value = '';
+    if (wrap) wrap.classList.remove('has-query');
     if (clearBtn) clearBtn.classList.remove('visible');
     if (latestState) renderIntelHub(latestState);
   }
@@ -5097,9 +5216,11 @@ function updateUiClockDisplay() {
         // can be re-appended when events arrive again.
         Object.keys(intelEventNodes).forEach(function (key) { delete intelEventNodes[key]; });
         Object.keys(intelArticleCache).forEach(function (key) { delete intelArticleCache[key]; });
+        Object.keys(intelArticleProgressTimers).forEach(stopIntelArticleProgressPoll);
         intelExpandedIds.clear();
         intelArticlePreloadQueue.length = 0;
         listContainer._intelOrder = '';
+        listContainer._intelListSig = '';
         const sync = intel.sync || {};
         const stage = typeof sync.stage === 'string' ? sync.stage : 'idle';
         const rawPct = Number(sync.percent);
@@ -5134,60 +5255,80 @@ function updateUiClockDisplay() {
         // Stable per-event nodes (same pattern as stratCardDomMap):
         // create once, update in place, never rebuild innerHTML, so
         // expand state and lazy articles survive the 1s re-render.
-        const sorted = sortIntelEvents(events);
-        const seenKeys = new Set();
-        let visibleCount = 0;
-        sorted.forEach(function (evt) {
-          const key = intelEventKey(evt);
-          seenKeys.add(key);
-          let card = intelEventNodes[key];
-          if (!card) {
-            card = buildIntelEventCard(evt);
-            intelEventNodes[key] = card;
-            listContainer.appendChild(card);
-          }
-          updateIntelEventCard(card, evt, macro);
-          const matches = matchesIntelFilter(evt);
-          card.style.display = matches ? '' : 'none';
-          if (matches) visibleCount += 1;
-        });
-        Object.keys(intelEventNodes).forEach(function (key) {
-          if (!seenKeys.has(key)) {
-            const stale = intelEventNodes[key];
-            if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
-            delete intelEventNodes[key];
-            delete intelArticleCache[key];
-            intelExpandedIds.delete(key);
-          }
-        });
-        let emptyFilterEl = listContainer.querySelector('.intel-empty-filter');
-        if (visibleCount === 0) {
-          if (!emptyFilterEl) {
-            emptyFilterEl = document.createElement('div');
-            emptyFilterEl.className = 'intel-empty-filter';
-            emptyFilterEl.textContent = 'No events match the active domain chip or search filter.';
-            listContainer.appendChild(emptyFilterEl);
-          }
-        } else if (emptyFilterEl) {
-          emptyFilterEl.parentNode.removeChild(emptyFilterEl);
+        const sigParts = [
+          intelDomainFilter,
+          intelSearchQuery,
+          intelSortMode,
+          String(macro.directional_bias || ''),
+          String(macro.regime || ''),
+          String(events.length),
+        ];
+        for (let i = 0; i < events.length; i++) {
+          const ev = events[i];
+          sigParts.push(`${intelEventKey(ev)}:${ev.urgency || 0}:${ev.sentiment || ''}:${ev.headline || ''}`);
         }
-        if (countLbl) {
-          const isFiltered = (intelDomainFilter !== 'all') || (intelSearchQuery.length > 0);
-          const nextFilteredCount = isFiltered
-            ? `${visibleCount} / ${events.length} Filtered`
-            : `${events.length} Curated Events`;
-          if (countLbl.textContent !== nextFilteredCount) countLbl.textContent = nextFilteredCount;
+        const nextListSig = sigParts.join('|');
+        const hasStaleLoad = Boolean(listContainer.querySelector('.intel-stream-loading'));
+        if (!intelSortTransitionPending && !hasStaleLoad && listContainer._intelListSig === nextListSig) {
+          // Events, filters, sort mode, and macro stance unchanged; skip redundant DOM work
+        } else {
+          listContainer._intelListSig = nextListSig;
+          const sorted = sortIntelEvents(events);
+          const seenKeys = new Set();
+          let visibleCount = 0;
+          sorted.forEach(function (evt) {
+            const key = intelEventKey(evt);
+            seenKeys.add(key);
+            let card = intelEventNodes[key];
+            if (!card) {
+              card = buildIntelEventCard(evt);
+              intelEventNodes[key] = card;
+              listContainer.appendChild(card);
+            }
+            updateIntelEventCard(card, evt, macro);
+            const matches = matchesIntelFilter(evt);
+            card.style.display = matches ? '' : 'none';
+            if (matches) visibleCount += 1;
+          });
+          Object.keys(intelEventNodes).forEach(function (key) {
+            if (!seenKeys.has(key)) {
+              const stale = intelEventNodes[key];
+              if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
+              delete intelEventNodes[key];
+              delete intelArticleCache[key];
+              stopIntelArticleProgressPoll(key);
+              intelExpandedIds.delete(key);
+            }
+          });
+          let emptyFilterEl = listContainer.querySelector('.intel-empty-filter');
+          if (visibleCount === 0) {
+            if (!emptyFilterEl) {
+              emptyFilterEl = document.createElement('div');
+              emptyFilterEl.className = 'intel-empty-filter';
+              emptyFilterEl.textContent = 'No events match the active domain chip or search filter.';
+              listContainer.appendChild(emptyFilterEl);
+            }
+          } else if (emptyFilterEl) {
+            emptyFilterEl.parentNode.removeChild(emptyFilterEl);
+          }
+          if (countLbl) {
+            const isFiltered = (intelDomainFilter !== 'all') || (intelSearchQuery.length > 0);
+            const nextFilteredCount = isFiltered
+              ? `${visibleCount} / ${events.length} Filtered`
+              : `${events.length} Curated Events`;
+            if (countLbl.textContent !== nextFilteredCount) countLbl.textContent = nextFilteredCount;
+          }
+          const nextOrder = sorted.map(intelEventKey).join('|');
+          if (!intelSortTransitionPending && listContainer._intelOrder !== nextOrder) {
+            reorderIntelEventCards(listContainer, sorted);
+            listContainer._intelOrder = nextOrder;
+          }
+          // Preload articles for the collapsed cards (see preloadIntelArticles):
+          // the list order is the display order, so the cards the user is
+          // most likely to open first are preloaded first.
+          preloadIntelArticles(sorted.map(intelEventKey));
+          if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
         }
-        const nextOrder = sorted.map(intelEventKey).join('|');
-        if (!intelSortTransitionPending && listContainer._intelOrder !== nextOrder) {
-          reorderIntelEventCards(listContainer, sorted);
-          listContainer._intelOrder = nextOrder;
-        }
-        // Preload articles for the collapsed cards (see preloadIntelArticles):
-        // the list order is the display order, so the cards the user is
-        // most likely to open first are preloaded first.
-        preloadIntelArticles(sorted.map(intelEventKey));
-        if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
       }
     }
   }
@@ -5319,6 +5460,13 @@ function updateUiClockDisplay() {
     if (toastWatchdogInterval) { clearInterval(toastWatchdogInterval); toastWatchdogInterval = null; }
     if (splashLoop) { clearInterval(splashLoop); splashLoop = null; }
     if (splashSafetyTimer) { clearTimeout(splashSafetyTimer); splashSafetyTimer = null; }
+    if (viewSwitchTimer) { clearTimeout(viewSwitchTimer); viewSwitchTimer = null; }
+    if (wizardCloseTimer) { clearTimeout(wizardCloseTimer); wizardCloseTimer = null; }
+    if (cmdPaletteCloseTimer) { clearTimeout(cmdPaletteCloseTimer); cmdPaletteCloseTimer = null; }
+    if (viewSwitchRaf) { cancelAnimationFrame(viewSwitchRaf); viewSwitchRaf = 0; }
+    if (spotlightRaf) { cancelAnimationFrame(spotlightRaf); spotlightRaf = null; }
+    if (typeof chartAnimRaf === 'number' && chartAnimRaf > 0) { cancelAnimationFrame(chartAnimRaf); chartAnimRaf = null; }
+    Object.keys(intelArticleProgressTimers).forEach((k) => stopIntelArticleProgressPoll(k));
     stopRuntimeInstallPoll();
     stopSaveLaunchPoll();
     if (typeof destroyAmbientBackdrop === 'function') destroyAmbientBackdrop();
@@ -5368,6 +5516,9 @@ function updateUiClockDisplay() {
       closeBtn.style.display = canDismiss ? 'flex' : 'none';
     }
     // Reset transient save progress, eye-toggle mask states & sensitive password fields on reopen
+    omniPwdRevealed = false;
+    omniPwdCachedValue = '';
+    if (typeof syncOmniPwdDisplay === 'function') syncOmniPwdDisplay();
     updateSaveLaunchProgress({ status: 'idle', message: '', progress: null, phase: '' });
     ['keyGemini', 'keyAdminPassword', 'keyAdminPasswordConfirm'].forEach((id) => {
       const inp = document.getElementById(id);
@@ -5423,6 +5574,9 @@ function updateUiClockDisplay() {
           // The backend never sends the password value: only whether a
           // custom password is configured. The badge always shows a mask
           // (item 7); the real password lives in ~/.omniroute/.env.
+          omniPwdRevealed = false;
+          omniPwdCachedValue = '';
+          if (typeof syncOmniPwdDisplay === 'function') syncOmniPwdDisplay();
           const pwdEl = document.getElementById('omniConsolePwd');
           if (pwdEl) {
             const pwdSpan = pwdEl.querySelector('span') || pwdEl;
@@ -5479,11 +5633,11 @@ function updateUiClockDisplay() {
         }
       }, 1400);
     }
-    if (hasCompletedSetup) {
+    if (hasCompletedSetup && splashCompleted) {
       if (document.body) document.body.classList.add('arena-ready');
       const appShell = document.querySelector('.app-shell');
       if (appShell) {
-        appShell.style.opacity = '1';
+        appShell.style.opacity = '';
       }
     }
   }
@@ -6113,6 +6267,9 @@ function updateUiClockDisplay() {
         const res = await window.pywebview.api.save_and_launch_gateway(keys, adminPw || null);
         if (res && res.ok) {
           stopSaveLaunchPoll();
+          omniPwdRevealed = false;
+          omniPwdCachedValue = '';
+          if (typeof syncOmniPwdDisplay === 'function') syncOmniPwdDisplay();
           updateSaveLaunchProgress({ status: 'done', message: res.message || 'Credentials saved successfully!', progress: 100, phase: '' });
           hasCompletedSetup = true;
           setWizardBanner(res.message || 'Credentials saved successfully!', 'success');
@@ -6274,12 +6431,14 @@ function updateUiClockDisplay() {
      ========================================================================== */
 
   function initIntelFilterControls() {
+    const wrap = document.getElementById('intelSearchWrap');
     const searchInput = document.getElementById('intelSearchInput');
     const clearBtn = document.getElementById('btnIntelSearchClear');
     if (searchInput) {
       searchInput.addEventListener('input', () => {
         intelSearchQuery = String(searchInput.value || '').trim().toLowerCase();
         const hasQuery = intelSearchQuery.length > 0;
+        if (wrap) wrap.classList.toggle('has-query', hasQuery);
         if (clearBtn) clearBtn.classList.toggle('visible', hasQuery);
         if (latestState) renderIntelHub(latestState);
       });
@@ -6342,7 +6501,16 @@ function updateUiClockDisplay() {
   }
 
   function refreshScrollAreaFades() {
-    document.querySelectorAll('.scroll-area-faded').forEach(updateScrollAreaFades);
+    const els = Array.from(document.querySelectorAll('.scroll-area-faded'));
+    const states = els.map((el) => {
+      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      const top = el.scrollTop || 0;
+      return { el, hasTop: top > 4, hasBottom: (maxScroll - top) > 4 };
+    });
+    states.forEach(({ el, hasTop, hasBottom }) => {
+      el.classList.toggle('has-scroll-top', hasTop);
+      el.classList.toggle('has-scroll-bottom', hasBottom);
+    });
   }
 
   function initScrollAreaFades() {
@@ -6365,8 +6533,13 @@ function updateUiClockDisplay() {
     const thumb = document.getElementById('resetSlideThumb');
     const label = document.getElementById('resetSlideLabel');
     if (!track || !fill || !thumb || !label) return;
+    if (track._commitTimer) {
+      clearTimeout(track._commitTimer);
+      track._commitTimer = null;
+    }
     track._slideCommitted = false;
     track._dragging = false;
+    track._startRatio = 0;
     track.classList.remove('is-dragging', 'is-committed');
     track.setAttribute('aria-valuenow', '0');
     thumb.style.transform = '';
@@ -6409,31 +6582,34 @@ function updateUiClockDisplay() {
       renderRatio(1);
       label.style.opacity = '1';
       label.textContent = 'Resetting Arena...';
-      setTimeout(() => {
+      if (track._commitTimer) clearTimeout(track._commitTimer);
+      track._commitTimer = setTimeout(() => {
+        track._commitTimer = null;
         confirmResetArena();
       }, 140);
     };
 
     track.addEventListener('pointerdown', (e) => {
       if (track._slideCommitted || e.button !== 0) return;
+      const rect = track.getBoundingClientRect();
+      const { maxOffset, pad, hw } = getBounds();
+      const curRatio = Number(track.getAttribute('aria-valuenow') || 0) / 100;
+      const thumbCenterX = rect.left + pad + curRatio * maxOffset + hw * 0.5;
+      if (Math.abs(e.clientX - thumbCenterX) > hw + 20) return;
       track._dragging = true;
-      track._startX = e.clientX;
+      track._dragOriginX = e.clientX;
+      track._startRatio = curRatio;
       track.classList.add('is-dragging');
       if (typeof track.setPointerCapture === 'function') {
         try { track.setPointerCapture(e.pointerId); } catch (_) { }
       }
-      const rect = track.getBoundingClientRect();
-      const { maxOffset, hw } = getBounds();
-      const rel = e.clientX - rect.left - hw * 0.5 - 3;
-      renderRatio(rel / maxOffset);
     });
 
     track.addEventListener('pointermove', (e) => {
       if (!track._dragging || track._slideCommitted) return;
-      const rect = track.getBoundingClientRect();
-      const { maxOffset, hw } = getBounds();
-      const rel = e.clientX - rect.left - hw * 0.5 - 3;
-      const ratio = renderRatio(rel / maxOffset);
+      const { maxOffset } = getBounds();
+      const delta = e.clientX - (track._dragOriginX || e.clientX);
+      const ratio = renderRatio((track._startRatio || 0) + delta / maxOffset);
       if (ratio >= 0.85) {
         commitSlide();
       }
@@ -6454,7 +6630,15 @@ function updateUiClockDisplay() {
     track.addEventListener('pointerup', releaseSlide);
     track.addEventListener('pointercancel', releaseSlide);
     track.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === 'ArrowRight') {
+      if (track._slideCommitted) return;
+      const curRatio = Number(track.getAttribute('aria-valuenow') || 0) / 100;
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (renderRatio(curRatio + 0.20) >= 0.85) commitSlide();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        renderRatio(curRatio - 0.20);
+      } else if (e.key === 'Enter' && curRatio >= 0.85) {
         e.preventDefault();
         commitSlide();
       }
@@ -6518,6 +6702,7 @@ function updateUiClockDisplay() {
       shortcutsEl.innerHTML = shortcuts.map((s) => (
         `<div class="cmd-shortcut-row"><span class="cmd-shortcut-desc">${escapeHtml(s.desc)}</span><kbd class="cmd-palette-kbd">${escapeHtml(s.kbd)}</kbd></div>`
       )).join('');
+      if (typeof updateScrollAreaFades === 'function') updateScrollAreaFades(shortcutsEl);
       return;
     }
 
@@ -6529,7 +6714,9 @@ function updateUiClockDisplay() {
 
     if (items.length === 0) {
       listEl.innerHTML = '<div class="cmd-palette-empty">No matching commands found.</div>';
+      listEl._filteredItems = [];
       cmdPaletteSelectedIdx = 0;
+      if (typeof updateScrollAreaFades === 'function') updateScrollAreaFades(listEl);
       return;
     }
     if (cmdPaletteSelectedIdx >= items.length) cmdPaletteSelectedIdx = 0;
@@ -6548,6 +6735,7 @@ function updateUiClockDisplay() {
     });
     listEl.innerHTML = html;
     listEl._filteredItems = items;
+    if (typeof updateScrollAreaFades === 'function') updateScrollAreaFades(listEl);
   }
 
   function runCommandPaletteItem(item) {
@@ -6625,17 +6813,29 @@ function updateUiClockDisplay() {
         cmdPaletteSelectedIdx = 0;
         renderCommandPaletteContent();
       });
+      const syncCmdPaletteSelection = () => {
+        if (!listEl) return;
+        const btns = listEl.querySelectorAll('.cmd-palette-item');
+        btns.forEach((btn, idx) => {
+          const isSel = idx === cmdPaletteSelectedIdx;
+          btn.classList.toggle('is-selected', isSel);
+          if (isSel && typeof btn.scrollIntoView === 'function') {
+            btn.scrollIntoView({ block: 'nearest' });
+          }
+        });
+        if (typeof updateScrollAreaFades === 'function') updateScrollAreaFades(listEl);
+      };
       input.addEventListener('keydown', (e) => {
         if (cmdPaletteMode !== 'commands') return;
         const items = (listEl && listEl._filteredItems) || [];
         if (e.key === 'ArrowDown') {
           e.preventDefault();
           cmdPaletteSelectedIdx = items.length > 0 ? (cmdPaletteSelectedIdx + 1) % items.length : 0;
-          renderCommandPaletteContent();
+          syncCmdPaletteSelection();
         } else if (e.key === 'ArrowUp') {
           e.preventDefault();
           cmdPaletteSelectedIdx = items.length > 0 ? (cmdPaletteSelectedIdx - 1 + items.length) % items.length : 0;
-          renderCommandPaletteContent();
+          syncCmdPaletteSelection();
         } else if (e.key === 'Enter') {
           e.preventDefault();
           if (items[cmdPaletteSelectedIdx]) runCommandPaletteItem(items[cmdPaletteSelectedIdx]);
@@ -6707,7 +6907,7 @@ function updateUiClockDisplay() {
       bg: [4 / 255, 6 / 255, 10 / 255],
       fg: [159 / 255, 216 / 255, 232 / 255],
       speed: 0.24,
-      density: 84,
+      density: 56,
       pointSize: 2.1,
       trails: 1.0,
       bend: 1.0,
@@ -6847,9 +7047,16 @@ void main() {
       buffer = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
 
-      const values = [];
       const corners = [[-1, -1], [1, -1], [-1, 1], [-1, 1], [1, -1], [1, 1]];
       const d = cfg.density;
+      let totalQuads = 0;
+      for (let layer = 0; layer < 4; layer++) {
+        const cols = layer === 2 ? Math.round(d * 0.35) : layer === 3 ? Math.round(d * 0.25) : layer === 1 ? Math.round(d * 1.3) : d;
+        const rows = layer === 0 ? Math.round(d * 1.2) : Math.round(d * 0.45);
+        totalQuads += cols * rows;
+      }
+      const values = new Float32Array(totalQuads * 30);
+      let vi = 0;
       for (let layer = 0; layer < 4; layer++) {
         const cols = layer === 2 ? Math.round(d * 0.35) : layer === 3 ? Math.round(d * 0.25) : layer === 1 ? Math.round(d * 1.3) : d;
         const rows = layer === 0 ? Math.round(d * 1.2) : Math.round(d * 0.45);
@@ -6857,14 +7064,20 @@ void main() {
           for (let c = 0; c < cols; c++) {
             const jx = Math.sin(c * 123.701 + r * 327.1 + layer * 8.1) * 0.18;
             const jy = Math.sin(c * 73.0999 + r * 171.301 + layer * 42.0001) * 0.18;
-            for (const [cx, cy] of corners) {
-              values.push((c + 0.5 + jx) / cols, (r + 0.5 + jy) / rows, layer, cx, cy);
+            const px = (c + 0.5 + jx) / cols;
+            const py = (r + 0.5 + jy) / rows;
+            for (let ci = 0; ci < 6; ci++) {
+              values[vi++] = px;
+              values[vi++] = py;
+              values[vi++] = layer;
+              values[vi++] = corners[ci][0];
+              values[vi++] = corners[ci][1];
             }
           }
         }
       }
-      count = values.length / 5;
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(values), gl.STATIC_DRAW);
+      count = totalQuads * 6;
+      gl.bufferData(gl.ARRAY_BUFFER, values, gl.STATIC_DRAW);
 
       const pLoc = gl.getAttribLocation(program, 'particle');
       gl.enableVertexAttribArray(pLoc);
@@ -6878,26 +7091,6 @@ void main() {
       ['resolution', 'time', 'phase', 'pointSize', 'trails', 'bend', 'spread', 'scale', 'exposure', 'foreground'].forEach((k) => {
         uniforms[k] = gl.getUniformLocation(program, k);
       });
-    } catch (_) {
-      return null;
-    }
-
-    const drawFrame = () => {
-      if (destroyed || !program) return;
-      const box = canvas.getBoundingClientRect();
-      if (box.width < 2 || box.height < 2) return;
-      const w = Math.max(1, Math.round(box.width));
-      const h = Math.max(1, Math.round(box.height));
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
-      }
-      gl.viewport(0, 0, w, h);
-      gl.useProgram(program);
-      gl.clearColor(cfg.bg[0], cfg.bg[1], cfg.bg[2], 1.0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.uniform2f(uniforms.resolution, w, h);
-      gl.uniform1f(uniforms.time, simTime);
       gl.uniform1f(uniforms.phase, cfg.phase);
       gl.uniform1f(uniforms.pointSize, cfg.pointSize);
       gl.uniform1f(uniforms.trails, cfg.trails);
@@ -6906,11 +7099,71 @@ void main() {
       gl.uniform1f(uniforms.scale, cfg.scale);
       gl.uniform1f(uniforms.exposure, cfg.exposure);
       gl.uniform3fv(uniforms.foreground, cfg.fg);
+      gl.clearColor(cfg.bg[0], cfg.bg[1], cfg.bg[2], 1.0);
+    } catch (_) {
+      shaders.forEach((s) => { try { gl.deleteShader(s); } catch (__) { } });
+      if (buffer) { try { gl.deleteBuffer(buffer); } catch (__) { } }
+      if (program) { try { gl.deleteProgram(program); } catch (__) { } }
+      return null;
+    }
+
+    let cachedW = 0;
+    let cachedH = 0;
+    let lastResW = 0;
+    let lastResH = 0;
+    const measureSize = () => {
+      const box = canvas.getBoundingClientRect();
+      cachedW = box.width;
+      cachedH = box.height;
+    };
+    measureSize();
+    let ro = null;
+    let onWinResize = null;
+    if (typeof ResizeObserver === 'function') {
+      ro = new ResizeObserver((entries) => {
+        for (let i = 0; i < entries.length; i++) {
+          const cr = entries[i].contentRect;
+          if (cr) {
+            cachedW = cr.width;
+            cachedH = cr.height;
+          }
+        }
+      });
+      ro.observe(canvas);
+    } else {
+      onWinResize = () => measureSize();
+      window.addEventListener('resize', onWinResize, { passive: true });
+    }
+    const onContextLost = (e) => {
+      if (e && typeof e.preventDefault === 'function') e.preventDefault();
+      destroyed = true;
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      if (typeof applyBackdropMode === 'function') applyBackdropMode('grainient');
+    };
+    canvas.addEventListener('webglcontextlost', onContextLost, false);
+
+    const drawFrame = () => {
+      if (destroyed || !program) return;
+      if (cachedW < 2 || cachedH < 2) measureSize();
+      if (cachedW < 2 || cachedH < 2) return;
+      const w = Math.max(1, Math.round(cachedW * 0.5));
+      const h = Math.max(1, Math.round(cachedH * 0.5));
+      if (lastResW !== w || lastResH !== h) {
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
+        lastResW = w;
+        lastResH = h;
+        gl.viewport(0, 0, w, h);
+        gl.uniform2f(uniforms.resolution, w, h);
+      }
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.uniform1f(uniforms.time, simTime);
       gl.drawArrays(gl.TRIANGLES, 0, count);
     };
 
     const shouldRun = () => (
       !destroyed &&
+      splashCompleted &&
       !isViewTransitioning &&
       !isSplashTransitioning &&
       backdropMode === 'shader' &&
@@ -6922,8 +7175,8 @@ void main() {
     const tick = (now) => {
       rafId = 0;
       if (!shouldRun()) return;
-      if (!lastDrawTs || (now - lastDrawTs) >= 32) {
-        const dt = lastTs ? Math.min((now - lastTs) / 1000, 0.05) : (1 / 30);
+      if (!lastDrawTs || (now - lastDrawTs) >= 45) {
+        const dt = lastTs ? Math.min((now - lastTs) / 1000, 0.06) : (1 / 22);
         simTime += dt * cfg.speed;
         lastTs = now;
         lastDrawTs = now;
@@ -6952,6 +7205,9 @@ void main() {
       destroy() {
         destroyed = true;
         if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+        if (ro) { ro.disconnect(); ro = null; }
+        if (onWinResize) { window.removeEventListener('resize', onWinResize); onWinResize = null; }
+        canvas.removeEventListener('webglcontextlost', onContextLost, false);
         shaders.forEach((s) => gl.deleteShader(s));
         if (buffer) gl.deleteBuffer(buffer);
         if (program) gl.deleteProgram(program);

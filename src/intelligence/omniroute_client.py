@@ -581,6 +581,14 @@ class OmniRouteClient:
             limit = self.daily_quota_limit
             return limit is not None and limit > 0 and self.total_tokens_used >= limit
 
+    def has_quota_failures(self) -> bool:
+        """O(1) fast-path check indicating whether any recent quota signal exists."""
+        now = time.monotonic()
+        with self._quota_lock:
+            if self._unattributed_quota_ts is not None and (now - self._unattributed_quota_ts) <= _QUOTA_RECORD_TTL_SEC:
+                return True
+            return any((now - ts) <= _QUOTA_RECORD_TTL_SEC for ts in self._quota_failures.values())
+
     def is_all_providers_quota_exhausted(self, configured_providers: Any) -> bool:
         """True when every configured provider has failed with a
         quota/credit signal -- the only honest reading of "quota
@@ -840,6 +848,7 @@ class OmniRouteClient:
                                 target_chars = max(1200, int(max_tokens * 0.72))
                                 last_pct = 28
                                 usage_obj: Any = None
+                                sse_error: Any = None
                                 _emit("analyzing", 32, "Analyzing market context")
                                 async for raw_line in resp.content:
                                     if self.is_shutting_down():
@@ -855,6 +864,9 @@ class OmniRouteClient:
                                     except Exception:
                                         continue
                                     if isinstance(frame, dict):
+                                        if frame.get("error"):
+                                            sse_error = frame.get("error")
+                                            break
                                         if frame.get("usage"):
                                             usage_obj = frame.get("usage")
                                         f_choices = frame.get("choices")
@@ -875,11 +887,22 @@ class OmniRouteClient:
                                                             _emit("drafting", pct, "Drafting in-depth report")
                                                         else:
                                                             _emit("structuring", pct, "Structuring key takeaways")
+                                if sse_error is not None:
+                                    err_payload = sse_error if isinstance(sse_error, dict) else {"error": str(sse_error)}
+                                    classification = classify_llm_error(500, err_payload)
+                                    self.note_failure(classification)
+                                    self.failed_requests += 1
+                                    logger.warning("OmniRoute 200 SSE emitted in-band error frame: %s", str(sse_error)[:150])
+                                    return None
+                                content = "".join(chunks)
+                                if not content.strip():
+                                    self.failed_requests += 1
+                                    logger.warning("OmniRoute 200 SSE stream ended with empty content")
+                                    return None
                                 self.is_gateway_online = True
                                 self.note_success()
                                 if usage_obj is not None:
                                     self._record_token_usage(usage_obj)
-                                content = "".join(chunks)
                                 _emit("parsing", 91, "Parsing & validating report")
                                 parsed = extract_json(content)
                                 if parsed is not None:
@@ -1001,7 +1024,22 @@ class OmniRouteClient:
                 self.note_failure({"kind": "connection", "provider": None, "status": None, "detail": str(exc)[:200]})
                 logger.debug("OmniRoute gateway offline (connection refused): %s", exc)
                 return None
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            except asyncio.TimeoutError as exc:
+                if self.is_shutting_down():
+                    return None
+                timeout_retries = 0 if call_timeout >= 60.0 else min(1, self.max_retries)
+                if attempt < timeout_retries:
+                    self.retried_requests += 1
+                    delay = compute_backoff(attempt)
+                    logger.debug("OmniRoute completion timed out (%s). Retrying once in %.2fs...", exc, delay)
+                    await asyncio.sleep(delay)
+                    attempt += 1
+                else:
+                    self.failed_requests += 1
+                    self.note_failure({"kind": "connection", "provider": None, "status": None, "detail": f"timeout ({call_timeout}s)"})
+                    logger.warning("OmniRoute request timed out after %.1fs (attempt %d)", call_timeout, attempt + 1)
+                    return None
+            except aiohttp.ClientError as exc:
                 if self.is_shutting_down():
                     return None
                 if attempt < self.max_retries:

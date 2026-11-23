@@ -42,6 +42,7 @@ class SessionCodecMixin:
         if isinstance(ticket, (int, float, Decimal, str)):
             return {"price": str(ticket)}
         return {
+            "order_id": getattr(ticket, "order_id", ""),
             "portfolio_id": getattr(ticket, "portfolio_id", ""),
             "symbol": getattr(ticket, "symbol", "ETH/USD"),
             "side": getattr(ticket.side, "value", str(ticket.side)) if hasattr(ticket, "side") else "SELL",
@@ -79,11 +80,15 @@ class SessionCodecMixin:
                 sl_val = Decimal(str(data["stop_loss"])) if data.get("stop_loss") is not None else None
                 tp_val = Decimal(str(data["take_profit"])) if data.get("take_profit") is not None else None
                 qty_val = Decimal(str(data.get("qty", "0")))
+                if not qty_val.is_finite() or qty_val <= Decimal("0"):
+                    logger.debug("Dropping deserialized ticket with invalid/non-positive qty: %s", data)
+                    return None
+                for label, opt_dec in (("price", price_val), ("stop_loss", sl_val), ("take_profit", tp_val)):
+                    if opt_dec is not None and (not opt_dec.is_finite() or opt_dec <= Decimal("0")):
+                        logger.debug("Dropping deserialized ticket with invalid %s: %s", label, data)
+                        return None
             except Exception as e:
                 logger.debug("Dropping ticket with unparseable numbers: %s (%s)", data, e)
-                return None
-            if qty_val <= Decimal("0"):
-                logger.debug("Dropping deserialized ticket with non-positive qty: %s", data)
                 return None
             try:
                 reason = ExecutionReason(data.get("reason", "SIGNAL"))
@@ -91,22 +96,32 @@ class SessionCodecMixin:
                 logger.debug("Invalid reason in saved ticket, defaulting to SIGNAL: %s", e)
                 reason = ExecutionReason.SIGNAL
             try:
-                ts_val = float(data["timestamp"]) if data.get("timestamp") is not None else None
+                if data.get("timestamp") is not None:
+                    ts_val = float(data["timestamp"])
+                    if not math.isfinite(ts_val) or ts_val < 0.0:
+                        logger.debug("Dropping ticket with invalid timestamp: %s", data)
+                        return None
+                else:
+                    ts_val = None
             except Exception as e:
                 logger.debug("Invalid timestamp in saved ticket, defaulting to now: %s", e)
                 ts_val = None
-            return OrderTicket(
-                portfolio_id=str(data.get("portfolio_id", "")),
-                symbol=str(data.get("symbol", "ETH/USD")),
-                side=side,
-                order_type=order_type,
-                qty=qty_val,
-                price=price_val,
-                stop_loss=sl_val,
-                take_profit=tp_val,
-                reason=reason,
-                timestamp=ts_val if ts_val is not None else time.time(),
-            )
+            ticket_kwargs: Dict[str, Any] = {
+                "portfolio_id": str(data.get("portfolio_id", "")),
+                "symbol": str(data.get("symbol", "ETH/USD")),
+                "side": side,
+                "order_type": order_type,
+                "qty": qty_val,
+                "price": price_val,
+                "stop_loss": sl_val,
+                "take_profit": tp_val,
+                "reason": reason,
+                "timestamp": ts_val if ts_val is not None else time.time(),
+            }
+            raw_oid = str(data.get("order_id") or "").strip()
+            if raw_oid:
+                ticket_kwargs["order_id"] = raw_oid
+            return OrderTicket(**ticket_kwargs)
         return None
 
     @staticmethod
@@ -151,16 +166,30 @@ class SessionCodecMixin:
                 reason = ExecutionReason.SIGNAL
             ep_raw = data.get("entry_price")
             ep = Decimal(str(ep_raw)) if ep_raw is not None else None
+            qty_val = Decimal(str(data.get("qty", "0")))
+            price_val = Decimal(str(data.get("price", "0")))
+            fee_val = Decimal(str(data.get("fee", "0")))
+            rpnl_val = Decimal(str(data.get("realized_pnl", "0.00")))
+            ts_val = float(data.get("timestamp", 0.0))
+            if (
+                not qty_val.is_finite() or qty_val <= Decimal("0")
+                or not price_val.is_finite() or price_val <= Decimal("0")
+                or not fee_val.is_finite() or fee_val < Decimal("0")
+                or not rpnl_val.is_finite()
+                or (ep is not None and (not ep.is_finite() or ep <= Decimal("0")))
+                or not math.isfinite(ts_val) or ts_val < 0.0
+            ):
+                return None
             return FillEvent(
                 order_id=str(data.get("order_id", "")),
                 portfolio_id=str(data.get("portfolio_id", "")),
                 symbol=str(data.get("symbol", "ETH/USD")),
                 side=side,
-                qty=Decimal(str(data.get("qty", "0"))),
-                price=Decimal(str(data.get("price", "0"))),
-                fee=Decimal(str(data.get("fee", "0"))),
-                timestamp=float(data.get("timestamp", 0.0)),
-                realized_pnl=Decimal(str(data.get("realized_pnl", "0.00"))),
+                qty=qty_val,
+                price=price_val,
+                fee=fee_val,
+                timestamp=ts_val,
+                realized_pnl=rpnl_val,
                 reason=reason,
                 fill_seq=int(data.get("fill_seq", 0)),
                 entry_price=ep,
@@ -476,7 +505,144 @@ class SessionCodecMixin:
                         "equity_history": eq_hist,
                     }))
 
-                # Commit staged competitor state atomically now that validation succeeded.
+                # Pre-stage post-portfolio broker/engine metadata BEFORE mutating portfolios
+                # so corrupt snapshot sections never leave competitors half-restored.
+                staged_map = {c.portfolio_id: s for c, s in staged}
+                open_pids = {
+                    pid for pid, s in staged_map.items() if s["position_qty"] > Decimal("0")
+                } | {
+                    c.portfolio_id
+                    for c in self.competitors
+                    if c.portfolio_id not in staged_map and c.portfolio.position_qty > Decimal("0")
+                }
+
+                staged_stops: Optional[Dict[str, Any]] = None
+                if "active_stops" in snapshot and isinstance(snapshot["active_stops"], dict):
+                    staged_stops = {}
+                    for pid, s_data in snapshot["active_stops"].items():
+                        if pid in comp_map and pid not in open_pids:
+                            continue
+                        t = self._deserialize_ticket(s_data)
+                        if t:
+                            staged_stops[pid] = t
+
+                staged_targets: Optional[Dict[str, Any]] = None
+                if "active_targets" in snapshot and isinstance(snapshot["active_targets"], dict):
+                    staged_targets = {}
+                    for pid, t_data in snapshot["active_targets"].items():
+                        if pid in comp_map and pid not in open_pids:
+                            continue
+                        t = self._deserialize_ticket(t_data)
+                        if t:
+                            staged_targets[pid] = t
+
+                staged_pending: Dict[str, Any] = {}
+                if "pending_orders" in snapshot and isinstance(snapshot["pending_orders"], dict):
+                    for oid, p_data in snapshot["pending_orders"].items():
+                        t = self._deserialize_ticket(p_data)
+                        if t:
+                            staged_pending[str(oid)] = t
+
+                staged_orb: Optional[Tuple[Decimal, Decimal, bool, Optional[date]]] = None
+                if "orb_state" in snapshot and isinstance(snapshot["orb_state"], dict):
+                    orb = snapshot["orb_state"]
+                    try:
+                        oh = _parse_finite_dec(orb.get("high", "0"), Decimal("0.00"), min_val=Decimal("0"))
+                        ol = _parse_finite_dec(orb.get("low", "0"), Decimal("0.00"), min_val=Decimal("0"))
+                        if oh > Decimal("0") and ol > Decimal("0") and oh >= ol:
+                            orb_day = None
+                            raw_day = orb.get("day")
+                            if isinstance(raw_day, str) and raw_day:
+                                orb_day = date.fromisoformat(raw_day)
+                            staged_orb = (oh, ol, bool(orb.get("frozen", False)), orb_day)
+                    except Exception as e:
+                        logger.debug("Invalid orb_state in saved snapshot, ignoring: %s", e)
+
+                staged_entry_ts: Optional[Dict[str, float]] = None
+                if "position_entry_ts" in snapshot and isinstance(snapshot["position_entry_ts"], dict):
+                    try:
+                        staged_entry_ts = {}
+                        for pid, ts in snapshot["position_entry_ts"].items():
+                            if pid in comp_map and pid not in open_pids:
+                                continue
+                            ts_f = float(ts)
+                            if math.isfinite(ts_f) and ts_f >= 0.0:
+                                staged_entry_ts[pid] = ts_f
+                    except (TypeError, ValueError) as e:
+                        logger.debug("Invalid position_entry_ts in saved snapshot, ignoring: %s", e)
+                        staged_entry_ts = None
+
+                staged_closed_since_evolve: Optional[int] = None
+                if "closed_trades_since_evolve" in snapshot:
+                    try:
+                        staged_closed_since_evolve = max(0, int(snapshot["closed_trades_since_evolve"]))
+                    except (TypeError, ValueError):
+                        pass
+
+                staged_last_evolve_ts: Optional[float] = None
+                if "last_evolve_ts" in snapshot:
+                    try:
+                        saved_evolve_ts = float(snapshot["last_evolve_ts"])
+                        if math.isfinite(saved_evolve_ts) and saved_evolve_ts > 0.0:
+                            staged_last_evolve_ts = saved_evolve_ts
+                    except (TypeError, ValueError):
+                        pass
+
+                staged_evo_events: Optional[List[Dict[str, Any]]] = None
+                if "evolution_events" in snapshot and isinstance(snapshot["evolution_events"], list):
+                    staged_evo_events = [dict(e) for e in snapshot["evolution_events"][-24:] if isinstance(e, dict)]
+
+                staged_tv_champ: Optional[Dict[str, Any]] = None
+                if "tv_champion" in snapshot and isinstance(snapshot["tv_champion"], dict) and snapshot["tv_champion"]:
+                    staged_tv_champ = copy.deepcopy(snapshot["tv_champion"])
+
+                staged_telemetry: Optional[Dict[str, Dict[str, Any]]] = None
+                if "strategy_telemetry" in snapshot and isinstance(snapshot["strategy_telemetry"], dict):
+                    roster = {c.portfolio_id for c in self.competitors}
+                    staged_telemetry = {
+                        k: copy.deepcopy(v)
+                        for k, v in snapshot["strategy_telemetry"].items()
+                        if k in roster and isinstance(v, dict)
+                    }
+
+                staged_fill_records: Optional[List[Any]] = None
+                if "fill_records" in snapshot and isinstance(snapshot["fill_records"], list):
+                    staged_fill_records = [f for f in (self._deserialize_fill(d) for d in snapshot["fill_records"]) if f is not None]
+
+                staged_audit: Optional[List[Any]] = None
+                if "broker_execution_audit" in snapshot and isinstance(snapshot["broker_execution_audit"], list):
+                    staged_audit = [f for f in (self._deserialize_fill(d) for d in snapshot["broker_execution_audit"]) if f is not None]
+
+                staged_live_offset: Optional[int] = None
+                if "live_fill_seq_offset" in snapshot and snapshot["live_fill_seq_offset"] is not None:
+                    staged_live_offset = max(0, int(snapshot["live_fill_seq_offset"]))
+
+                staged_auto_interval: Optional[int] = None
+                if "auto_evolve_interval_sec" in snapshot and snapshot["auto_evolve_interval_sec"] is not None:
+                    staged_auto_interval = max(60, int(snapshot["auto_evolve_interval_sec"]))
+
+                staged_cadence: Optional[float] = None
+                if "cadence_sec" in snapshot and snapshot["cadence_sec"] is not None:
+                    cad_f = float(snapshot["cadence_sec"])
+                    if not math.isfinite(cad_f):
+                        raise ValueError("non-finite cadence_sec")
+                    staged_cadence = max(1.0, min(10.0, cad_f))
+
+                staged_auto_enabled: Optional[bool] = (
+                    bool(snapshot["auto_evolve_enabled"]) if "auto_evolve_enabled" in snapshot else None
+                )
+                staged_auto_dis_ts: Optional[float] = None
+                if "auto_evolve_disabled_ts" in snapshot:
+                    raw_dis = snapshot.get("auto_evolve_disabled_ts")
+                    eff_enabled = staged_auto_enabled if staged_auto_enabled is not None else self.auto_evolve_enabled
+                    try:
+                        if raw_dis is not None and not eff_enabled:
+                            dis_f = float(raw_dis)
+                            staged_auto_dis_ts = dis_f if math.isfinite(dis_f) else None
+                    except (TypeError, ValueError):
+                        staged_auto_dis_ts = None
+
+                # Commit staged competitor and engine state atomically now that all sections validated.
                 for warn_msg in genome_warnings:
                     self.log_event("RESTORE_WARN", warn_msg, "loss")
 
@@ -528,78 +694,34 @@ class SessionCodecMixin:
 
                     self.broker.competitor_caps[c.portfolio_id] = c.max_position_ratio
 
-                open_pids = {c.portfolio_id for c in self.competitors if c.portfolio.position_qty > Decimal("0")}
-                if "active_stops" in snapshot and isinstance(snapshot["active_stops"], dict):
-                    self.broker.active_stops = {}
-                    for pid, s_data in snapshot["active_stops"].items():
-                        if pid in comp_map and pid not in open_pids:
-                            continue
-                        t = self._deserialize_ticket(s_data)
-                        if t:
-                            self.broker.active_stops[pid] = t
-                if "active_targets" in snapshot and isinstance(snapshot["active_targets"], dict):
-                    self.broker.active_targets = {}
-                    for pid, t_data in snapshot["active_targets"].items():
-                        if pid in comp_map and pid not in open_pids:
-                            continue
-                        t = self._deserialize_ticket(t_data)
-                        if t:
-                            self.broker.active_targets[pid] = t
+                if staged_stops is not None:
+                    self.broker.active_stops = staged_stops
+                if staged_targets is not None:
+                    self.broker.active_targets = staged_targets
                 if hasattr(self, "broker"):
-                    self.broker.pending_orders = {}
-                    if "pending_orders" in snapshot and isinstance(snapshot["pending_orders"], dict):
-                        for oid, p_data in snapshot["pending_orders"].items():
-                            t = self._deserialize_ticket(p_data)
-                            if t:
-                                self.broker.pending_orders[str(oid)] = t
-                if "orb_state" in snapshot and isinstance(snapshot["orb_state"], dict):
-                    orb = snapshot["orb_state"]
-                    try:
-                        oh = _parse_finite_dec(orb.get("high", "0"), Decimal("0.00"), min_val=Decimal("0"))
-                        ol = _parse_finite_dec(orb.get("low", "0"), Decimal("0.00"), min_val=Decimal("0"))
-                        if oh > Decimal("0") and ol > Decimal("0") and oh >= ol:
-                            self.live_orb_high = oh
-                            self.live_orb_low = ol
-                            self._orb_range_frozen = bool(orb.get("frozen", False))
-                            raw_day = orb.get("day")
-                            if isinstance(raw_day, str) and raw_day:
-                                self._orb_session_day = date.fromisoformat(raw_day)
-                                self._orb_session_day_idx = None
-                    except Exception as e:
-                        logger.debug("Invalid orb_state in saved snapshot, ignoring: %s", e)
-                if "position_entry_ts" in snapshot:
-                    try:
-                        self.position_entry_ts = {
-                            pid: float(ts)
-                            for pid, ts in snapshot["position_entry_ts"].items()
-                            if not (pid in comp_map and pid not in open_pids)
-                        }
-                    except (TypeError, ValueError, AttributeError) as e:
-                        logger.debug("Invalid position_entry_ts in saved snapshot, ignoring: %s", e)
-                if "closed_trades_since_evolve" in snapshot:
-                    try:
-                        self._closed_trades_since_evolve = max(0, int(snapshot["closed_trades_since_evolve"]))
-                    except (TypeError, ValueError):
-                        pass
-                if "last_evolve_ts" in snapshot:
-                    try:
-                        saved_evolve_ts = float(snapshot["last_evolve_ts"])
-                        if saved_evolve_ts > 0.0:
-                            self.last_evolve_ts = saved_evolve_ts
-                    except (TypeError, ValueError):
-                        pass
-                if "evolution_events" in snapshot and isinstance(snapshot["evolution_events"], list):
-                    self.evolution_events = [dict(e) for e in snapshot["evolution_events"][-24:] if isinstance(e, dict)]
-                if "tv_champion" in snapshot and isinstance(snapshot["tv_champion"], dict) and snapshot["tv_champion"]:
-                    self.tv_champion = copy.deepcopy(snapshot["tv_champion"])
-                if "strategy_telemetry" in snapshot and isinstance(snapshot["strategy_telemetry"], dict):
-                    roster = {c.portfolio_id for c in self.competitors}
-                    self.strategy_telemetry.update({k: copy.deepcopy(v) for k, v in snapshot["strategy_telemetry"].items() if k in roster})
-                if "fill_records" in snapshot and isinstance(snapshot["fill_records"], list):
-                    self.fill_records = [f for f in (self._deserialize_fill(d) for d in snapshot["fill_records"]) if f is not None]
+                    self.broker.pending_orders = staged_pending
+                if staged_orb is not None:
+                    self.live_orb_high, self.live_orb_low, self._orb_range_frozen, orb_day = staged_orb
+                    if orb_day is not None:
+                        self._orb_session_day = orb_day
+                        self._orb_session_day_idx = None
+                if staged_entry_ts is not None:
+                    self.position_entry_ts = staged_entry_ts
+                if staged_closed_since_evolve is not None:
+                    self._closed_trades_since_evolve = staged_closed_since_evolve
+                if staged_last_evolve_ts is not None:
+                    self.last_evolve_ts = staged_last_evolve_ts
+                if staged_evo_events is not None:
+                    self.evolution_events = staged_evo_events
+                if staged_tv_champ is not None:
+                    self.tv_champion = staged_tv_champ
+                if staged_telemetry is not None:
+                    self.strategy_telemetry.update(staged_telemetry)
+                if staged_fill_records is not None:
+                    self.fill_records = staged_fill_records
                 if hasattr(self, "broker"):
-                    if "broker_execution_audit" in snapshot and isinstance(snapshot["broker_execution_audit"], list):
-                        self.broker.execution_audit = [f for f in (self._deserialize_fill(d) for d in snapshot["broker_execution_audit"]) if f is not None]
+                    if staged_audit is not None:
+                        self.broker.execution_audit = staged_audit
                         self._audit_cursor = len(self.broker.execution_audit)
                     max_seq = max(
                         (
@@ -618,27 +740,28 @@ class SessionCodecMixin:
                         if c.portfolio.current_market_price > Decimal("0"):
                             self.broker.current_price = c.portfolio.current_market_price
                             break
-                if "live_fill_seq_offset" in snapshot:
-                    self._live_fill_seq_offset = int(snapshot.get("live_fill_seq_offset", 0) or 0)
-                if "auto_evolve_interval_sec" in snapshot:
-                    self.auto_evolve_interval_sec = int(snapshot["auto_evolve_interval_sec"])
-                if "auto_evolve_enabled" in snapshot:
-                    self.auto_evolve_enabled = bool(snapshot["auto_evolve_enabled"])
+                if staged_live_offset is not None:
+                    self._live_fill_seq_offset = staged_live_offset
+                if staged_auto_interval is not None:
+                    self.auto_evolve_interval_sec = staged_auto_interval
+                if staged_auto_enabled is not None:
+                    self.auto_evolve_enabled = staged_auto_enabled
                 if "auto_evolve_disabled_ts" in snapshot:
-                    raw_dis = snapshot.get("auto_evolve_disabled_ts")
-                    try:
-                        self._auto_evolve_disabled_ts = float(raw_dis) if (raw_dis is not None and not self.auto_evolve_enabled) else None
-                    except (TypeError, ValueError):
-                        self._auto_evolve_disabled_ts = None
+                    self._auto_evolve_disabled_ts = staged_auto_dis_ts
                 elif self.auto_evolve_enabled:
                     self._auto_evolve_disabled_ts = None
-                if "cadence_sec" in snapshot:
-                    self.cadence_sec = max(1.0, min(10.0, float(snapshot["cadence_sec"])))
+                if staged_cadence is not None:
+                    self.cadence_sec = staged_cadence
                 if "live_orders_enabled" in snapshot:
                     self.live_orders_enabled = bool(snapshot["live_orders_enabled"])
                     self.live_trading_active = self.live_orders_enabled
                 if "live_start_ts" in snapshot:
-                    self.live_start_ts = snapshot.get("live_start_ts")
+                    raw_ls = snapshot.get("live_start_ts")
+                    try:
+                        ls_f = float(raw_ls) if raw_ls is not None else None
+                        self.live_start_ts = ls_f if (ls_f is not None and math.isfinite(ls_f) and ls_f >= 0.0) else None
+                    except (TypeError, ValueError):
+                        self.live_start_ts = None
 
                 self._has_restored_session = True
                 gen = snapshot.get("generation", 1)

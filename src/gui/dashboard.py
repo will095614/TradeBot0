@@ -31,7 +31,9 @@ def _get_native_hwnd(window: Any) -> Optional[int]:
     try:
         native = getattr(window, "native", None)
         if native is not None and getattr(native, "Handle", None) is not None:
-            return int(native.Handle.ToInt64())
+            raw = native.Handle.ToInt64()
+            if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+                return raw
     except Exception as e:
         logger.debug("Failed to read native window handle: %s", e)
     return None
@@ -45,7 +47,7 @@ def _get_assets_dir() -> pathlib.Path:
 
 _ASSETS_DIR = _get_assets_dir()
 _ICON_LOCK = threading.Lock()
-_ACTIVE_WINDOW_HICONS: list[int] = []
+_ACTIVE_WINDOW_HICONS: Dict[int, int] = {}
 
 
 def _get_app_icon_path() -> Optional[pathlib.Path]:
@@ -54,14 +56,9 @@ def _get_app_icon_path() -> Optional[pathlib.Path]:
     return path if path.is_file() else None
 
 
-def _destroy_window_hicons(handles: Optional[list[int]] = None) -> None:
-    """Release Win32 HICON handles allocated via LoadImageW."""
-    with _ICON_LOCK:
-        if handles is None:
-            to_free = list(_ACTIVE_WINDOW_HICONS)
-            _ACTIVE_WINDOW_HICONS.clear()
-        else:
-            to_free = list(handles)
+def _destroy_win32_hicons(handles: list[int]) -> None:
+    """Release raw Win32 HICON handles via DestroyIcon without locking _ICON_LOCK."""
+    to_free = [int(h) for h in handles if h]
     if sys.platform != "win32" or not to_free:
         return
     try:
@@ -72,13 +69,23 @@ def _destroy_window_hicons(handles: Optional[list[int]] = None) -> None:
         user32.DestroyIcon.argtypes = [wintypes.HICON]
         user32.DestroyIcon.restype = wintypes.BOOL
         for h in to_free:
-            if h:
-                try:
-                    user32.DestroyIcon(wintypes.HICON(h))
-                except Exception:
-                    pass
+            try:
+                user32.DestroyIcon(wintypes.HICON(h))
+            except Exception:
+                pass
     except Exception as e:
         logger.debug("DestroyIcon cleanup failed: %s", e)
+
+
+def _destroy_window_hicons(handles: Optional[list[int]] = None) -> None:
+    """Release Win32 HICON handles tracked for the active window."""
+    with _ICON_LOCK:
+        if handles is None:
+            to_free = list(_ACTIVE_WINDOW_HICONS.values())
+            _ACTIVE_WINDOW_HICONS.clear()
+        else:
+            to_free = list(handles)
+    _destroy_win32_hicons(to_free)
 
 
 def _apply_window_icon(window: Any, icon_path: Optional[pathlib.Path] = None) -> bool:
@@ -144,24 +151,28 @@ def _apply_window_icon(window: Any, icon_path: Optional[pathlib.Path] = None) ->
         h_sm = user32.LoadImageW(None, ico_str, IMAGE_ICON, cx_sm, cy_sm, LR_LOADFROMFILE)
         h_lg = user32.LoadImageW(None, ico_str, IMAGE_ICON, cx_lg, cy_lg, LR_LOADFROMFILE)
 
-        new_handles: list[int] = []
+        new_slots: Dict[int, int] = {}
         if h_sm:
-            h_sm_val = int(h_sm)
-            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_sm_val)
-            new_handles.append(h_sm_val)
-            applied = True
+            new_slots[ICON_SMALL] = int(h_sm)
         if h_lg:
-            h_lg_val = int(h_lg)
-            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_lg_val)
-            new_handles.append(h_lg_val)
-            applied = True
+            new_slots[ICON_BIG] = int(h_lg)
 
-        if new_handles:
-            with _ICON_LOCK:
-                prev_handles = list(_ACTIVE_WINDOW_HICONS)
-                _ACTIVE_WINDOW_HICONS[:] = new_handles
-            if prev_handles:
-                _destroy_window_hicons(prev_handles)
+        if new_slots:
+            prev_replaced: list[int] = []
+            try:
+                with _ICON_LOCK:
+                    for slot, handle_val in new_slots.items():
+                        user32.SendMessageW(hwnd, WM_SETICON, slot, handle_val)
+                        prev = _ACTIVE_WINDOW_HICONS.get(slot)
+                        if prev and prev != handle_val:
+                            prev_replaced.append(prev)
+                        _ACTIVE_WINDOW_HICONS[slot] = handle_val
+                        applied = True
+            except Exception:
+                _destroy_win32_hicons(list(new_slots.values()))
+                raise
+            if prev_replaced:
+                _destroy_win32_hicons(prev_replaced)
     except Exception as e:
         logger.debug("Win32 WM_SETICON failed: %s", e)
 
@@ -459,10 +470,16 @@ class _ArenaBridgeApi:
         except Exception as e:
             logger.error("Error stopping engine on shutdown: %s", e)
         if self._dashboard.window:
-            # Close on the calling thread: window.destroy() must run on the
-            # UI thread, and the old background-thread destroy was a
-            # use-after-free / deadlock risk on WinForms (item 7).
-            self._dashboard.close_window()
+            if _get_native_hwnd(self._dashboard.window) is not None:
+                # Defer WM_CLOSE slightly on Windows so pywebview resolves the bridge
+                # JS Promise before the native WebView2 control is disposed.
+                def _deferred_close() -> None:
+                    time.sleep(0.08)
+                    self._dashboard.close_window()
+
+                threading.Thread(target=_deferred_close, name="close-window-deferred", daemon=True).start()
+            else:
+                self._dashboard.close_window()
         return {"status": "shutting_down", "saved": save_progress}
 
     def open_omniroute_console(self) -> Dict[str, Any]:
@@ -728,37 +745,40 @@ class _ArenaBridgeApi:
                     self._set_save_launch_stage("failed", err_msg, 25, "keys")
                     return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
 
-                # 2. If a password was supplied, stop the watchdog & any self-spawned
-                # gateway first (to avoid SQLite lock/cache staleness or a watchdog
-                # respawn mid-update), apply the password directly into OmniRoute's
-                # storage.sqlite via CLI, and only then persist INITIAL_PASSWORD to .env.
-                _stopped_for_pw = False
+                # 2. If a password was supplied OR API keys changed, stop the watchdog & any
+                # self-spawned gateway first (to avoid SQLite lock/cache staleness, stale
+                # process.env keys, or a watchdog respawn mid-update), apply the password
+                # when provided, and let step 3 respawn cleanly.
+                _stopped_for_update = False
                 _had_own_daemon = False
                 _had_watchdog = False
-                if admin_password is not None:
+                _keys_updated = isinstance(sync_res, dict) and int(sync_res.get("updated_count", 0) or 0) > 0
+                if admin_password is not None or _keys_updated:
                     _sup = self._dashboard.gateway_supervisor
                     with _sup._watchdog_lock:
                         _had_watchdog = bool(_sup._watchdog_thread is not None and _sup._watchdog_thread.is_alive())
-                    try:
-                        _sup.stop_watchdog()
-                    except Exception as e:
-                        logger.debug("Watchdog pause before password sync failed: %s", e)
                     with _sup._daemon_lock:
                         _needs_restart = bool(
                             (_sup.is_self_spawned and _sup.child_process is not None)
                             or _sup._daemon_starting
                         )
                     _had_own_daemon = _needs_restart
+                    if admin_password is not None or _needs_restart:
+                        try:
+                            _sup.stop_watchdog()
+                        except Exception as e:
+                            logger.debug("Watchdog pause before gateway update failed: %s", e)
                     if _needs_restart:
                         self._set_save_launch_stage("restarting-gateway", "Restarting AI services...", 40, "gateway")
                         try:
                             _sup.shutdown()
-                            _stopped_for_pw = True
+                            _stopped_for_update = True
                         except Exception as e:
-                            logger.debug("Gateway restart after password change failed: %s", e)
+                            logger.debug("Gateway restart after setup update failed: %s", e)
 
+                if admin_password is not None:
                     def _recover_gateway_after_pw_error() -> None:
-                        if _stopped_for_pw and _had_own_daemon:
+                        if _stopped_for_update and _had_own_daemon:
                             try:
                                 _sup.start_daemon(max_wait_sec=15.0)
                             except Exception as rec_err:
@@ -795,9 +815,9 @@ class _ArenaBridgeApi:
                     "last_setup_ts": time.time(),
                 })
                 if cfg_saved is False:
-                    if admin_password is not None and (_stopped_for_pw or _had_watchdog):
+                    if (admin_password is not None or _keys_updated) and (_stopped_for_update or _had_watchdog):
                         try:
-                            if _stopped_for_pw and _had_own_daemon:
+                            if _stopped_for_update and _had_own_daemon:
                                 self._dashboard.gateway_supervisor.start_daemon(max_wait_sec=15.0)
                             if _had_watchdog:
                                 self._dashboard.gateway_supervisor.start_watchdog(
@@ -819,9 +839,9 @@ class _ArenaBridgeApi:
                     healthy, _ = self._dashboard.gateway_supervisor.probe_health(timeout=0.6)
                     if healthy:
                         msg = "AI services connected."
-                else:
+                if not healthy:
                     # Auto-launch is mandatory (offline mode removed): the gateway
-                    # is always started when the port is not already open.
+                    # is always started (or recycled if hung) when not healthy.
                     self._set_save_launch_stage("starting-gateway", "Starting AI services...", 70, "gateway")
                     spawn_ok, spawn_msg = self._dashboard.gateway_supervisor.start_daemon(max_wait_sec=30.0)
                     healthy = spawn_ok
@@ -924,7 +944,7 @@ class ArenaDashboard:
             _gw_host, _gw_port, _auto_redeploy = "127.0.0.1", 20128, True
         _gw_base_url = None if os.getenv("LLM_BASE_URL") else f"http://{_gw_host}:{_gw_port}/v1"
         self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=initial_cash, auto_redeploy_when_flat=_auto_redeploy, gateway_base_url=_gw_base_url)
-        self.gateway_supervisor = GatewaySupervisor(host=_gw_host, port=_gw_port, omni_data_dir=self.config_manager.omni_env_file.parent)
+        self.gateway_supervisor = GatewaySupervisor(host=_gw_host, port=_gw_port, omni_data_dir=self.config_manager.omni_env_file.parent, on_gateway_recovered=lambda: self.engine.trigger_intel_refresh_async())
         self.window = None
         self.allow_exit = False
         self.closing_prompt_active = False
@@ -965,6 +985,9 @@ class ArenaDashboard:
             budget_fn = getattr(client, "is_daily_budget_exhausted", None)
             if callable(budget_fn) and budget_fn() is True:
                 return "quota_exhausted"
+            has_q_fn = getattr(client, "has_quota_failures", None)
+            if callable(has_q_fn) and has_q_fn() is False:
+                return "ok"
             exhausted_fn = getattr(client, "is_all_providers_quota_exhausted", None)
             if callable(exhausted_fn):
                 configured = self.config_manager.get_configured_providers()
@@ -1010,6 +1033,7 @@ class ArenaDashboard:
                 old_live_start_ts = old_engine.live_start_ts
                 old_closed_since_evolve = old_engine._closed_trades_since_evolve
                 old_seq_offset = int(getattr(old_engine, "_live_fill_seq_offset", 0) or 0)
+                old_tv_champ = dict(old_engine.tv_champion) if isinstance(getattr(old_engine, "tv_champion", None), dict) else {}
             try:
                 old_engine.storage.clear_session_snapshot()
             except Exception as e:
@@ -1050,6 +1074,12 @@ class ArenaDashboard:
                         c.genome = _dc_replace(c.genome, generation=gen)
             new_engine.fill_records = old_fills
             new_engine._live_fill_seq_offset = old_seq_offset
+            max_carried_seq = max((int(getattr(f, "fill_seq", 0)) for f in old_fills), default=0)
+            if max_carried_seq > 0:
+                new_engine.broker.reset_seq(max_carried_seq)
+            if old_tv_champ:
+                import copy as _copy
+                new_engine.tv_champion = _copy.deepcopy(old_tv_champ)
             new_engine.evolution_events = old_events
             new_engine.last_evolve_ts = old_last_evolve_ts
             new_engine.live_start_ts = old_live_start_ts
@@ -1314,6 +1344,8 @@ class ArenaDashboard:
 
             def _delayed_activation():
                 time.sleep(0.35)
+                if self._stopped or self.allow_exit:
+                    return
                 _apply_window_icon(window)
                 _activate_foreground_startup()
 

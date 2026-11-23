@@ -135,7 +135,9 @@ def _parse_event_epoch(timestamp: Any, fallback: float) -> float:
     if not isinstance(timestamp, str) or not timestamp.strip():
         return fallback
     try:
-        dt = datetime.fromisoformat(timestamp.strip().replace("Z", "+00:00"))
+        raw = timestamp.strip()
+        norm = f"{raw[:-1]}+00:00" if raw.endswith(("Z", "z")) else raw
+        dt = datetime.fromisoformat(norm)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         ts = dt.timestamp()
@@ -457,7 +459,12 @@ class MacroCommander:
         recent = self.harvester.get_latest_events(10)
         if recent:
             recent_keys = tuple((e.raw_title or e.summary) for e in recent)
-            if recent_keys == self._last_synthesized_keys and not self.current_state.fallback and self.curated_events:
+            if (
+                recent_keys
+                and all(k in self._last_synthesized_keys for k in recent_keys)
+                and not self.current_state.fallback
+                and self.curated_events
+            ):
                 self._set_sync_stage("done", "Stream live", percent=100)
                 return self.current_state
             if _shutting_down():
@@ -547,6 +554,11 @@ class MacroCommander:
         tot_tokens = tokens_used + tokens_saved
         dedup_pct = round((tokens_saved / tot_tokens) * 100.0, 1) if tot_tokens > 0 else 0.0
 
+        throttled = self.is_quota_throttled()
+        interval_sec = max(300.0, 900.0) if throttled else 300.0
+        if getattr(type(self), "digest_interval_sec", None) is not MacroCommander.digest_interval_sec:
+            interval_sec = self.digest_interval_sec()
+
         return {
             "omniroute": {
                 "status": status_text,
@@ -558,8 +570,8 @@ class MacroCommander:
                 "tokens_saved": tokens_saved,
                 "dedup_pct": dedup_pct,
                 "dedup_hits": dedup_hits,
-                "quota_throttled": self.is_quota_throttled(),
-                "digest_interval_sec": self.digest_interval_sec(),
+                "quota_throttled": throttled,
+                "digest_interval_sec": interval_sec,
                 "total_requests": int(getattr(self.client, "total_requests", 0)),
                 "successful_requests": int(getattr(self.client, "successful_requests", 0)),
                 "retried_requests": int(getattr(self.client, "retried_requests", 0)),
@@ -1114,9 +1126,9 @@ class MacroCommander:
                 if inserted:
                     self._curated_version += 1
 
-            # Format top items for commander
+            # Format top (newest) items for commander
             lines = []
-            for e in recent_events[-15:]:
+            for e in recent_events[:15]:
                 sent_tag = f"+{e.sentiment_score:.2f}" if e.sentiment_score >= 0 else f"{e.sentiment_score:.2f}"
                 lines.append(f"- [{e.source} | Urg {e.urgency_score}/10 | Sent {sent_tag}] {e.summary}")
             intel_digest = "\n".join(lines)
@@ -1243,7 +1255,8 @@ class MacroCommander:
 
                     self.current_state.status = "STANDBY" if not self.client.is_gateway_online else "ONLINE"
 
-                self._last_synthesized_keys = tuple((e.raw_title or e.summary) for e in recent_events[-10:])
+                latest_keys_src = self.harvester.get_latest_events(10) or recent_events[:10]
+                self._last_synthesized_keys = tuple((e.raw_title or e.summary) for e in latest_keys_src)
                 if self.curated_events:
                     self.current_state.latest_event = self.curated_events[0]
 

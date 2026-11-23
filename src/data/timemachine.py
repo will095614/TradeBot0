@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import List, Optional, Dict, Any
 import math
 import os
+import sys
 import time
 
 try:
@@ -304,7 +305,11 @@ class TimeMachineArena:
         bar_count: int,
         generation: int = 1
     ) -> None:
-        mem_dir = os.environ.get("ARENA_MEMORY_DIR", "memory")
+        if getattr(sys, "frozen", False) and "ARENA_MEMORY_DIR" not in os.environ:
+            appdata = os.environ.get("APPDATA")
+            mem_dir = os.path.join(appdata, "TradeBot0", "memory") if appdata else os.path.join(os.path.expanduser("~"), ".tradebot0", "memory")
+        else:
+            mem_dir = os.environ.get("ARENA_MEMORY_DIR", "memory")
         os.makedirs(mem_dir, exist_ok=True)
         report_path = os.path.join(mem_dir, "arena_report.md")
 

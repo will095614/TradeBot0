@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -41,12 +42,21 @@ def get_log_dir() -> Path:
 class _SafeRotatingFileHandler(RotatingFileHandler):
     """RotatingFileHandler resilient to transient Windows WinError 32 lock contention."""
 
+    _rollover_cooldown_until: float = 0.0
+
+    def shouldRollover(self, record: logging.LogRecord) -> int:
+        if time.monotonic() < getattr(self, "_rollover_cooldown_until", 0.0):
+            return 0
+        return super().shouldRollover(record)
+
     def doRollover(self) -> None:
         try:
             super().doRollover()
+            self._rollover_cooldown_until = 0.0
         except (PermissionError, OSError):
-            # If AV or a log viewer holds the file open during rotation, keep logging
-            # to the current handle instead of raising unhandled errors into callers.
+            # If AV or a log viewer holds the file open during rotation, back off 30s
+            # instead of failing rename/open on every subsequent log record.
+            self._rollover_cooldown_until = time.monotonic() + 30.0
             if self.stream is None:
                 try:
                     self.stream = self._open()

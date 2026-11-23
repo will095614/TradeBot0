@@ -19,6 +19,21 @@ from src.arena.order import OrderSide, PositionSide
 
 logger = logging.getLogger(__name__)
 
+_SHALLOW_DELTA_DICT_LIST_KEYS = ("candles", "fills")
+_SHALLOW_DELTA_SCALAR_LIST_KEYS = ("price_history", "ema_fast_history", "ema_slow_history")
+_SHALLOW_DELTA_KEYS = frozenset(_SHALLOW_DELTA_DICT_LIST_KEYS + _SHALLOW_DELTA_SCALAR_LIST_KEYS)
+
+
+def _safe_fmt_hms(ts: Any) -> str:
+    """Format an epoch timestamp as HH:MM:SS without raising on Windows invalid/negative dates."""
+    try:
+        val = float(ts)
+        if not math.isfinite(val) or val < 0.0:
+            return ""
+        return time.strftime("%H:%M:%S", time.localtime(val))
+    except (OSError, OverflowError, ValueError, TypeError):
+        return ""
+
 
 class ViewModelPublisher:
     """
@@ -243,20 +258,31 @@ class ViewModelPublisher:
             delta["intel_events_unchanged"] = False
             return delta
 
-        omit = set()
-        if candles_same:
-            omit.add("candles")
-        if fills_same:
-            omit.add("fills")
-        if history_same:
-            omit.update(("price_history", "ema_fast_history", "ema_slow_history"))
+        omit = set(_SHALLOW_DELTA_KEYS)
         if intel_same:
             omit.add("intel_hub")
 
-        if omit:
-            delta = copy.deepcopy({k: v for k, v in snapshot.items() if k not in omit})
-        else:
-            delta = copy.deepcopy(snapshot)
+        delta = copy.deepcopy({k: v for k, v in snapshot.items() if k not in omit})
+
+        if not candles_same and "candles" in snapshot:
+            src_c = snapshot["candles"]
+            delta["candles"] = (
+                [dict(c) if isinstance(c, dict) else copy.deepcopy(c) for c in src_c]
+                if isinstance(src_c, list)
+                else copy.deepcopy(src_c)
+            )
+        if not fills_same and "fills" in snapshot:
+            src_f = snapshot["fills"]
+            delta["fills"] = (
+                [dict(f) if isinstance(f, dict) else copy.deepcopy(f) for f in src_f]
+                if isinstance(src_f, list)
+                else copy.deepcopy(src_f)
+            )
+        if not history_same:
+            for hk in _SHALLOW_DELTA_SCALAR_LIST_KEYS:
+                if hk in snapshot:
+                    hv = snapshot[hk]
+                    delta[hk] = list(hv) if isinstance(hv, list) else copy.deepcopy(hv)
 
         if intel_same and isinstance(snapshot.get("intel_hub"), dict):
             delta["intel_hub"] = copy.deepcopy(
@@ -359,63 +385,89 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
             }
         )
 
-    fills_view: List[Dict[str, Any]] = []
+    vm_cache = getattr(engine, "_vm_cache", None)
+    if not isinstance(vm_cache, dict):
+        vm_cache = {}
+        try:
+            engine._vm_cache = vm_cache
+        except Exception:
+            pass
+
     live_start = float(engine.live_start_ts or 0.0)
+    fill_recs = engine.fill_records
+    n_fills = len(fill_recs)
+    tail_f = fill_recs[-1] if n_fills else None
+    fills_cache_key = (
+        n_fills,
+        getattr(tail_f, "fill_seq", None),
+        getattr(tail_f, "timestamp", None),
+        getattr(tail_f, "order_id", None),
+        live_start,
+        bool(engine.live_orders_enabled),
+        int(getattr(engine, "_live_fill_seq_offset", 0) or 0),
+    )
 
-    # Number live fills starting from 1 chronologically, completely ignoring historical warmup orders
-    def _is_fill_live(f_item: Any) -> bool:
-        if getattr(f_item, "is_live", False):
-            return True
-        if live_start > 0.0 and getattr(f_item, "timestamp", 0.0) >= (live_start - 5.0):
-            return True
-        if engine.live_orders_enabled and live_start == 0.0:
-            return True
-        return False
+    if vm_cache.get("fills_key") == fills_cache_key:
+        fills_view = [dict(item) for item in vm_cache["fills_view"]]
+    else:
+        fills_view = []
 
-    live_seq_by_order_id: Dict[str, int] = {}
-    live_seq_by_id: Dict[int, int] = {}
-    live_counter = int(getattr(engine, "_live_fill_seq_offset", 0) or 0)
-    for f in engine.fill_records:
-        if _is_fill_live(f):
-            live_counter += 1
-            if getattr(f, "order_id", None):
-                live_seq_by_order_id[f.order_id] = live_counter
-            live_seq_by_id[id(f)] = live_counter
+        # Number live fills starting from 1 chronologically, completely ignoring historical warmup orders
+        def _is_fill_live(f_item: Any) -> bool:
+            if getattr(f_item, "is_live", False):
+                return True
+            if live_start > 0.0 and getattr(f_item, "timestamp", 0.0) >= (live_start - 5.0):
+                return True
+            if engine.live_orders_enabled and live_start == 0.0:
+                return True
+            return False
 
-    for f in reversed(engine.fill_records[-60:]):
-        pid = f.portfolio_id
-        is_live = _is_fill_live(f)
-        is_short_pos = getattr(f, "position_side", PositionSide.LONG) == PositionSide.SHORT
-        if is_short_pos:
-            is_entry = f.side == OrderSide.SELL
-            action_label = "OPEN SHORT" if is_entry else "COVER SHORT"
-        else:
-            is_entry = f.side == OrderSide.BUY
-            action_label = "OPEN LONG" if is_entry else "CLOSE LONG"
-        base_reason = engine.REASON_DISPLAY.get(f.reason.value, f.reason.value)
-        entry_p_dec = getattr(f, "entry_price", None)
-        assigned_seq = (
-            live_seq_by_order_id.get(getattr(f, "order_id", ""))
-            or live_seq_by_id.get(id(f))
-            or (live_counter if is_live else f.fill_seq)
-        )
+        live_seq_by_order_id: Dict[str, int] = {}
+        live_seq_by_id: Dict[int, int] = {}
+        live_counter = int(getattr(engine, "_live_fill_seq_offset", 0) or 0)
+        for f in fill_recs:
+            if _is_fill_live(f):
+                live_counter += 1
+                if getattr(f, "order_id", None):
+                    live_seq_by_order_id[f.order_id] = live_counter
+                live_seq_by_id[id(f)] = live_counter
 
-        fills_view.append(
-            {
-                "seq": assigned_seq,
-                "time": time.strftime("%H:%M:%S", time.localtime(f.timestamp)),
-                "strategy": engine.STRATEGY_DISPLAY.get(pid, pid).split(" ")[0],
-                "side": f.side.value,
-                "action_label": action_label,
-                "is_entry": is_entry,
-                "qty": fz(f.qty),
-                "price": fz(f.price),
-                "entry_price": fz(entry_p_dec) if entry_p_dec else None,
-                "pnl": fz(f.realized_pnl) if not is_entry else None,
-                "reason": base_reason,
-                "is_live": is_live,
-            }
-        )
+        for f in reversed(fill_recs[-60:]):
+            pid = f.portfolio_id
+            is_live = _is_fill_live(f)
+            is_short_pos = getattr(f, "position_side", PositionSide.LONG) == PositionSide.SHORT
+            if is_short_pos:
+                is_entry = f.side == OrderSide.SELL
+                action_label = "OPEN SHORT" if is_entry else "COVER SHORT"
+            else:
+                is_entry = f.side == OrderSide.BUY
+                action_label = "OPEN LONG" if is_entry else "CLOSE LONG"
+            base_reason = engine.REASON_DISPLAY.get(f.reason.value, f.reason.value)
+            entry_p_dec = getattr(f, "entry_price", None)
+            assigned_seq = (
+                live_seq_by_order_id.get(getattr(f, "order_id", ""))
+                or live_seq_by_id.get(id(f))
+                or (live_counter if is_live else f.fill_seq)
+            )
+
+            fills_view.append(
+                {
+                    "seq": assigned_seq,
+                    "time": _safe_fmt_hms(f.timestamp),
+                    "strategy": engine.STRATEGY_DISPLAY.get(pid, pid).split(" ")[0],
+                    "side": f.side.value,
+                    "action_label": action_label,
+                    "is_entry": is_entry,
+                    "qty": fz(f.qty),
+                    "price": fz(f.price),
+                    "entry_price": fz(entry_p_dec) if entry_p_dec else None,
+                    "pnl": fz(f.realized_pnl) if not is_entry else None,
+                    "reason": base_reason,
+                    "is_live": is_live,
+                }
+            )
+        vm_cache["fills_key"] = fills_cache_key
+        vm_cache["fills_view"] = [dict(item) for item in fills_view]
 
     leader = strategies[0] if strategies else None
     quant_meta = {
@@ -493,22 +545,76 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         active_tv_champ = raw_champ
 
     champ_id = active_tv_champ.get("strategy_id", "comp_agg")
-    tv_payloads = []
-    for f in reversed(engine.fill_records[-60:]):
-        if f.portfolio_id == champ_id:
-            tv_payloads.append(
+    tv_cache_key = (fills_cache_key, champ_id)
+    if vm_cache.get("tv_key") == tv_cache_key:
+        tv_payloads = [dict(item) for item in vm_cache["tv_payloads"]]
+    else:
+        tv_payloads = []
+        for f in reversed(fill_recs[-60:]):
+            if f.portfolio_id == champ_id:
+                tv_payloads.append(
+                    {
+                        "time": _safe_fmt_hms(f.timestamp),
+                        "ticker": "ETHUSD",
+                        "action": f.side.value,
+                        "qty": fz(f.qty),
+                        "price": fz(f.price),
+                        "pnl": fz(f.realized_pnl) if f.is_closing_fill else None,
+                        "status": "SIM_EXECUTED",
+                    }
+                )
+                if len(tv_payloads) >= 6:
+                    break
+        vm_cache["tv_key"] = tv_cache_key
+        vm_cache["tv_payloads"] = [dict(item) for item in tv_payloads]
+
+    src_candles = engine.published_candles if engine.published_candles else engine.candles
+    candle_tail = src_candles[-150:]
+    n_sc = len(candle_tail)
+    if n_sc >= 2:
+        prefix_key = (
+            id(src_candles),
+            n_sc,
+            candle_tail[0].get("t"),
+            candle_tail[-2].get("t"),
+            candle_tail[-2].get("c"),
+        )
+        if vm_cache.get("candles_prefix_key") == prefix_key:
+            sanitized_candles = [dict(c) for c in vm_cache["candles_prefix"]]
+        else:
+            sanitized_candles = [
                 {
-                    "time": time.strftime("%H:%M:%S", time.localtime(f.timestamp)),
-                    "ticker": "ETHUSD",
-                    "action": f.side.value,
-                    "qty": fz(f.qty),
-                    "price": fz(f.price),
-                    "pnl": fz(f.realized_pnl) if f.is_closing_fill else None,
-                    "status": "SIM_EXECUTED",
+                    "t": fz(c["t"]),
+                    "o": fz(c["o"]),
+                    "h": fz(c["h"]),
+                    "l": fz(c["l"]),
+                    "c": fz(c["c"]),
                 }
-            )
-            if len(tv_payloads) >= 6:
-                break
+                for c in candle_tail[:-1]
+            ]
+            vm_cache["candles_prefix_key"] = prefix_key
+            vm_cache["candles_prefix"] = [dict(c) for c in sanitized_candles]
+        last_c = candle_tail[-1]
+        sanitized_candles.append(
+            {
+                "t": fz(last_c["t"]),
+                "o": fz(last_c["o"]),
+                "h": fz(last_c["h"]),
+                "l": fz(last_c["l"]),
+                "c": fz(last_c["c"]),
+            }
+        )
+    else:
+        sanitized_candles = [
+            {
+                "t": fz(c["t"]),
+                "o": fz(c["o"]),
+                "h": fz(c["h"]),
+                "l": fz(c["l"]),
+                "c": fz(c["c"]),
+            }
+            for c in candle_tail
+        ]
 
     intel_hub = engine.macro_commander.get_intel_hub_telemetry()
     macro_state_safe = (
@@ -544,16 +650,7 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
             "htf_ema_200": fz(getattr(engine, "htf_ema_200", 0.0)),
             "candles_1h_count": len(getattr(engine, "candles_1h", [])),
         },
-        "candles": [
-            {
-                "t": fz(c["t"]),
-                "o": fz(c["o"]),
-                "h": fz(c["h"]),
-                "l": fz(c["l"]),
-                "c": fz(c["c"]),
-            }
-            for c in (engine.published_candles if engine.published_candles else engine.candles)[-150:]
-        ],
+        "candles": sanitized_candles,
         "cadence_sec": engine.cadence_sec,
         "tv_hub": {
             "champion": active_tv_champ,
@@ -567,9 +664,9 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         "omni_summary": omni_summary,
         "strategies": strategies,
         "fills": fills_view,
-        "price_history": [fz(v) for v in engine.eth_price_series],
-        "ema_fast_history": [fz(v) for v in engine.ema_fast_series],
-        "ema_slow_history": [fz(v) for v in engine.ema_slow_series],
+        "price_history": [v if (type(v) is float and math.isfinite(v)) else fz(v) for v in engine.eth_price_series],
+        "ema_fast_history": [v if (type(v) is float and math.isfinite(v)) else fz(v) for v in engine.ema_fast_series],
+        "ema_slow_history": [v if (type(v) is float and math.isfinite(v)) else fz(v) for v in engine.ema_slow_series],
     }
 
 
