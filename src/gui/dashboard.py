@@ -44,6 +44,128 @@ def _get_assets_dir() -> pathlib.Path:
 
 
 _ASSETS_DIR = _get_assets_dir()
+_ICON_LOCK = threading.Lock()
+_ACTIVE_WINDOW_HICONS: list[int] = []
+
+
+def _get_app_icon_path() -> Optional[pathlib.Path]:
+    """Return the multi-resolution TradeBot0 .ico path when bundled or on disk."""
+    path = _ASSETS_DIR / "app_icon.ico"
+    return path if path.is_file() else None
+
+
+def _destroy_window_hicons(handles: Optional[list[int]] = None) -> None:
+    """Release Win32 HICON handles allocated via LoadImageW."""
+    with _ICON_LOCK:
+        if handles is None:
+            to_free = list(_ACTIVE_WINDOW_HICONS)
+            _ACTIVE_WINDOW_HICONS.clear()
+        else:
+            to_free = list(handles)
+    if sys.platform != "win32" or not to_free:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.DestroyIcon.argtypes = [wintypes.HICON]
+        user32.DestroyIcon.restype = wintypes.BOOL
+        for h in to_free:
+            if h:
+                try:
+                    user32.DestroyIcon(wintypes.HICON(h))
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.debug("DestroyIcon cleanup failed: %s", e)
+
+
+def _apply_window_icon(window: Any, icon_path: Optional[pathlib.Path] = None) -> bool:
+    """Apply the multi-size TradeBot0 icon to a pywebview native Windows HWND."""
+    if sys.platform != "win32" or window is None:
+        return False
+    ico = icon_path if icon_path is not None else _get_app_icon_path()
+    if ico is None or not ico.is_file():
+        return False
+
+    applied = False
+    try:
+        native = getattr(window, "native", None)
+        if native is not None and not getattr(native, "InvokeRequired", False):
+            try:
+                import clr
+
+                clr.AddReference("System.Drawing")
+                from System.Drawing import Icon as DotNetIcon
+
+                native.Icon = DotNetIcon(str(ico))
+                applied = True
+            except Exception as e:
+                logger.debug("WinForms native.Icon assignment skipped: %s", e)
+    except Exception as e:
+        logger.debug("WinForms native check failed: %s", e)
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowW.restype = wintypes.HWND
+        user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+        user32.GetSystemMetrics.restype = ctypes.c_int
+        user32.LoadImageW.argtypes = [
+            wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+            ctypes.c_int, ctypes.c_int, wintypes.UINT,
+        ]
+        user32.LoadImageW.restype = wintypes.HANDLE
+        user32.SendMessageW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        ]
+        user32.SendMessageW.restype = ctypes.c_ssize_t
+
+        hwnd_int = _get_native_hwnd(window)
+        hwnd = wintypes.HWND(hwnd_int) if hwnd_int else user32.FindWindowW(None, WINDOW_TITLE)
+        if not hwnd:
+            return applied
+
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+        WM_SETICON = 0x0080
+        ICON_SMALL = 0
+        ICON_BIG = 1
+        cx_sm = int(user32.GetSystemMetrics(49) or 16)
+        cy_sm = int(user32.GetSystemMetrics(50) or 16)
+        cx_lg = int(user32.GetSystemMetrics(11) or 32)
+        cy_lg = int(user32.GetSystemMetrics(12) or 32)
+
+        ico_str = str(ico.resolve())
+        h_sm = user32.LoadImageW(None, ico_str, IMAGE_ICON, cx_sm, cy_sm, LR_LOADFROMFILE)
+        h_lg = user32.LoadImageW(None, ico_str, IMAGE_ICON, cx_lg, cy_lg, LR_LOADFROMFILE)
+
+        new_handles: list[int] = []
+        if h_sm:
+            h_sm_val = int(h_sm)
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_sm_val)
+            new_handles.append(h_sm_val)
+            applied = True
+        if h_lg:
+            h_lg_val = int(h_lg)
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_lg_val)
+            new_handles.append(h_lg_val)
+            applied = True
+
+        if new_handles:
+            with _ICON_LOCK:
+                prev_handles = list(_ACTIVE_WINDOW_HICONS)
+                _ACTIVE_WINDOW_HICONS[:] = new_handles
+            if prev_handles:
+                _destroy_window_hicons(prev_handles)
+    except Exception as e:
+        logger.debug("Win32 WM_SETICON failed: %s", e)
+
+    return applied
 
 
 def _load_asset(filename: str) -> str:
@@ -86,6 +208,12 @@ def _build_html_template() -> str:
             .replace("url('/* __GRAINIENT_OBSIDIAN_DATA_URI__ */')", "none")
             .replace("/* __GRAINIENT_OBSIDIAN_DATA_URI__ */", "none")
         )
+    app_icon_uri = _load_binary_data_uri("app_icon.png", "image/png")
+    if app_icon_uri:
+        html = html.replace("/* __APP_ICON_DATA_URI__ */", app_icon_uri)
+    else:
+        html = html.replace('<link rel="icon" type="image/png" href="/* __APP_ICON_DATA_URI__ */" />\n', "")
+        html = html.replace('<link rel="icon" type="image/png" href="/* __APP_ICON_DATA_URI__ */" />', "")
     return html.replace("/* __APP_CSS__ */", css).replace("/* __APP_JS__ */", js)
 
 
@@ -983,6 +1111,7 @@ class ArenaDashboard:
                 self.gateway_supervisor.shutdown()
             except Exception as e:
                 logger.debug("Error shutting down gateway supervisor: %s", e)
+            _destroy_window_hicons()
 
     def close_window(self) -> None:
         """Closes the window from any thread.
@@ -1179,11 +1308,13 @@ class ArenaDashboard:
 
         def _on_window_shown(*args):
             close_native_splash()
+            _apply_window_icon(window)
             logger.info("Window shown: activating foremost layer on startup & maximizing window (non-fullscreen)...")
             _activate_foreground_startup()
 
             def _delayed_activation():
                 time.sleep(0.35)
+                _apply_window_icon(window)
                 _activate_foreground_startup()
 
             threading.Thread(target=_delayed_activation, daemon=True).start()
@@ -1227,6 +1358,13 @@ class ArenaDashboard:
 
         window.events.closing += _on_window_closing
         window.events.closed += _on_window_closed
+
+        ico_path = _get_app_icon_path()
+        if ico_path is not None:
+            try:
+                webview._state["icon"] = str(ico_path)
+            except Exception as e:
+                logger.debug("Failed to preset pywebview window icon: %s", e)
 
         try:
             webview.start(debug=False)

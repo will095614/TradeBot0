@@ -69,6 +69,20 @@ def check_and_ensure_environment() -> bool:
     return True
 
 
+def _set_windows_app_user_model_id(app_id: str = "TradeBot0.QuantArena") -> bool:
+    """Bind the Windows process to an explicit AppUserModelID for taskbar icon grouping."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        hr = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        return hr == 0
+    except Exception as e:
+        logger.debug("SetCurrentProcessExplicitAppUserModelID failed: %s", e)
+        return False
+
+
 def main() -> None:
     if "--self-test" in sys.argv:
         close_native_splash()
@@ -118,6 +132,7 @@ def main() -> None:
     else:
         if not check_and_ensure_environment():
             return
+        _set_windows_app_user_model_id()
         app = ArenaDashboard(initial_cash=Decimal("100000.00"))
         import atexit
         import time

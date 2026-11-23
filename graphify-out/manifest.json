@@ -1,14 +1,14 @@
 {
   "build_exe.ps1": {
-    "mtime": 1795409383.878275,
-    "seen": 1795409471.3646646,
-    "ast_hash": "bac150fd2cc80c7b7baeb7255aea6d3e",
+    "mtime": 1795429331.595974,
+    "seen": 1795429433.2515397,
+    "ast_hash": "1580fd4a237fc5669e0c114870835bdd",
     "semantic_hash": ""
   },
   "main.py": {
-    "mtime": 1795409398.8163383,
-    "seen": 1795409471.3646646,
-    "ast_hash": "f471dc78d12f51faca4c8152524329a6",
+    "mtime": 1795429310.7286198,
+    "seen": 1795429433.2515397,
+    "ast_hash": "b0bca152d13d4197b3fc173a62559efb",
     "semantic_hash": ""
   },
   "src/__init__.py": {
@@ -132,9 +132,9 @@
     "semantic_hash": ""
   },
   "src/gui/dashboard.py": {
-    "mtime": 1795427141.2589161,
-    "seen": 1795427947.4120631,
-    "ast_hash": "f2d863bf165bc2f1367f68902aa001d8",
+    "mtime": 1795429322.528791,
+    "seen": 1795429433.2515397,
+    "ast_hash": "75e4c178a4047ba32a17d69330c74d66",
     "semantic_hash": ""
   },
   "src/intelligence/__init__.py": {
@@ -252,9 +252,9 @@
     "semantic_hash": ""
   },
   "src/gui/assets/index.html": {
-    "mtime": 1795428811.5732918,
-    "seen": 1795428919.6151135,
-    "ast_hash": "ed72c69b1d5b27d326c6303d8c627151",
+    "mtime": 1795429312.6201408,
+    "seen": 1795429433.2525408,
+    "ast_hash": "eddf666c83d6ce4afe5e73a0bbe67ef1",
     "semantic_hash": ""
   },
   "src/data/mtf_engine.py": {
@@ -897,6 +897,18 @@
     "mtime": 1795427056.617828,
     "seen": 1795427947.4130719,
     "ast_hash": "6fcacfb2c7be8c0ea4d536f88ebe2352",
+    "semantic_hash": ""
+  },
+  "tests/test_app_icon.py": {
+    "mtime": 1795429353.2836964,
+    "seen": 1795429433.2525408,
+    "ast_hash": "20ee5ad5f95933727612d92e52280773",
+    "semantic_hash": ""
+  },
+  "src/gui/assets/app_icon.png": {
+    "mtime": 1795429279.6527953,
+    "seen": 1795429433.2525408,
+    "ast_hash": "96dfed2ddba4c249ccd0152b31da026c",
     "semantic_hash": ""
   }
 }

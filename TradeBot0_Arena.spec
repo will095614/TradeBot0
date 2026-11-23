@@ -47,6 +47,7 @@ exe = EXE(
     splash.binaries,
     [],
     name='TradeBot0_Arena',
+    icon='src/gui/assets/app_icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

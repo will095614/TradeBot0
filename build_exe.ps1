@@ -31,6 +31,11 @@ try {
     } else {
         Write-Host "[!] Splash asset src/gui/assets/splash_logo.png not found; building without native splash." -ForegroundColor Yellow
     }
+    if (Test-Path "src/gui/assets/app_icon.ico") {
+        $pyiArgs += @("--icon", "src/gui/assets/app_icon.ico")
+    } else {
+        Write-Host "[!] App icon asset src/gui/assets/app_icon.ico not found; building with default executable icon." -ForegroundColor Yellow
+    }
     if (Test-Path "src/compat/win7/api-ms-win-core-path-l1-1-0.dll") {
         $pyiArgs += @("--add-binary", "src/compat/win7/api-ms-win-core-path-l1-1-0.dll;.")
     } else {
