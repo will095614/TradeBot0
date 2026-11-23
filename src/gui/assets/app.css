@@ -59,6 +59,17 @@
   --intel-accordion-duration: 0.35s;
   --lg-bounce:          cubic-bezier(0.34, 1.56, 0.64, 1);
 
+  /* --- UIArc Motion & Spring Tokens (Phase 0) --- */
+  --arc-dur-instant:    0.10s;
+  --arc-dur-fast:       0.15s;
+  --arc-dur-exit:       0.14s;
+  --arc-dur-base:       0.20s;
+  --arc-dur-slow:       0.36s;
+  --arc-ease-spring:    cubic-bezier(0.16, 1, 0.3, 1);
+  --arc-ease-out:       cubic-bezier(0.22, 1, 0.36, 1);
+  --arc-ease-in-out:    cubic-bezier(0.65, 0, 0.35, 1);
+  --arc-stagger:        35ms;
+
   /* --- Volumetric Pure Black & High-Contrast Obsidian Stage Defaults --- */
   --stage-bg-base:      #000000;
   --blob-1:             radial-gradient(circle, rgba(32, 38, 52, 0.35) 0%, rgba(15, 18, 26, 0.12) 48%, transparent 72%);
@@ -214,7 +225,9 @@ body.arena-paused .pulse-dot,
 body.arena-paused .live-dot,
 body.arena-paused .ss-badge__dot,
 body.arena-paused .catalyst-pulse-orb,
-body.arena-paused .orb-ring {
+body.arena-paused .orb-ring,
+body.arena-paused .border-beam-ring,
+body.arena-paused .thinking-orb {
   animation-play-state: paused !important;
 }
 
@@ -314,6 +327,45 @@ body:not(.arena-ready) .lg-glass {
   position: absolute;
   inset: 0;
   opacity: 0.02;
+}
+
+/* Grainient Obsidian Texture & HorizonX Silver Stream Ambient Shader */
+.lg-ambient-grainient {
+  position: absolute;
+  inset: 0;
+  background-image: url("/* __GRAINIENT_OBSIDIAN_DATA_URI__ */");
+  background-size: cover;
+  background-position: center;
+  opacity: 0.44;
+  transition: opacity 0.45s var(--arc-ease-out);
+  pointer-events: none;
+}
+
+.lg-ambient-shader {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  opacity: 0.42;
+  mix-blend-mode: screen;
+  transition: opacity 0.45s var(--arc-ease-out);
+  pointer-events: none;
+}
+
+body[data-backdrop-mode="grainient"] .lg-ambient-shader {
+  opacity: 0;
+  visibility: hidden;
+}
+
+body[data-backdrop-mode="grainient"] .lg-ambient-grainient {
+  opacity: 0.56;
+}
+
+body[data-backdrop-mode="minimal"] .lg-ambient-shader,
+body[data-backdrop-mode="minimal"] .lg-ambient-grainient {
+  opacity: 0;
+  visibility: hidden;
 }
 
 /* Ambient Global Bottom-Layer Cursor Glow Halo (500% area, ~20% opacity, diffuse) */
@@ -5924,6 +5976,1003 @@ body:not(.arena-ready) .lg-glass {
   border-color: rgba(192, 132, 252, 0.45);
 }
 
+/* ==========================================================================
+   PHASE 0-4 COMPONENT OPTIMIZATIONS (Option B — Unslop Studio Discipline)
+   ========================================================================== */
+@property --beam-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes borderBeamSpin {
+  from { --beam-angle: 0deg; }
+  to   { --beam-angle: 360deg; }
+}
+
+@keyframes textMorphIn {
+  0%   { opacity: 0.35; filter: blur(3px); transform: translateY(3px); }
+  100% { opacity: 1;    filter: blur(0);   transform: translateY(0); }
+}
+
+@keyframes thinkingOrbOrbit {
+  0%, 100% { transform: translateY(0) scale(0.82); opacity: 0.48; }
+  50%      { transform: translateY(-3px) scale(1.12); opacity: 1; }
+}
+
+/* Number Flow / Rolling Counter (details.so + bencho.dev rolling-counter) */
+.nf-wrap {
+  display: inline-flex;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+.nf-static {
+  display: inline-block;
+  white-space: pre;
+}
+
+.nf-digit-col {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+  line-height: 1.05;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 12%, #000 88%, transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 12%, #000 88%, transparent 100%);
+}
+
+.nf-digit-strip {
+  position: relative;
+  display: inline-block;
+}
+
+.nf-digit-curr {
+  display: inline-block;
+  transition: transform 0.24s var(--arc-ease-spring), opacity 0.22s var(--arc-ease-out);
+  transition-delay: calc(var(--nf-i, 0) * 16ms);
+}
+
+.nf-digit-col:not(.nf-is-rolling) .nf-digit-curr {
+  transform: translateY(105%);
+  opacity: 0.25;
+}
+
+.nf-digit-col.nf-dir-down:not(.nf-is-rolling) .nf-digit-curr {
+  transform: translateY(-105%);
+}
+
+.nf-digit-prev {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-105%);
+  transition: transform 0.24s var(--arc-ease-spring), opacity 0.18s var(--arc-ease-out);
+  transition-delay: calc(var(--nf-i, 0) * 16ms);
+}
+
+.nf-digit-col:not(.nf-is-rolling) .nf-digit-prev {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.nf-digit-col.nf-is-rolling .nf-digit-curr {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.nf-digit-col.nf-dir-down.nf-is-rolling .nf-digit-prev {
+  transform: translateY(105%);
+}
+
+/* Strategy Card Inline Equity Sparkline (uiarc.dev sparkline) */
+.strat-sparkline-wrap {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(3, 10, 26, 0.36);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.strat-sparkline-lbl {
+  font-size: 7.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ss-ink-3);
+  flex-shrink: 0;
+}
+
+.strat-sparkline-svg {
+  flex: 1 1 auto;
+  height: 16px;
+  display: block;
+  overflow: visible;
+}
+
+.strat-sparkline-area {
+  fill-opacity: 0.16;
+  transition: fill 0.25s ease;
+}
+
+.strat-sparkline-line {
+  fill: none;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.strat-sparkline-dot {
+  transition: cx 0.2s var(--arc-ease-out), cy 0.2s var(--arc-ease-out);
+}
+
+.strat-sparkline-delta {
+  font-size: 8.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.kpi-equity-val,
+.kpi-roi-val {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: 100%;
+}
+
+/* Hover-Expanding Toast Stack (bencho.dev + uiarc.dev toast-stack) */
+.toast-stack-host {
+  overflow: visible !important;
+  max-height: none !important;
+  min-height: var(--toast-host-h, 0px);
+  padding-bottom: 18px;
+  transition: min-height var(--arc-dur-slow) var(--arc-ease-spring);
+}
+
+.toast-stack-host:hover,
+.toast-stack-host:focus-within {
+  pointer-events: auto;
+  min-height: var(--toast-host-expanded-h, var(--toast-host-h, 0px));
+}
+
+.toast-stack-item {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  transform-origin: top center;
+  translate: 0 var(--stack-y, 0px);
+  scale: var(--stack-scale, 1);
+  z-index: calc(30 - var(--stack-idx, 0));
+  opacity: calc(1 - var(--stack-idx, 0) * 0.14);
+  transition:
+    translate 0.34s var(--arc-ease-spring),
+    scale 0.34s var(--arc-ease-spring),
+    opacity 0.28s var(--arc-ease-out),
+    box-shadow 0.3s var(--arc-ease-out) !important;
+}
+
+.toast-stack-host:hover .toast-stack-item,
+.toast-stack-host:focus-within .toast-stack-item {
+  translate: 0 var(--stack-expanded-y, 0px);
+  scale: 1;
+  opacity: 1;
+}
+
+/* Context Utilization Meter (bencho.dev context-meter) */
+.ctx-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+  width: 100%;
+}
+
+.ctx-meter-track {
+  display: flex;
+  width: 100%;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  gap: 1px;
+}
+
+.ctx-meter-seg {
+  height: 100%;
+  min-width: 0;
+  transition: width 0.38s var(--arc-ease-out);
+}
+
+.ctx-meter-seg--active {
+  background: #38BDF8;
+}
+
+.ctx-meter-seg--saved {
+  background: #10F5A0;
+}
+
+.ctx-meter-legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 8.5px;
+  color: var(--ss-ink-3);
+}
+
+.ctx-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.ctx-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.ctx-dot--active {
+  background: #38BDF8;
+}
+
+.ctx-dot--saved {
+  background: #10F5A0;
+}
+
+/* Thinking Orbs (libraries.dev thinking-orbs) */
+.thinking-orbs {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.thinking-orb {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #00F2FE;
+  display: inline-block;
+  animation: thinkingOrbOrbit 1.15s ease-in-out infinite;
+}
+
+.thinking-orb:nth-child(2) {
+  animation-delay: 0.18s;
+  background: #38BDF8;
+}
+
+.thinking-orb:nth-child(3) {
+  animation-delay: 0.36s;
+  background: #10F5A0;
+}
+
+.thinking-orbs--mini {
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  margin-right: 4px;
+}
+
+.thinking-orbs--mini.macro-is-thinking {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.digest-refresh-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 4px;
+}
+
+.digest-refresh-lbl {
+  font-size: 10px;
+  font-weight: 600;
+  color: #67E8F9;
+}
+
+/* Restrained Champion Border Beam (libraries.dev border-beam) */
+.border-beam-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0;
+  background: conic-gradient(
+    from var(--beam-angle),
+    transparent 0deg,
+    transparent 245deg,
+    rgba(0, 242, 254, 0.72) 295deg,
+    rgba(255, 255, 255, 0.85) 325deg,
+    rgba(16, 245, 160, 0.55) 348deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  transition: opacity 0.35s ease;
+}
+
+.is-champion-beam > .border-beam-ring {
+  opacity: 0.78;
+  animation: borderBeamSpin 5.5s linear infinite;
+}
+
+/* Metal FX Cursor-Lit CTA Specular Rim (libraries.dev metal-fx) */
+.metal-fx-cta {
+  position: relative;
+  overflow: hidden;
+}
+
+.metal-fx-cta::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    110px circle at var(--mx, 50%) var(--my, 50%),
+    rgba(255, 255, 255, 0.24),
+    rgba(255, 255, 255, 0.05) 45%,
+    transparent 75%
+  );
+  transition: opacity var(--arc-dur-fast) var(--arc-ease-out);
+}
+
+.metal-fx-cta:hover::after {
+  opacity: 1;
+}
+
+/* Overlap Page Transition (details.so page-transition-03 ported to vanilla) */
+.view-transition-entering {
+  z-index: 2;
+  animation: viewOverlapEnter 0.36s var(--arc-ease-out) forwards !important;
+  will-change: transform, opacity, clip-path;
+}
+
+.view-transition-leaving {
+  z-index: 1;
+  pointer-events: none !important;
+  animation: viewOverlapLeave 0.34s var(--arc-ease-out) forwards !important;
+  will-change: transform, opacity;
+}
+
+@keyframes viewOverlapEnter {
+  0% {
+    opacity: 0.25;
+    transform: translateY(18px);
+    clip-path: inset(12% 0% 0% 0%);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    clip-path: inset(0% 0% 0% 0%);
+  }
+}
+
+@keyframes viewOverlapLeave {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-22px) scale(0.975);
+  }
+}
+
+/* Liquid Droplet Toggle Stretch (bencho.dev liq-toggle) */
+.lg-switch--stretching .lg-switch__thumb {
+  transform: scaleX(1.38) scaleY(0.84);
+}
+
+/* Icon Morph + Action Swap (uiarc.dev icon-morph + action-swap) */
+.icon-morph-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.icon-morph-wrap--copy {
+  width: 11px;
+  height: 11px;
+}
+
+.icon-morph-a,
+.icon-morph-b {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  transition: opacity var(--arc-dur-base) var(--arc-ease-spring), transform var(--arc-dur-base) var(--arc-ease-spring);
+}
+
+.icon-morph-b {
+  opacity: 0;
+  transform: scale(0.6) rotate(-18deg);
+}
+
+.is-morphed .icon-morph-a,
+.pwd-badge.pwd-copied .icon-morph-a {
+  opacity: 0;
+  transform: scale(0.6) rotate(18deg);
+}
+
+.is-morphed .icon-morph-b,
+.pwd-badge.pwd-copied .icon-morph-b {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+.pwd-check-svg {
+  color: #10F5A0;
+}
+
+.action-swap-label {
+  display: inline-block;
+  white-space: nowrap;
+  transition: opacity var(--arc-dur-fast) var(--arc-ease-out);
+}
+
+#pauseBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 106px;
+}
+
+.pwd-eye-morph {
+  position: relative;
+}
+
+.pwd-eye-morph .pwd-eye-open,
+.pwd-eye-morph .pwd-eye-off {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  transition: opacity var(--arc-dur-base) var(--arc-ease-spring), transform var(--arc-dur-base) var(--arc-ease-spring);
+}
+
+.pwd-eye-morph .pwd-eye-off {
+  opacity: 0;
+  transform: scale(0.65) rotate(16deg);
+}
+
+.pwd-eye-morph.is-revealed .pwd-eye-open {
+  opacity: 0;
+  transform: scale(0.65) rotate(-16deg);
+}
+
+.pwd-eye-morph.is-revealed .pwd-eye-off {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+/* Text Morph (uiarc.dev text-morph) */
+.text-morph-enter {
+  animation: textMorphIn 0.22s var(--arc-ease-out) both;
+}
+
+/* Sortable Quantitative Performance Matrix (uiarc.dev sortable-data-table) */
+.sort-th {
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--arc-dur-fast) ease, background-color var(--arc-dur-fast) ease;
+}
+
+.sort-th:hover {
+  color: #FFFFFF;
+}
+
+.sort-th--active {
+  color: #00F2FE !important;
+}
+
+.sort-chevron {
+  display: inline-block;
+  margin-left: 2px;
+  font-size: 7px;
+  line-height: 1;
+  opacity: 0.35;
+  vertical-align: middle;
+}
+
+.sort-th--active .sort-chevron {
+  opacity: 1;
+}
+
+.sort-th--active .sort-chevron::after {
+  content: "\25BC";
+}
+
+.sort-th--active.sort-th--asc .sort-chevron::after {
+  content: "\25B2";
+}
+
+/* Intel Hub Expanding Search & Domain Filter Chips (uiarc.dev + bencho.dev seek) */
+.intel-search-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  width: 26px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+  transition: width 0.28s var(--arc-ease-spring), border-color var(--arc-dur-fast) ease, background var(--arc-dur-fast) ease;
+}
+
+.intel-search-wrap.is-open {
+  width: 196px;
+  border-color: rgba(0, 242, 254, 0.45);
+  background: rgba(4, 12, 30, 0.72);
+}
+
+.intel-search-btn {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--ss-ink-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.intel-search-btn:hover {
+  color: #FFFFFF;
+}
+
+.intel-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ss-ink);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  padding-right: 4px;
+}
+
+.intel-search-input::placeholder {
+  color: var(--ss-ink-4);
+}
+
+.intel-search-clear {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  background: transparent;
+  color: var(--ss-ink-3);
+  display: none;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+.intel-search-wrap.is-open .intel-search-clear.visible {
+  display: grid;
+}
+
+.intel-search-clear:hover {
+  color: #FFFFFF;
+}
+
+.intel-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(4, 10, 24, 0.36);
+  flex-shrink: 0;
+}
+
+.intel-domain-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.intel-chip {
+  height: 22px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ss-ink-2);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--arc-dur-fast) ease, border-color var(--arc-dur-fast) ease, color var(--arc-dur-fast) ease, transform var(--arc-dur-fast) var(--arc-ease-spring);
+}
+
+.intel-chip:hover {
+  background: rgba(255, 255, 255, 0.10);
+  color: #FFFFFF;
+}
+
+.intel-chip:active {
+  transform: scale(0.96);
+}
+
+.intel-chip.is-active {
+  background: rgba(0, 242, 254, 0.16);
+  border-color: rgba(0, 242, 254, 0.52);
+  color: #FFFFFF;
+}
+
+.intel-empty-filter {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--ss-ink-3);
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: var(--r-md);
+}
+
+/* Scroll Area Edge Fades (uiarc.dev scroll-area) */
+.scroll-area-faded {
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent);
+}
+
+.scroll-area-faded.has-scroll-top {
+  --fade-top: 14px;
+}
+
+.scroll-area-faded.has-scroll-bottom {
+  --fade-bottom: 14px;
+}
+
+/* Setup Wizard Password Strength Meter (uiarc.dev password-strength) */
+.pwd-strength-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+}
+
+.pwd-strength-bars {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  flex: 1 1 auto;
+}
+
+.pwd-strength-seg {
+  height: 3px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.12);
+  transition: background-color var(--arc-dur-base) ease;
+}
+
+.pwd-strength-text {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--ss-ink-3);
+  min-width: 58px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pwd-strength-wrap[data-level="1"] .pwd-strength-seg:nth-child(1) { background: #FF4D79; }
+.pwd-strength-wrap[data-level="1"] .pwd-strength-text { color: #FDA4AF; }
+
+.pwd-strength-wrap[data-level="2"] .pwd-strength-seg:nth-child(-n+2) { background: #FBBF24; }
+.pwd-strength-wrap[data-level="2"] .pwd-strength-text { color: #FDE68A; }
+
+.pwd-strength-wrap[data-level="3"] .pwd-strength-seg:nth-child(-n+3) { background: #38BDF8; }
+.pwd-strength-wrap[data-level="3"] .pwd-strength-text { color: #7DD3FC; }
+
+.pwd-strength-wrap[data-level="4"] .pwd-strength-seg:nth-child(-n+4) { background: #10F5A0; }
+.pwd-strength-wrap[data-level="4"] .pwd-strength-text { color: #6EE7B7; }
+
+@media (max-height: 720px) {
+  .pwd-strength-wrap { margin-top: 3px; }
+}
+
+/* Slide-to-Confirm Reset Control (bencho.dev slide-confirm) */
+.sld-track {
+  position: relative;
+  width: 100%;
+  height: 40px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(251, 191, 36, 0.34);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  cursor: grab;
+  transition: border-color var(--arc-dur-base) ease, background var(--arc-dur-base) ease;
+}
+
+.sld-track:focus-visible {
+  outline: 2px solid #FBBF24;
+  outline-offset: 2px;
+}
+
+.sld-track.is-dragging {
+  cursor: grabbing;
+  border-color: rgba(251, 191, 36, 0.68);
+}
+
+.sld-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0px;
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.25), rgba(239, 68, 68, 0.34));
+  pointer-events: none;
+}
+
+.sld-label {
+  position: relative;
+  z-index: 1;
+  font-size: 11px;
+  font-weight: 700;
+  color: #FDE68A;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  transition: opacity var(--arc-dur-fast) ease;
+}
+
+.sld-thumb {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #FBBF24;
+  color: #090D16;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 10px rgba(251, 191, 36, 0.45);
+  z-index: 2;
+  transition: transform 0.24s var(--arc-ease-spring), background-color 0.2s ease;
+}
+
+.sld-track.is-dragging .sld-thumb {
+  transition: none;
+}
+
+.sld-track.is-committed {
+  border-color: rgba(16, 245, 160, 0.65);
+}
+
+.sld-track.is-committed .sld-fill {
+  width: 100% !important;
+  background: rgba(16, 245, 160, 0.24);
+  transition: width 0.22s var(--arc-ease-spring);
+}
+
+.sld-track.is-committed .sld-thumb {
+  background: #10F5A0;
+}
+
+/* Command Palette & Shortcut Cheat Sheet (uiarc.dev command-palette + Kbd) */
+.cmd-palette-overlay {
+  z-index: 10006;
+  align-items: flex-start;
+  padding-top: min(14vh, 110px);
+}
+
+.cmd-palette-card {
+  width: 100%;
+  max-width: 540px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: linear-gradient(165deg, rgba(16, 21, 32, 0.96) 0%, rgba(7, 10, 16, 0.98) 100%);
+  box-shadow: 0 28px 64px rgba(0, 0, 0, 0.88), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transform: scale(0.96) translateY(8px);
+  opacity: 0;
+  transition: transform 0.24s var(--arc-ease-spring), opacity 0.2s var(--arc-ease-out);
+}
+
+.cmd-palette-overlay.modal-visible .cmd-palette-card {
+  transform: scale(1) translateY(0);
+  opacity: 1;
+}
+
+.cmd-palette-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.cmd-search-icon {
+  color: var(--ss-ink-3);
+}
+
+.cmd-palette-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #FFFFFF;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.cmd-palette-input::placeholder {
+  color: var(--ss-ink-4);
+}
+
+.cmd-palette-mode-btn {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ss-ink-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--arc-dur-fast) ease, color var(--arc-dur-fast) ease, border-color var(--arc-dur-fast) ease;
+}
+
+.cmd-palette-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #FFFFFF;
+  border-color: rgba(0, 242, 254, 0.42);
+}
+
+.cmd-palette-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--ss-ink-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.cmd-palette-list,
+.cmd-palette-shortcuts {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cmd-palette-group {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--ss-ink-4);
+  padding: 6px 10px 3px;
+}
+
+.cmd-palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ss-ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--arc-dur-fast) ease, border-color var(--arc-dur-fast) ease;
+}
+
+.cmd-palette-item:hover,
+.cmd-palette-item.is-selected {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(0, 242, 254, 0.35);
+}
+
+.cmd-palette-item-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cmd-palette-item-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #FFFFFF;
+}
+
+.cmd-palette-item-sub {
+  font-size: 10px;
+  color: var(--ss-ink-3);
+}
+
+.cmd-shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cmd-shortcut-desc {
+  font-size: 11.5px;
+  color: var(--ss-ink-2);
+}
+
+.cmd-palette-empty {
+  padding: 20px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--ss-ink-3);
+}
+
+.cmd-palette-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 10px;
+  color: var(--ss-ink-3);
+}
+
+.cmd-palette-backdrop-info strong {
+  color: #67E8F9;
+}
+
+.cmd-palette-hints {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* Pause ambient GPU animations when window is minimized/hidden */
 body.window-hidden .lg-ambient-blob,
 body.window-hidden .lg-ambient-caustics,
@@ -5934,7 +6983,10 @@ body.window-hidden .lg-wave-bars i,
 body.window-hidden .pulse-dot,
 body.window-hidden .live-dot,
 body.window-hidden .catalyst-pulse-orb,
-body.window-hidden .orb-ring {
+body.window-hidden .orb-ring,
+body.window-hidden .border-beam-ring,
+body.window-hidden .thinking-orb,
+body.window-hidden .lg-ambient-shader {
   animation-play-state: paused !important;
 }
 
@@ -5948,7 +7000,16 @@ body.window-hidden .orb-ring {
   .pulse-dot,
   .live-dot,
   .catalyst-pulse-orb,
-  .orb-ring {
+  .orb-ring,
+  .border-beam-ring,
+  .thinking-orb,
+  .lg-ambient-shader {
     animation-play-state: paused !important;
+  }
+  .view-transition-entering,
+  .view-transition-leaving,
+  .text-morph-enter {
+    animation: none !important;
+    transition: none !important;
   }
 }

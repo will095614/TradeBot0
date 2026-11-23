@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import pathlib
@@ -54,6 +55,21 @@ def _load_asset(filename: str) -> str:
     return ""
 
 
+def _load_binary_data_uri(filename: str, mime_type: str) -> Optional[str]:
+    """Read a binary asset file as a base64 data URI, or None if missing."""
+    path = _ASSETS_DIR / filename
+    if not path.exists():
+        logger.debug("Optional binary asset not found: %s", path)
+        return None
+    try:
+        raw = path.read_bytes()
+        encoded = base64.b64encode(raw).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
+    except Exception as e:
+        logger.warning("Failed to encode asset %s: %s", path, e)
+        return None
+
+
 def _build_html_template() -> str:
     html = _load_asset("index.html")
     css = _load_asset("app.css")
@@ -61,6 +77,15 @@ def _build_html_template() -> str:
     if not html:
         logger.critical("Failed to load index.html from assets!")
         return "<html><body>Asset loading failed</body></html>"
+    grainient_uri = _load_binary_data_uri("grainient_obsidian.webp", "image/webp")
+    if grainient_uri:
+        css = css.replace("/* __GRAINIENT_OBSIDIAN_DATA_URI__ */", grainient_uri)
+    else:
+        css = (
+            css.replace('url("/* __GRAINIENT_OBSIDIAN_DATA_URI__ */")', "none")
+            .replace("url('/* __GRAINIENT_OBSIDIAN_DATA_URI__ */')", "none")
+            .replace("/* __GRAINIENT_OBSIDIAN_DATA_URI__ */", "none")
+        )
     return html.replace("/* __APP_CSS__ */", css).replace("/* __APP_JS__ */", js)
 
 

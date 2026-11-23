@@ -11,6 +11,8 @@
 <body class="ss-stage-host lg-stage" data-wallpaper="obsidian">
   <!-- Multi-Wallpaper Volumetric Background Stage (.lg-ambient-field) -->
   <div class="lg-ambient-field" id="lgAmbientField" aria-hidden="true">
+    <div class="lg-ambient-grainient" id="lgAmbientGrainient" aria-hidden="true"></div>
+    <canvas class="lg-ambient-shader" id="lgAmbientShaderCanvas" aria-hidden="true"></canvas>
     <div class="lg-ambient-blur-layer">
       <div class="lg-ambient-blob lg-ambient-blob--1"></div>
       <div class="lg-ambient-blob lg-ambient-blob--2"></div>
@@ -213,14 +215,22 @@
           </button>
         </div>
 
-        <button class="btn btn-primary lg-btn lg-btn--primary" onclick="triggerEvolution()" title="Trigger tournament selection and crossover mutation now (Press E)">
+        <button class="btn btn-primary lg-btn lg-btn--primary metal-fx-cta" onclick="triggerEvolution()" title="Trigger tournament selection and crossover mutation now (Press E)">
           <svg class="ss-svg-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 1.5L3.5 9h4.5l-1 5.5L12.5 7H8l1-5.5z"></path>
           </svg>
           <span>Evolve</span>
         </button>
         <button class="btn lg-btn" id="pauseBtn" onclick="togglePause()" title="Pause or Resume Live Feed (Press Space)">
-          <span>Pause Feed</span>
+          <span class="icon-morph-wrap" aria-hidden="true">
+            <svg class="ss-svg-icon icon-morph-a" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M5.5 3.5v9M10.5 3.5v9"></path>
+            </svg>
+            <svg class="ss-svg-icon icon-morph-b" viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+              <path d="M5 3.2l7.5 4.8L5 12.8V3.2z"></path>
+            </svg>
+          </span>
+          <span class="action-swap-label">Pause Feed</span>
         </button>
         <button class="btn lg-btn" onclick="requestResetArena()" title="Reset all competitor portfolios to $100,000.00 cash">
           <span>Reset</span>
@@ -263,7 +273,8 @@
           <!-- 4 Telemetry Tubes (.lg-vessel-grid) -->
           <div class="lg-vessel-grid">
             <!-- Vessel 1: Arena Champion -->
-            <div class="lg-glass lg-spot-card lg-vessel-card" data-accent="cyan" style="--lv:0.78;">
+            <div class="lg-glass lg-spot-card lg-vessel-card is-champion-beam" id="hudVesselChampCard" data-accent="cyan" style="--lv:0.78;">
+              <span class="border-beam-ring" aria-hidden="true"></span>
               <div class="lg-fluid-tube" id="hudVesselChamp" aria-hidden="true">
                 <span class="lg-tube-liquid">
                   <span class="lg-tube-meniscus"></span>
@@ -353,6 +364,7 @@
               <div class="macro-catalyst-header">
                 <span class="catalyst-pulse-orb" aria-hidden="true"></span>
                 <span class="macro-catalyst-badge">LATEST MARKET CATALYST</span>
+                <span class="thinking-orbs thinking-orbs--mini" id="macroThinkingOrbs" aria-hidden="true"><i class="thinking-orb"></i><i class="thinking-orb"></i><i class="thinking-orb"></i></span>
                 <span class="macro-catalyst-time" id="macroCatalystTime">News Wire &middot; Standby</span>
               </div>
               <div class="macro-catalyst-headline" id="macroCatalystHeadline">Syncing Real-Time ETH/USD Macro Catalyst Stream...</div>
@@ -424,7 +436,7 @@
             </div>
             <div class="canvas-wrap" id="priceCanvasWrap" data-cursor="crosshair">
               <canvas id="priceCanvas"></canvas>
-              <div id="chartNotificationContainer" class="chart-notification-container"></div>
+              <div id="chartNotificationContainer" class="chart-notification-container toast-stack-host"></div>
               <div id="priceTooltip" class="chart-tooltip lg-glass num"></div>
             </div>
           </div>
@@ -443,7 +455,7 @@
                 <span id="fillCountLabel">0 Records</span>
               </div>
             </div>
-            <div class="table-scroll orderflow-table-scroll">
+            <div class="table-scroll orderflow-table-scroll scroll-area-faded">
               <table>
                 <thead>
                   <tr>
@@ -479,19 +491,19 @@
                 </span>
               </div>
             </div>
-            <div class="table-scroll ledger-table-scroll" id="tabLeaderboardWrap">
+            <div class="table-scroll ledger-table-scroll scroll-area-faded" id="tabLeaderboardWrap">
               <table id="leaderboardTable">
                 <thead>
                   <tr>
-                    <th style="width:26px;">#</th>
-                    <th style="width:82px;">Strat</th>
-                    <th class="text-right" style="width:58px;">Equity</th>
-                    <th class="text-right" style="width:46px;">ROI</th>
-                    <th class="text-right" style="width:52px;">UPnL</th>
-                    <th class="text-right" style="width:42px;">MaxDD</th>
-                    <th class="text-right" style="width:40px;">Win%</th>
-                    <th class="text-right" style="width:38px;">Shp</th>
-                    <th class="text-right" style="width:36px;">Fit</th>
+                    <th class="sort-th" style="width:28px;" data-sort-key="rank" onclick="setLeaderboardSort('rank')" title="Sort by rank">#<span class="sort-chevron" aria-hidden="true"></span></th>
+                    <th style="width:78px;">Strat</th>
+                    <th class="text-right sort-th sort-th--active" style="width:60px;" data-sort-key="equity" onclick="setLeaderboardSort('equity')" title="Sort by equity">Equity<span class="sort-chevron" aria-hidden="true"></span></th>
+                    <th class="text-right sort-th" style="width:46px;" data-sort-key="roi_pct" onclick="setLeaderboardSort('roi_pct')" title="Sort by ROI">ROI<span class="sort-chevron" aria-hidden="true"></span></th>
+                    <th class="text-right sort-th" style="width:52px;" data-sort-key="unrealized_pnl" onclick="setLeaderboardSort('unrealized_pnl')" title="Sort by unrealized PnL">UPnL<span class="sort-chevron" aria-hidden="true"></span></th>
+                    <th class="text-right sort-th" style="width:44px;" data-sort-key="max_dd_pct" onclick="setLeaderboardSort('max_dd_pct')" title="Sort by Max Drawdown">MaxDD<span class="sort-chevron" aria-hidden="true"></span></th>
+                    <th class="text-right sort-th" style="width:40px;" data-sort-key="win_rate_pct" onclick="setLeaderboardSort('win_rate_pct')" title="Sort by Win Rate">Win%<span class="sort-chevron" aria-hidden="true"></span></th>
+                    <th class="text-right sort-th" style="width:38px;" data-sort-key="sharpe" onclick="setLeaderboardSort('sharpe')" title="Sort by Sharpe">Shp<span class="sort-chevron" aria-hidden="true"></span></th>
+                    <th class="text-right sort-th" style="width:36px;" data-sort-key="fitness" onclick="setLeaderboardSort('fitness')" title="Sort by Fitness">Fit<span class="sort-chevron" aria-hidden="true"></span></th>
                   </tr>
                 </thead>
                 <tbody id="leaderboardBody"></tbody>
@@ -597,7 +609,7 @@
                   <div class="intel-metric lg-glass lg-spot-card omni-console-card">
                     <span class="intel-metric-lbl">OmniRoute Controller</span>
                     <span id="omniEndpointVal" style="display:none;" aria-hidden="true">http://localhost:20128/v1</span>
-                    <button class="btn lg-btn lg-btn--console" onclick="openOmniRouteConsole()" id="btnOpenOmniConsole" title="Launch OmniRoute AI Gateway Web Console in browser (Port 20128)">
+                    <button class="btn lg-btn lg-btn--console metal-fx-cta" onclick="openOmniRouteConsole()" id="btnOpenOmniConsole" title="Launch OmniRoute AI Gateway Web Console in browser (Port 20128)">
                       <svg class="ss-svg-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M12 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h4"></path>
                         <path d="M10 2h4v4"></path>
@@ -610,6 +622,16 @@
                     <span class="intel-metric-lbl">Token Utilization</span>
                     <span class="intel-metric-val num intel-metric-val--wrap" id="omniTokensVal">0 / 0</span>
                     <span class="intel-metric-sub num" id="omniTokensSub">0.0% SHA-256 Dedup Saved</span>
+                    <div class="ctx-meter" id="omniTokenMeter" title="Active token usage vs SHA-256 deduplication savings">
+                      <div class="ctx-meter-track">
+                        <div class="ctx-meter-seg ctx-meter-seg--active" id="omniTokenSegActive" style="width:0%"></div>
+                        <div class="ctx-meter-seg ctx-meter-seg--saved" id="omniTokenSegSaved" style="width:0%"></div>
+                      </div>
+                      <div class="ctx-meter-legend num">
+                        <span class="ctx-legend-item"><i class="ctx-dot ctx-dot--active" aria-hidden="true"></i><span id="omniMeterActiveLbl">Used 0%</span></span>
+                        <span class="ctx-legend-item"><i class="ctx-dot ctx-dot--saved" aria-hidden="true"></i><span id="omniMeterSavedLbl">Saved 0%</span></span>
+                      </div>
+                    </div>
                   </div>
                   <div class="intel-metric lg-glass lg-spot-card">
                     <span class="intel-metric-lbl">Async Concurrency</span>
@@ -624,12 +646,12 @@
                  footer row (Password left, Refresh right), so all three
                  small boxes are a uniform 76px. -->
             <div class="intel-meta-subrow">
-              <span class="intel-metric-sub pwd-row-inline" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" role="button" tabindex="0" onclick="copyOmniPassword()" title="Click to copy admin password"><span id="omniConsolePwdText">********</span><svg class="pwd-copy-svg" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg></code><button type="button" class="pwd-eye-btn" id="btnToggleOmniPwd" onclick="toggleOmniPasswordVisibility()" title="Show password" aria-label="Show password" aria-pressed="false"><svg class="pwd-eye-open" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z"></path><circle cx="8" cy="8" r="2"></circle></svg><svg class="pwd-eye-off" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none;"><path d="M2 2l12 12"></path><path d="M6.6 6.6a2 2 0 0 0 2.8 2.8"></path><path d="M4.2 4.5C2.6 5.6 1.5 8 1.5 8s2.4 4.2 6.5 4.2c1.4 0 2.6-.4 3.6-1"></path><path d="M6.4 3.9A6.9 6.9 0 0 1 8 3.8c4.1 0 6.5 4.2 6.5 4.2a11.3 11.3 0 0 1-1.9 2.4"></path></svg></button></span>
-              <button class="btn btn-primary lg-btn lg-btn--primary" onclick="requestAiIntelDigest()" id="btnRefreshDigest" style="margin-left:auto;">
+              <span class="intel-metric-sub pwd-row-inline" id="omniConsoleSubtext">Password: <code class="pwd-badge" id="omniConsolePwd" role="button" tabindex="0" onclick="copyOmniPassword()" title="Click to copy admin password"><span id="omniConsolePwdText">********</span><span class="icon-morph-wrap icon-morph-wrap--copy" aria-hidden="true"><svg class="pwd-copy-svg icon-morph-a" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="8" height="8" rx="1.5"></rect><path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11"></path></svg><svg class="pwd-check-svg icon-morph-b" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 4.8"></path></svg></span></code><button type="button" class="pwd-eye-btn pwd-eye-morph" id="btnToggleOmniPwd" onclick="toggleOmniPasswordVisibility()" title="Show password" aria-label="Show password" aria-pressed="false"><svg class="pwd-eye-open" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z"></path><circle cx="8" cy="8" r="2"></circle></svg><svg class="pwd-eye-off" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 2l12 12"></path><path d="M6.6 6.6a2 2 0 0 0 2.8 2.8"></path><path d="M4.2 4.5C2.6 5.6 1.5 8 1.5 8s2.4 4.2 6.5 4.2c1.4 0 2.6-.4 3.6-1"></path><path d="M6.4 3.9A6.9 6.9 0 0 1 8 3.8c4.1 0 6.5 4.2 6.5 4.2a11.3 11.3 0 0 1-1.9 2.4"></path></svg></button></span>
+              <button class="btn btn-primary lg-btn lg-btn--primary metal-fx-cta" onclick="requestAiIntelDigest()" id="btnRefreshDigest" style="margin-left:auto;">
                 <svg class="ss-svg-icon btn-spin-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9L14 6.5M14 2.5v4h-4"></path>
                 </svg>
-                <span>Refresh News Analysis</span>
+                <span class="action-swap-label">Refresh News Analysis</span>
               </button>
             </div>
             <!-- Refresh progress: collapsed to zero height while
@@ -638,6 +660,10 @@
                  refresh has no trustworthy percent, so none is
                  fabricated. -->
             <div id="digestRefreshProgress" class="digest-refresh-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Refreshing news analysis">
+              <div class="digest-refresh-head">
+                <span class="thinking-orbs" id="digestThinkingOrbs" aria-hidden="true"><i class="thinking-orb"></i><i class="thinking-orb"></i><i class="thinking-orb"></i></span>
+                <span class="digest-refresh-lbl" id="digestRefreshLabel">Synthesizing live feeds...</span>
+              </div>
               <div class="digest-refresh-progress-track"><div class="digest-refresh-progress-fill indeterminate"></div></div>
             </div>
           </div>
@@ -695,6 +721,20 @@
           </div>
           <div class="panel-tools">
             <span class="intel-feed-desc">Multi-Domain: US Macro, Fed, Crypto ETFs, AI Semis, Geopolitics</span>
+            <div class="intel-search-wrap" id="intelSearchWrap">
+              <button type="button" class="intel-search-btn" id="btnIntelSearchToggle" onclick="toggleIntelSearch()" title="Search intelligence events" aria-label="Search events">
+                <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="7" cy="7" r="4.5"></circle>
+                  <path d="M10.5 10.5L14 14"></path>
+                </svg>
+              </button>
+              <input type="text" class="intel-search-input" id="intelSearchInput" placeholder="Filter events..." autocomplete="off" spellcheck="false" />
+              <button type="button" class="intel-search-clear" id="btnIntelSearchClear" onclick="clearIntelSearch()" title="Clear filter" aria-label="Clear filter">
+                <svg viewBox="0 0 12 12" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                  <path d="M2.5 2.5l7 7M9.5 2.5l-7 7"></path>
+                </svg>
+              </button>
+            </div>
             <span id="intelEventCountLabel" class="intel-count-badge lg-pill num">5 Curated Events</span>
             <div class="ss-seg lg-seg intel-sort-seg" style="--n:2;" data-active-idx="0" id="intelSortSeg" role="group" aria-label="Sort events">
               <span class="ss-seg__thumb lg-seg__thumb" aria-hidden="true"></span>
@@ -703,7 +743,17 @@
             </div>
           </div>
         </div>
-        <div class="intel-events-scroll" id="intelEventsScroll">
+        <div class="intel-filter-bar">
+          <div class="intel-domain-chips" id="intelDomainChips" role="group" aria-label="Filter by domain">
+            <button type="button" class="intel-chip is-active" data-domain="all" onclick="setIntelDomainFilter('all')">All</button>
+            <button type="button" class="intel-chip" data-domain="macro" onclick="setIntelDomainFilter('macro')">US Macro</button>
+            <button type="button" class="intel-chip" data-domain="fed" onclick="setIntelDomainFilter('fed')">Fed</button>
+            <button type="button" class="intel-chip" data-domain="crypto" onclick="setIntelDomainFilter('crypto')">Crypto ETFs</button>
+            <button type="button" class="intel-chip" data-domain="tech" onclick="setIntelDomainFilter('tech')">AI Semis</button>
+            <button type="button" class="intel-chip" data-domain="geopolitics" onclick="setIntelDomainFilter('geopolitics')">Geopolitics</button>
+          </div>
+        </div>
+        <div class="intel-events-scroll scroll-area-faded" id="intelEventsScroll">
           <div class="intel-events-list" id="intelEventsList">
             <!-- Dynamically populated by renderIntelHub(state) -->
           </div>
@@ -775,6 +825,15 @@
                 <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
               </button>
             </div>
+            <div class="pwd-strength-wrap" id="adminPwdStrengthWrap" data-level="0">
+              <div class="pwd-strength-bars" id="adminPwdStrengthBar" aria-hidden="true">
+                <span class="pwd-strength-seg"></span>
+                <span class="pwd-strength-seg"></span>
+                <span class="pwd-strength-seg"></span>
+                <span class="pwd-strength-seg"></span>
+              </div>
+              <span class="pwd-strength-text num" id="adminPwdStrengthText">Min 8 chars</span>
+            </div>
             <div class="setup-provider-status" id="statusAdminPassword">
               <span class="setup-status-pill neutral">Not Set</span>
             </div>
@@ -838,7 +897,7 @@
       </div>
 
       <div class="setup-wizard-actions">
-        <button class="btn lg-btn lg-btn--primary" id="btnSaveAndLaunch" onclick="saveAndLaunchGateway()">
+        <button class="btn lg-btn lg-btn--primary metal-fx-cta" id="btnSaveAndLaunch" onclick="saveAndLaunchGateway()">
           <span>Save &amp; Launch Arena</span>
         </button>
       </div>
@@ -927,6 +986,16 @@
       </div>
 
       <div class="ss-modal-actions">
+        <div class="sld-track" id="resetSlideTrack" role="slider" tabindex="0" aria-label="Slide right to confirm resetting the arena" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="sld-fill" id="resetSlideFill"></div>
+          <span class="sld-label" id="resetSlideLabel">Slide to Reset Arena</span>
+          <div class="sld-thumb" id="resetSlideThumb" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3.5 8h9"></path>
+              <path d="M8.5 4l4 4-4 4"></path>
+            </svg>
+          </div>
+        </div>
         <button class="modal-act-btn modal-act-danger" onclick="confirmResetArena()">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
@@ -1026,6 +1095,27 @@
         <button class="modal-act-btn modal-act-ghost" onclick="closeWizardCloseConfirm()">
           <span>Keep Editing</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Command Palette (Ctrl+K) & Keyboard Shortcuts Cheat Sheet (?) -->
+  <div class="ss-modal-overlay cmd-palette-overlay" id="commandPaletteModal" style="display:none;" onclick="handleCmdPaletteOverlayClick(event)">
+    <div class="cmd-palette-card lg-glass" id="cmdPaletteCard" role="dialog" aria-modal="true" aria-label="Command Palette">
+      <div class="cmd-palette-head">
+        <svg class="ss-svg-icon cmd-search-icon" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.8"></circle>
+          <path d="M10.8 10.8L14 14"></path>
+        </svg>
+        <input type="text" class="cmd-palette-input" id="cmdPaletteInput" placeholder="Type a command or search actions..." autocomplete="off" spellcheck="false" />
+        <button type="button" class="cmd-palette-mode-btn" id="btnCmdToggleMode" onclick="toggleCommandPaletteMode()" title="Switch between commands and keyboard shortcuts">Shortcuts</button>
+        <kbd class="cmd-palette-kbd">Esc</kbd>
+      </div>
+      <div class="cmd-palette-list scroll-area-faded" id="cmdPaletteList" role="listbox" aria-label="Commands"></div>
+      <div class="cmd-palette-shortcuts scroll-area-faded" id="cmdPaletteShortcutsView" style="display:none;"></div>
+      <div class="cmd-palette-foot">
+        <span class="cmd-palette-backdrop-info">Backdrop: <strong id="cmdPaletteBackdropBadge" class="num">Shader</strong></span>
+        <span class="cmd-palette-hints num"><kbd class="cmd-palette-kbd">Up/Down</kbd> Navigate · <kbd class="cmd-palette-kbd">Enter</kbd> Run · <kbd class="cmd-palette-kbd">Ctrl+K</kbd> Commands · <kbd class="cmd-palette-kbd">?</kbd> Keys</span>
       </div>
     </div>
   </div>

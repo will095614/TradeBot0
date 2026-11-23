@@ -50,7 +50,7 @@ let hasInitializedPositions = false;
 let toastQueue = [];
 let isProcessingToastQueue = false;
 let toastStaggerTimer = null;
-const MAX_VISIBLE_TOASTS = 6;
+const MAX_VISIBLE_TOASTS = 3;
 const TOAST_DURATION_MS = 6000;
 
 const initialSplashSteps = [
@@ -541,6 +541,35 @@ function enqueueToast(toastItem) {
   }, delayMs);
 }
 
+function syncToastStackLayout() {
+  const container = document.getElementById('chartNotificationContainer');
+  if (!container) return;
+  const items = Array.from(container.children).filter(el => el.classList && el.classList.contains('toast-stack-item') && !el.classList.contains('toast-exit'));
+  if (items.length === 0) {
+    container.style.setProperty('--toast-host-h', '0px');
+    container.style.setProperty('--toast-host-expanded-h', '0px');
+    return;
+  }
+  let expandedY = 0;
+  let frontH = 92;
+  // Most recent toast sits at the front (index 0)
+  const ordered = items.slice().reverse();
+  ordered.forEach((el, idx) => {
+    const h = el.offsetHeight || 96;
+    if (idx === 0) frontH = h;
+    const collapsedY = idx * 10;
+    const scale = Math.max(0.86, 1 - idx * 0.045);
+    el.style.setProperty('--stack-idx', String(idx));
+    el.style.setProperty('--stack-y', collapsedY + 'px');
+    el.style.setProperty('--stack-scale', scale.toFixed(3));
+    el.style.setProperty('--stack-expanded-y', expandedY + 'px');
+    expandedY += h + 8;
+  });
+  const collapsedTotal = frontH + Math.max(0, ordered.length - 1) * 10;
+  container.style.setProperty('--toast-host-h', collapsedTotal + 'px');
+  container.style.setProperty('--toast-host-expanded-h', Math.max(collapsedTotal, expandedY) + 'px');
+}
+
 function processToastQueue() {
   const container = document.getElementById('chartNotificationContainer');
   if (!container) return;
@@ -548,7 +577,7 @@ function processToastQueue() {
   // Count active non-exiting toasts currently mounted in container
   const activeToasts = Array.from(container.children).filter(el => !el.classList.contains('toast-exit'));
 
-  // Up to MAX_VISIBLE_TOASTS (6) concurrent cards
+  // Up to MAX_VISIBLE_TOASTS (3) stacked cards
   if (activeToasts.length >= MAX_VISIBLE_TOASTS || toastQueue.length === 0) {
     return;
   }
@@ -558,8 +587,10 @@ function processToastQueue() {
   if (nextItem) {
     const toastEl = nextItem.renderElement();
     if (toastEl) {
+      toastEl.classList.add('toast-stack-item');
       container.appendChild(toastEl);
       attachToastInteractions(toastEl, container, TOAST_DURATION_MS);
+      requestAnimationFrame(syncToastStackLayout);
     }
   }
 
@@ -582,12 +613,14 @@ function dismissToast(toast) {
     toast._dismissTimeout = null;
   }
   toast.classList.add('toast-exit');
+  syncToastStackLayout();
 
   // Smooth 450ms exit transition matching CSS
   setTimeout(() => {
     if (toast.parentNode) {
       toast.parentNode.removeChild(toast);
     }
+    syncToastStackLayout();
     // As soon as a slot is freed, check the queue and slide in the next waiting toast
     if (toastQueue.length > 0) {
       scheduleProcessToastQueue(0);
@@ -1157,7 +1190,13 @@ async function togglePause() {
     if (pauseBtn) {
       const nextLbl = pausedVal ? 'Resume Feed' : 'Pause Feed';
       pauseBtn._lastLabel = nextLbl;
-      pauseBtn.innerHTML = `<span>${nextLbl}</span>`;
+      const swapLbl = pauseBtn.querySelector('.action-swap-label');
+      if (swapLbl) {
+        if (swapLbl.textContent !== nextLbl) swapLbl.textContent = nextLbl;
+      } else {
+        pauseBtn.innerHTML = `<span class="action-swap-label">${nextLbl}</span>`;
+      }
+      pauseBtn.classList.toggle('is-morphed', pausedVal);
       pauseBtn.classList.toggle('btn-paused-active', pausedVal);
       pauseBtn.title = pausedVal ? 'Resume Live Feed (Press Space)' : 'Pause Live Feed (Press Space)';
     }
@@ -1170,6 +1209,7 @@ async function togglePause() {
     if (latestState) {
       latestState.paused = pausedVal;
     }
+    if (typeof syncAmbientShaderMotion === 'function') syncAmbientShaderMotion();
     updateUiClockDisplay();
   };
   applyPauseChrome(willPause);
@@ -1193,8 +1233,22 @@ async function togglePause() {
   }
 }
 
+function pulseAutoEvolveStretch() {
+  const autoBtn = document.getElementById('autoEvolveToggleBtn');
+  if (!autoBtn) return;
+  autoBtn.classList.remove('lg-switch--stretching');
+  void autoBtn.offsetWidth;
+  autoBtn.classList.add('lg-switch--stretching');
+  if (autoBtn._stretchTimer) clearTimeout(autoBtn._stretchTimer);
+  autoBtn._stretchTimer = setTimeout(() => {
+    autoBtn._stretchTimer = null;
+    autoBtn.classList.remove('lg-switch--stretching');
+  }, 240);
+}
+
 async function toggleAutoEvolve() {
   if (!window.pywebview || !window.pywebview.api) return;
+  pulseAutoEvolveStretch();
   pendingControlActions += 1;
   const myEpoch = ++stateApplyEpoch;
   try {
@@ -1389,6 +1443,128 @@ function renderAll(state) {
   }
 }
 
+function isReducedMotionPreferred() {
+  return typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function morphText(el, nextText) {
+  if (!el) return;
+  const val = String(nextText == null ? '' : nextText);
+  if (el._morphedValue === val && el.textContent === val) return;
+  const shouldAnimate = el._morphedValue !== undefined
+    && !document.hidden
+    && !(document.body && document.body.classList.contains('window-hidden'))
+    && !isReducedMotionPreferred();
+  el._morphedValue = val;
+  el.textContent = val;
+  if (!shouldAnimate) return;
+  el.classList.remove('text-morph-enter');
+  void el.offsetWidth;
+  el.classList.add('text-morph-enter');
+  if (el._morphTimer) clearTimeout(el._morphTimer);
+  el._morphTimer = setTimeout(() => {
+    el._morphTimer = null;
+    el.classList.remove('text-morph-enter');
+  }, 240);
+}
+
+function updateRollingText(el, nextText, trend = 0) {
+  if (!el) return;
+  const nextVal = String(nextText == null ? '' : nextText);
+  if (el._rollingInitialized && el._rollingValue === nextVal) return;
+
+  const prevVal = el._rollingValue;
+  el._rollingValue = nextVal;
+
+  const canRoll = el._rollingInitialized
+    && prevVal !== undefined
+    && prevVal !== nextVal
+    && !document.hidden
+    && !(document.body && document.body.classList.contains('window-hidden'))
+    && !isReducedMotionPreferred()
+    && Boolean(el.offsetParent);
+
+  el._rollingInitialized = true;
+  if (el._rollingTimer) {
+    clearTimeout(el._rollingTimer);
+    el._rollingTimer = null;
+  }
+
+  if (!canRoll || nextVal.length > 22) {
+    el.textContent = nextVal;
+    return;
+  }
+
+  const prevChars = Array.from(String(prevVal));
+  const nextChars = Array.from(nextVal);
+  const padOffset = prevChars.length - nextChars.length;
+  const token = (el._rollingToken = (el._rollingToken || 0) + 1);
+  const wrap = document.createElement('span');
+  wrap.className = 'nf-wrap';
+  const cols = [];
+  let staggerIdx = 0;
+
+  for (let i = nextChars.length - 1; i >= 0; i--) {
+    const ch = nextChars[i];
+    const pIdx = i + padOffset;
+    const prevCh = pIdx >= 0 && pIdx < prevChars.length ? prevChars[pIdx] : '';
+    const isDigit = ch >= '0' && ch <= '9';
+    if (isDigit && ch !== prevCh) {
+      const col = document.createElement('span');
+      const colCls = trend < 0 ? 'nf-digit-col nf-dir-down' : 'nf-digit-col';
+      col.className = colCls;
+      col.style.setProperty('--nf-i', String(Math.min(staggerIdx, 6)));
+      staggerIdx += 1;
+
+      const strip = document.createElement('span');
+      strip.className = 'nf-digit-strip';
+
+      const currSpan = document.createElement('span');
+      currSpan.className = 'nf-digit-curr';
+      currSpan.textContent = ch;
+
+      const prevSpan = document.createElement('span');
+      prevSpan.className = 'nf-digit-prev';
+      prevSpan.textContent = (prevCh >= '0' && prevCh <= '9') ? prevCh : ch;
+
+      strip.appendChild(currSpan);
+      strip.appendChild(prevSpan);
+      col.appendChild(strip);
+      cols.unshift(col);
+    } else {
+      const st = document.createElement('span');
+      st.className = 'nf-static';
+      st.textContent = ch;
+      cols.unshift(st);
+    }
+  }
+
+  if (staggerIdx === 0) {
+    el.textContent = nextVal;
+    return;
+  }
+
+  cols.forEach((node) => wrap.appendChild(node));
+  el.textContent = '';
+  el.appendChild(wrap);
+
+  requestAnimationFrame(() => {
+    if (el._rollingToken !== token) return;
+    cols.forEach((node) => {
+      if (node.classList && node.classList.contains('nf-digit-col')) {
+        node.classList.add('nf-is-rolling');
+      }
+    });
+  });
+
+  el._rollingTimer = setTimeout(() => {
+    el._rollingTimer = null;
+    if (el._rollingToken !== token) return;
+    el.textContent = nextVal;
+  }, 270);
+}
+
 function renderMacroRibbon(state) {
   const mc = state.macro_commander;
   if (!mc) return;
@@ -1405,6 +1581,12 @@ function renderMacroRibbon(state) {
   const catalystSummary = document.getElementById('macroCatalystSummary');
   const catalystTime = document.getElementById('macroCatalystTime');
   const catalystImpact = document.getElementById('macroCatalystImpact');
+  const macroOrbs = document.getElementById('macroThinkingOrbs');
+
+  if (macroOrbs) {
+    const isThinkingActive = mc.status === 'ONLINE' && !Boolean(state.paused);
+    macroOrbs.classList.toggle('macro-is-thinking', isThinkingActive);
+  }
 
   if (badge && regimeTxt) {
     // Guarded className: the regime class is part of the final string,
@@ -1423,7 +1605,7 @@ function renderMacroRibbon(state) {
       'HIGH_VOLATILITY_CHOP': '\u9ad4\u5236: \u9ad8\u6ce2\u9707\u76ea'
     };
     const nextRegimeTxt = regimeLabels[mc.regime] || ('\u9ad4\u5236: ' + mc.regime);
-    if (regimeTxt.textContent !== nextRegimeTxt) regimeTxt.textContent = nextRegimeTxt;
+    if (regimeTxt.textContent !== nextRegimeTxt) morphText(regimeTxt, nextRegimeTxt);
   }
 
   if (biasTag) {
@@ -1530,7 +1712,8 @@ function renderHeader(state) {
   const curP = quotePrice > 0 ? quotePrice : (lastCandleClose > 0 ? lastCandleClose : 0);
 
   const nextSpotTxt = curP > 0 ? fmtUsd(curP, 2) : '—';
-  if (spotEl && spotEl.textContent !== nextSpotTxt) spotEl.textContent = nextSpotTxt;
+  const spotTrend = lastSpotPrice > 0 ? (curP >= lastSpotPrice ? 1 : -1) : 0;
+  if (spotEl) updateRollingText(spotEl, nextSpotTxt, spotTrend);
   lastSpotPrice = curP;
 
   const chg = Number(q.change_24h_pct || 0);
@@ -1539,7 +1722,7 @@ function renderHeader(state) {
   const nextChgCls = 'stat-val island-delta-pill num ' + (chg >= 0 ? 'up' : 'down');
   const nextSpotCls = 'stat-val spot-hero num ' + (chg >= 0 ? 'up' : 'down');
   if (chgEl) {
-    if (chgEl.textContent !== nextChgTxt) chgEl.textContent = nextChgTxt;
+    updateRollingText(chgEl, nextChgTxt, chg >= 0 ? 1 : -1);
     if (chgEl.className !== nextChgCls) chgEl.className = nextChgCls;
   }
   if (spotEl && spotEl.className !== nextSpotCls) spotEl.className = nextSpotCls;
@@ -1588,7 +1771,7 @@ function renderHeader(state) {
   const autoLbl = _hdrRefs.autoLbl;
   const nextCdTxt = fmtTimeSec(state.next_evolve_sec || 0);
   if (cdEl) {
-    if (cdEl.textContent !== nextCdTxt) cdEl.textContent = nextCdTxt;
+    updateRollingText(cdEl, nextCdTxt, -1);
     if (typeof state.next_evolve_sec_note === 'string' && state.next_evolve_sec_note && cdEl.title !== state.next_evolve_sec_note) {
       cdEl.title = state.next_evolve_sec_note;
     }
@@ -1599,7 +1782,10 @@ function renderHeader(state) {
   const nextAutoOn = autoActive ? 'true' : 'false';
   const nextAutoWord = autoActive ? 'Active' : 'Paused';
   if (cdEl && cdEl.style.color !== nextCdColor) cdEl.style.color = nextCdColor;
-  if (autoBtn && autoBtn.dataset.on !== nextAutoOn) autoBtn.dataset.on = nextAutoOn;
+  if (autoBtn && autoBtn.dataset.on !== nextAutoOn) {
+    if (autoBtn.dataset.on !== undefined) pulseAutoEvolveStretch();
+    autoBtn.dataset.on = nextAutoOn;
+  }
   if (autoLbl) {
     if (autoLbl.textContent !== nextAutoWord) autoLbl.textContent = nextAutoWord;
   } else if (autoBtn && autoBtn.textContent !== nextAutoWord) {
@@ -1617,8 +1803,14 @@ function renderHeader(state) {
   if (pauseBtn) {
     if (pauseBtn._lastLabel !== desiredPauseLabel) {
       pauseBtn._lastLabel = desiredPauseLabel;
-      pauseBtn.innerHTML = `<span>${desiredPauseLabel}</span>`;
+      const swapLbl = pauseBtn.querySelector('.action-swap-label');
+      if (swapLbl) {
+        swapLbl.textContent = desiredPauseLabel;
+      } else {
+        pauseBtn.innerHTML = `<span class="action-swap-label">${desiredPauseLabel}</span>`;
+      }
     }
+    pauseBtn.classList.toggle('is-morphed', isPaused);
     pauseBtn.classList.toggle('btn-paused-active', isPaused);
     const nextPauseTitle = isPaused ? 'Resume Live Feed (Press Space)' : 'Pause Live Feed (Press Space)';
     if (pauseBtn.title !== nextPauseTitle) pauseBtn.title = nextPauseTitle;
@@ -1672,6 +1864,95 @@ function showOmniInfo() { showEngineInfo(); }
 
 const stratCardDomMap = new Map();
 
+const stratEquityHistory = new Map();
+
+function buildSparklineGeometry(values, width = 160, height = 16) {
+  const pts = (values && values.length > 0) ? values : [100000, 100000];
+  const series = pts.length === 1 ? [pts[0], pts[0]] : pts;
+  let minV = series[0];
+  let maxV = series[0];
+  for (let i = 1; i < series.length; i++) {
+    if (series[i] < minV) minV = series[i];
+    if (series[i] > maxV) maxV = series[i];
+  }
+  const span = maxV - minV;
+  const padY = 2;
+  const innerH = height - padY * 2;
+  const coords = series.map((v, i) => {
+    const x = (i / (series.length - 1)) * width;
+    const norm = span > 1e-6 ? (v - minV) / span : 0.5;
+    const y = padY + innerH * (1 - norm);
+    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
+  });
+  const lineD = coords.map((p, i) => (i === 0 ? 'M' : 'L') + p[0] + ' ' + p[1]).join(' ');
+  const last = coords[coords.length - 1];
+  const areaD = lineD + ` L ${last[0]} ${height} L ${coords[0][0]} ${height} Z`;
+  return { lineD, areaD, lastX: last[0], lastY: last[1] };
+}
+
+function createStrategyCardSkeleton(s) {
+  const card = document.createElement('div');
+  card.className = 'strat-card-mini';
+  card.dataset.stratId = s.id;
+  card.innerHTML = `
+    <span class="border-beam-ring" aria-hidden="true"></span>
+    <span class="lg-strat-orb" aria-hidden="true"></span>
+    <div class="strat-top">
+      <div class="strat-left">
+        <span class="rank-badge num" data-role="rank">#0</span>
+        <span class="strat-title" data-role="title"></span>
+        <span class="strat-pill num" data-role="pill"></span>
+      </div>
+      <div class="strat-right num" data-role="badges"></div>
+    </div>
+    <div class="strat-kpis num">
+      <div class="kpi-cell">
+        <span>Total Equity</span>
+        <span class="kpi-equity-val" data-role="equity">$0.00</span>
+      </div>
+      <div class="kpi-cell">
+        <span>ROI</span>
+        <span class="kpi-roi-val" data-role="roi">+0.00%</span>
+      </div>
+      <div class="kpi-cell">
+        <span data-role="pnl-lbl">Cash Balance</span>
+        <span data-role="pnl-val">$0</span>
+      </div>
+      <div class="kpi-cell">
+        <span>Win / Max DD</span>
+        <span style="color:var(--ss-text)" data-role="windd">0% / 0.0%</span>
+      </div>
+    </div>
+    <div class="strat-sparkline-wrap">
+      <span class="strat-sparkline-lbl">Curve</span>
+      <svg class="strat-sparkline-svg" viewBox="0 0 160 16" preserveAspectRatio="none" aria-hidden="true">
+        <path class="strat-sparkline-area" data-role="spk-area" d="M0 8 L160 8 L160 16 L0 16 Z"></path>
+        <path class="strat-sparkline-line" data-role="spk-line" d="M0 8 L160 8"></path>
+        <circle class="strat-sparkline-dot" data-role="spk-dot" cx="160" cy="8" r="2.1"></circle>
+      </svg>
+      <span class="strat-sparkline-delta num" data-role="spk-delta">+0.00%</span>
+    </div>
+    <div data-role="bracket"></div>
+  `;
+  card._refs = {
+    rank: card.querySelector('[data-role="rank"]'),
+    title: card.querySelector('[data-role="title"]'),
+    pill: card.querySelector('[data-role="pill"]'),
+    badges: card.querySelector('[data-role="badges"]'),
+    equity: card.querySelector('[data-role="equity"]'),
+    roi: card.querySelector('[data-role="roi"]'),
+    pnlLbl: card.querySelector('[data-role="pnl-lbl"]'),
+    pnlVal: card.querySelector('[data-role="pnl-val"]'),
+    windd: card.querySelector('[data-role="windd"]'),
+    spkArea: card.querySelector('[data-role="spk-area"]'),
+    spkLine: card.querySelector('[data-role="spk-line"]'),
+    spkDot: card.querySelector('[data-role="spk-dot"]'),
+    spkDelta: card.querySelector('[data-role="spk-delta"]'),
+    bracket: card.querySelector('[data-role="bracket"]'),
+  };
+  return card;
+}
+
 function renderStrategies(state) {
   const grid = document.getElementById('tabCardsView');
   if (!grid) return;
@@ -1680,12 +1961,14 @@ function renderStrategies(state) {
   const lastCandleClose = candles.length > 0 ? Number(candles[candles.length - 1].c || 0) : 0;
   const quotePrice = Number((state.quote && state.quote.price) || 0);
   const spot = quotePrice > 0 ? quotePrice : (lastCandleClose > 0 ? lastCandleClose : 0);
+  const isPaused = Boolean(state.paused);
 
-  // Build / Update each card DOM element
+  // Build / Update each card DOM element persistently without wiping rolling spans or SVG curves
   const activeStratIds = new Set();
-  strategies.forEach(s => {
+  strategies.forEach((s, idx) => {
     activeStratIds.add(s.id);
     const sColor = sanitizeCssColor(s.color, '#F59E0B');
+    const equityNum = Number(s.equity) || 0;
     const roiNum = Number(s.roi_pct) || 0;
     const upnlNum = Number(s.unrealized_pnl) || 0;
     const qtyNum = Number(s.qty) || 0;
@@ -1696,6 +1979,15 @@ function renderStrategies(state) {
     const upnlClass = upnlNum >= 0 ? 'up' : 'down';
     const isBlocked = s.intent && s.intent.indexOf('EV Gate Blocked') !== -1;
     const isMacroVeto = s.intent && (s.intent.indexOf('Macro Veto:') !== -1 || s.intent.indexOf('MTF Veto:') !== -1);
+
+    let eqHist = stratEquityHistory.get(s.id);
+    if (!eqHist) {
+      eqHist = [equityNum];
+      stratEquityHistory.set(s.id, eqHist);
+    } else if (Math.abs(eqHist[eqHist.length - 1] - equityNum) > 0.01) {
+      eqHist.push(equityNum);
+      if (eqHist.length > 32) eqHist.shift();
+    }
 
     let bracketHtml = '';
     if (s.in_position) {
@@ -1781,64 +2073,82 @@ function renderStrategies(state) {
       'comp_vwap': 'Session Mean',
       'comp_trail': 'Trailing Guard'
     };
-    const displayName = escapeHtml(cardShortNames[s.id] || s.name || '');
+    const displayName = cardShortNames[s.id] || s.name || '';
 
     const pnlLabel = s.in_position ? 'Unrealized PnL' : 'Cash Balance';
-    const pnlValue = s.in_position
-      ? `<span class="${upnlClass}">${fmtSignedUsd(upnlNum)}</span>`
-      : `<span>${fmtUsd(s.cash, 0)}</span>`;
-
-    const cardInner = `
-        <span class="lg-strat-orb" aria-hidden="true"></span>
-        <div class="strat-top">
-          <div class="strat-left">
-            <span class="rank-badge num" style="color:${sColor}">#${Number(s.rank) || 0}</span>
-            <span class="strat-title" title="${escapeHtml(s.name)}">${displayName}</span>
-            <span class="strat-pill num">Gen #${Number(s.generation) || 1} · ${escapeHtml(s.genome || '')}</span>
-          </div>
-          <div class="strat-right num">
-            ${levBadge}
-            ${posPill}
-          </div>
-        </div>
-
-        <div class="strat-kpis num">
-          <div class="kpi-cell">
-            <span>Total Equity</span>
-            <span>${fmtUsd(s.equity, 2)}</span>
-          </div>
-          <div class="kpi-cell">
-            <span>ROI</span>
-            <span class="${roiClass}">${fmtPct(roiNum)}</span>
-          </div>
-          <div class="kpi-cell">
-            <span>${pnlLabel}</span>
-            ${pnlValue}
-          </div>
-          <div class="kpi-cell">
-            <span>Win / Max DD</span>
-            <span style="color:var(--ss-text)">${winRateNum.toFixed(0)}% / ${maxDdNum.toFixed(1)}%</span>
-          </div>
-        </div>
-
-        ${bracketHtml}
-      `;
+    const pnlValText = s.in_position ? fmtSignedUsd(upnlNum) : fmtUsd(s.cash, 0);
+    const pnlValCls = s.in_position ? upnlClass : '';
 
     let card = stratCardDomMap.get(s.id);
     if (!card) {
-      card = document.createElement('div');
-      card.className = 'strat-card-mini';
-      card.dataset.stratId = s.id;
+      card = createStrategyCardSkeleton(s);
       stratCardDomMap.set(s.id, card);
     }
     if (card._stratColor !== s.color) {
       card.style.setProperty('--strat-color', sColor);
       card._stratColor = s.color;
     }
-    if (card._lastHtml !== cardInner) {
-      card._lastHtml = cardInner;
-      card.innerHTML = cardInner;
+
+    const isChampionBeam = (idx === 0) && !isPaused;
+    card.classList.toggle('is-champion-beam', isChampionBeam);
+
+    const refs = card._refs;
+    const rankTxt = '#' + (Number(s.rank) || 0);
+    if (refs.rank.textContent !== rankTxt) refs.rank.textContent = rankTxt;
+    if (refs.rank.style.color !== sColor) refs.rank.style.color = sColor;
+    if (refs.title.textContent !== displayName) refs.title.textContent = displayName;
+    if (refs.title.title !== (s.name || '')) refs.title.title = s.name || '';
+
+    const pillTxt = `Gen #${Number(s.generation) || 1} · ${s.genome || ''}`;
+    if (refs.pill.textContent !== pillTxt) refs.pill.textContent = pillTxt;
+
+    const badgesHtml = levBadge + posPill;
+    if (card._lastBadgesHtml !== badgesHtml) {
+      card._lastBadgesHtml = badgesHtml;
+      refs.badges.innerHTML = badgesHtml;
     }
+
+    const prevEq = typeof card._lastEquity === 'number' ? card._lastEquity : equityNum;
+    updateRollingText(refs.equity, fmtUsd(equityNum, 2), equityNum >= prevEq ? 1 : -1);
+    card._lastEquity = equityNum;
+
+    const prevRoi = typeof card._lastRoi === 'number' ? card._lastRoi : roiNum;
+    updateRollingText(refs.roi, fmtPct(roiNum), roiNum >= prevRoi ? 1 : -1);
+    card._lastRoi = roiNum;
+    const nextRoiCls = 'kpi-roi-val ' + roiClass;
+    if (refs.roi.className !== nextRoiCls) refs.roi.className = nextRoiCls;
+
+    if (refs.pnlLbl.textContent !== pnlLabel) refs.pnlLbl.textContent = pnlLabel;
+    if (refs.pnlVal.textContent !== pnlValText) refs.pnlVal.textContent = pnlValText;
+    if (refs.pnlVal.className !== pnlValCls) refs.pnlVal.className = pnlValCls;
+
+    const winDdTxt = `${winRateNum.toFixed(0)}% / ${maxDdNum.toFixed(1)}%`;
+    if (refs.windd.textContent !== winDdTxt) refs.windd.textContent = winDdTxt;
+
+    const spkSig = eqHist.join(',');
+    if (card._lastSpkSig !== spkSig || card._lastSpkColor !== sColor) {
+      card._lastSpkSig = spkSig;
+      card._lastSpkColor = sColor;
+      const geom = buildSparklineGeometry(eqHist, 160, 16);
+      const spkColor = roiNum > 0.005 ? '#10F5A0' : (roiNum < -0.005 ? '#FF4D79' : sColor);
+      refs.spkLine.setAttribute('d', geom.lineD);
+      refs.spkLine.setAttribute('stroke', spkColor);
+      refs.spkArea.setAttribute('d', geom.areaD);
+      refs.spkArea.setAttribute('fill', spkColor);
+      refs.spkDot.setAttribute('cx', String(geom.lastX));
+      refs.spkDot.setAttribute('cy', String(geom.lastY));
+      refs.spkDot.setAttribute('fill', spkColor);
+      const baseVal = eqHist[0] || equityNum || 100000;
+      const winPct = baseVal > 0 ? ((equityNum - baseVal) / baseVal) * 100 : 0;
+      refs.spkDelta.textContent = `${winPct >= 0 ? '+' : ''}${winPct.toFixed(2)}%`;
+      refs.spkDelta.style.color = spkColor;
+    }
+
+    if (card._lastBracketHtml !== bracketHtml) {
+      card._lastBracketHtml = bracketHtml;
+      refs.bracket.innerHTML = bracketHtml;
+    }
+
     if (!card.parentNode) {
       grid.appendChild(card);
     }
@@ -1949,6 +2259,11 @@ function renderTacticalHud(state) {
   const spot = quotePrice > 0 ? quotePrice : (lastCandleClose > 0 ? lastCandleClose : 0);
 
   // 1. Champion Spotlight
+  const champCard = document.getElementById('hudVesselChampCard');
+  if (champCard) {
+    const showChampBeam = Boolean(champ && champ.name && !state.paused);
+    champCard.classList.toggle('is-champion-beam', showChampBeam);
+  }
   const hVal = Math.round((state.auto_evolve_interval_sec || 21600) / 3600);
   const cTitleEl = _hudRefs.cTitleEl;
   if (cTitleEl) {
@@ -2051,11 +2366,39 @@ function renderTacticalHud(state) {
 }
 
 const leaderRowDomMap = new Map();
+let leaderboardSortKey = 'equity';
+let leaderboardSortDir = 'desc';
+
+function setLeaderboardSort(key) {
+  const allowedKeys = ['rank', 'equity', 'roi_pct', 'unrealized_pnl', 'max_dd_pct', 'win_rate_pct', 'sharpe', 'fitness'];
+  if (allowedKeys.indexOf(key) === -1) return;
+  if (leaderboardSortKey === key) {
+    leaderboardSortDir = leaderboardSortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    leaderboardSortKey = key;
+    leaderboardSortDir = key === 'rank' ? 'asc' : 'desc';
+  }
+  document.querySelectorAll('#leaderboardTable th[data-sort-key]').forEach((th) => {
+    const k = th.getAttribute('data-sort-key');
+    const isActive = k === leaderboardSortKey;
+    const isAsc = isActive && leaderboardSortDir === 'asc';
+    th.classList.toggle('sort-th--active', isActive);
+    th.classList.toggle('sort-th--asc', isAsc);
+  });
+  if (latestState) renderLeaderboard(latestState);
+}
+window.setLeaderboardSort = setLeaderboardSort;
 
 function renderLeaderboard(state) {
   const tbody = document.getElementById('leaderboardBody');
   if (!tbody) return;
-  const strategies = (state.strategies || []).slice().sort((a, b) => (b.equity - a.equity) || (a.rank - b.rank));
+  const dir = leaderboardSortDir === 'asc' ? 1 : -1;
+  const strategies = (state.strategies || []).slice().sort((a, b) => {
+    const va = Number(a[leaderboardSortKey] || 0);
+    const vb = Number(b[leaderboardSortKey] || 0);
+    if (va !== vb) return (va - vb) * dir;
+    return (Number(a.rank || 0) - Number(b.rank || 0));
+  });
 
   const currentRowOrder = Array.from(tbody.children).map(el => el.dataset.stratId).join(',');
   const nextRowOrder = strategies.map(s => String(s.id)).join(',');
@@ -3284,13 +3627,19 @@ function trackLgSpotlight(e) {
   }
   if (!target || typeof target.closest !== 'function') return;
 
-  const spotTarget = target.closest('.lg-spot-card, .strat-card-mini, .intel-event-card');
+  const spotTarget = target.closest('.lg-spot-card, .strat-card-mini, .intel-event-card, .metal-fx-cta');
   if (spotTarget) {
     const r = spotTarget.getBoundingClientRect();
     const lx = Math.round(evt.clientX - r.left);
     const ly = Math.round(evt.clientY - r.top);
     spotTarget.style.setProperty('--mx', `${lx}px`);
     spotTarget.style.setProperty('--my', `${ly}px`);
+  }
+  const ctaTarget = target.closest('.metal-fx-cta');
+  if (ctaTarget && ctaTarget !== spotTarget) {
+    const cr = ctaTarget.getBoundingClientRect();
+    ctaTarget.style.setProperty('--mx', `${Math.round(evt.clientX - cr.left)}px`);
+    ctaTarget.style.setProperty('--my', `${Math.round(evt.clientY - cr.top)}px`);
   }
 }
 
@@ -3525,7 +3874,7 @@ function blurActiveFocus() {
 
 function isAnyModalBlockingShortcuts() {
   if (isWizardOpen) return true;
-  const ids = ['shutdownModal', 'resetConfirmModal', 'installCancelConfirmModal', 'wizardCloseConfirmModal', 'networkOfflineOverlay'];
+  const ids = ['shutdownModal', 'resetConfirmModal', 'installCancelConfirmModal', 'wizardCloseConfirmModal', 'networkOfflineOverlay', 'commandPaletteModal'];
   for (let i = 0; i < ids.length; i++) {
     const el = document.getElementById(ids[i]);
     if (el && el.classList.contains('modal-visible')) return true;
@@ -3549,7 +3898,26 @@ window.addEventListener('keydown', function (e) {
   }
   const target = e.target;
   const tag = (target && target.tagName) ? target.tagName.toUpperCase() : '';
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.ctrlKey || e.altKey || e.metaKey) {
+  const isTextInput = (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA');
+
+  // Ctrl+K / Cmd+K Command Palette (never intercepts when inside Setup Wizard inputs)
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K' || e.code === 'KeyK')) {
+    if (!isWizardOpen && splashCompleted) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleCommandPalette('commands');
+    }
+    return;
+  }
+
+  if (isTextInput || e.ctrlKey || e.altKey || e.metaKey) {
+    return;
+  }
+  if ((e.key === '?' || (e.code === 'Slash' && e.shiftKey)) && splashCompleted) {
+    if (!isAnyModalBlockingShortcuts()) {
+      e.preventDefault();
+      openCommandPalette('shortcuts');
+    }
     return;
   }
   if (isAnyModalBlockingShortcuts() || !splashCompleted) {
@@ -3709,37 +4077,73 @@ function updateUiClockDisplay() {
   window.openProviderKeyPage = openProviderKeyPage;
 
   let currentMainView = 'arena';
+  let viewSwitchToken = 0;
+  let viewSwitchTimer = null;
+
+  function clearOverlapTransitionStyles(el) {
+    if (!el) return;
+    el.classList.remove('view-transition-entering', 'view-transition-leaving', 'view-entering');
+    el.style.position = '';
+    el.style.top = '';
+    el.style.left = '';
+    el.style.width = '';
+    el.style.height = '';
+  }
+
   function switchMainView(viewName) {
     if (currentMainView === viewName) return;
     currentMainView = viewName;
-    const arenaEl = document.querySelector('.workspace-grid');
-    const intelEl = document.getElementById('intelHubMainView');
     syncSegThumb('mainViewSeg', viewName === 'intel' ? 1 : 0);
 
+    const arenaEl = document.querySelector('.workspace-grid');
+    const intelEl = document.getElementById('intelHubMainView');
+    const incoming = viewName === 'intel' ? intelEl : arenaEl;
+    const outgoing = viewName === 'intel' ? arenaEl : intelEl;
+
+    if (viewSwitchTimer) {
+      clearTimeout(viewSwitchTimer);
+      viewSwitchTimer = null;
+    }
+    clearOverlapTransitionStyles(arenaEl);
+    clearOverlapTransitionStyles(intelEl);
+
+    const token = ++viewSwitchToken;
+    const reduce = isReducedMotionPreferred() || document.hidden;
+
+    if (reduce || !outgoing || !incoming || outgoing.style.display === 'none') {
+      if (outgoing) outgoing.style.display = 'none';
+      if (incoming) incoming.style.display = 'grid';
+    } else {
+      const rect = outgoing.getBoundingClientRect();
+      outgoing.style.position = 'fixed';
+      outgoing.style.top = rect.top + 'px';
+      outgoing.style.left = rect.left + 'px';
+      outgoing.style.width = rect.width + 'px';
+      outgoing.style.height = rect.height + 'px';
+      outgoing.style.display = 'grid';
+      outgoing.classList.add('view-transition-leaving');
+
+      incoming.style.display = 'grid';
+      void incoming.offsetWidth;
+      incoming.classList.add('view-transition-entering');
+
+      viewSwitchTimer = setTimeout(() => {
+        if (viewSwitchToken !== token) return;
+        viewSwitchTimer = null;
+        clearOverlapTransitionStyles(outgoing);
+        clearOverlapTransitionStyles(incoming);
+        outgoing.style.display = 'none';
+      }, 370);
+    }
+
     if (viewName === 'intel') {
-      if (arenaEl) arenaEl.style.display = 'none';
-      if (intelEl) {
-        intelEl.style.display = 'grid';
-        intelEl.classList.remove('view-entering');
-        void intelEl.offsetWidth;
-        intelEl.classList.add('view-entering');
-        if (intelEl._enterTimer) clearTimeout(intelEl._enterTimer);
-        intelEl._enterTimer = setTimeout(() => intelEl.classList.remove('view-entering'), 500);
-      }
       if (latestState) renderIntelHub(latestState);
       pumpIntelArticlePreload();
+      if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
     } else {
-      if (intelEl) intelEl.style.display = 'none';
-      if (arenaEl) {
-        arenaEl.style.display = 'grid';
-        arenaEl.classList.remove('view-entering');
-        void arenaEl.offsetWidth;
-        arenaEl.classList.add('view-entering');
-        if (arenaEl._enterTimer) clearTimeout(arenaEl._enterTimer);
-        arenaEl._enterTimer = setTimeout(() => arenaEl.classList.remove('view-entering'), 500);
-      }
       if (latestState) renderAll(latestState);
       triggerSmoothResize();
+      if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
     }
   }
 
@@ -3748,12 +4152,17 @@ function updateUiClockDisplay() {
     if (btn) {
       btn.disabled = true;
       btn.classList.add('loading');
-      btn.innerHTML = `
-      <svg class="ss-svg-icon btn-spin-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M14 8A6 6 0 1 1 8 2"></path>
-      </svg>
-      <span>Synthesizing...</span>
-    `;
+      const swapLbl = btn.querySelector('.action-swap-label');
+      if (swapLbl) {
+        swapLbl.textContent = 'Synthesizing...';
+      } else {
+        btn.innerHTML = `
+        <svg class="ss-svg-icon btn-spin-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 8A6 6 0 1 1 8 2"></path>
+        </svg>
+        <span class="action-swap-label">Synthesizing...</span>
+      `;
+      }
     }
 
     // AI panels (I6): an indeterminate progress bar runs while the
@@ -3761,6 +4170,10 @@ function updateUiClockDisplay() {
     // percent, so none is fabricated; the bar hides again when the
     // button settles below.
     const digestProg = document.getElementById('digestRefreshProgress');
+    const digestOrbs = document.getElementById('digestThinkingOrbs');
+    const digestLbl = document.getElementById('digestRefreshLabel');
+    if (digestLbl) digestLbl.textContent = 'Synthesizing live feeds...';
+    if (digestOrbs) digestOrbs.classList.add('macro-is-thinking');
     if (digestProg) {
       digestProg.classList.add('active');
     }
@@ -3788,13 +4201,19 @@ function updateUiClockDisplay() {
         if (btn) {
           btn.disabled = false;
           btn.classList.remove('loading');
-          btn.innerHTML = `
-          <svg class="ss-svg-icon btn-spin-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9L14 6.5M14 2.5v4h-4"></path>
-          </svg>
-          <span>Refresh News Analysis</span>
-        `;
+          const swapLbl = btn.querySelector('.action-swap-label');
+          if (swapLbl) {
+            swapLbl.textContent = 'Refresh News Analysis';
+          } else {
+            btn.innerHTML = `
+            <svg class="ss-svg-icon btn-spin-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9L14 6.5M14 2.5v4h-4"></path>
+            </svg>
+            <span class="action-swap-label">Refresh News Analysis</span>
+          `;
+          }
         }
+        if (digestOrbs) digestOrbs.classList.remove('macro-is-thinking');
         if (digestProg) {
           digestProg.classList.remove('active');
         }
@@ -3894,7 +4313,7 @@ function updateUiClockDisplay() {
       sorted.forEach(function (evt) {
         const key = intelEventKey(evt);
         const card = intelEventNodes[key];
-        if (!card || card.parentNode !== listContainer) return;
+        if (!card || card.parentNode !== listContainer || card.style.display === 'none') return;
         card.classList.remove('intel-card-reordering');
         card.style.transform = '';
         card.style.zIndex = '';
@@ -4322,6 +4741,74 @@ function updateUiClockDisplay() {
     }
   }
 
+  let intelDomainFilter = 'all';
+  let intelSearchQuery = '';
+
+  function setIntelDomainFilter(domain) {
+    intelDomainFilter = domain || 'all';
+    const chipsWrap = document.getElementById('intelDomainChips');
+    if (chipsWrap) {
+      chipsWrap.querySelectorAll('.intel-chip').forEach((chip) => {
+        const isMatched = chip.getAttribute('data-domain') === intelDomainFilter;
+        chip.classList.toggle('is-active', isMatched);
+      });
+    }
+    if (latestState) renderIntelHub(latestState);
+  }
+  window.setIntelDomainFilter = setIntelDomainFilter;
+
+  function toggleIntelSearch(force) {
+    const wrap = document.getElementById('intelSearchWrap');
+    const input = document.getElementById('intelSearchInput');
+    if (!wrap) return;
+    const nextOpen = typeof force === 'boolean' ? force : !wrap.classList.contains('is-open');
+    wrap.classList.toggle('is-open', nextOpen);
+    if (nextOpen && input) {
+      setTimeout(() => input.focus(), 60);
+    }
+  }
+  window.toggleIntelSearch = toggleIntelSearch;
+
+  function clearIntelSearch() {
+    const input = document.getElementById('intelSearchInput');
+    const clearBtn = document.getElementById('btnIntelSearchClear');
+    intelSearchQuery = '';
+    if (input) input.value = '';
+    if (clearBtn) clearBtn.classList.remove('visible');
+    if (latestState) renderIntelHub(latestState);
+  }
+  window.clearIntelSearch = clearIntelSearch;
+
+  function matchesIntelFilter(evt) {
+    if (!evt) return false;
+    const dom = String(evt.domain || '').toLowerCase();
+    const text = (
+      String(evt.headline || '') + ' ' +
+      String(evt.summary || '') + ' ' +
+      String(evt.source || '') + ' ' +
+      String((evt.tickers || []).join(' '))
+    ).toLowerCase();
+
+    if (intelDomainFilter && intelDomainFilter !== 'all') {
+      if (intelDomainFilter === 'macro') {
+        if (dom !== 'macro' && dom !== 'corporate' && !/\b(cpi|gdp|payroll|treasury|yield|ism|macro)\b/i.test(text)) return false;
+      } else if (intelDomainFilter === 'fed') {
+        if (!/\b(fed|fomc|powell|rate|cpi|pce|treasury)\b|\u806f\u6e96\u6703|\u7f8e\u806f\u5132|\u5229\u7387|\u592e\u884c/i.test(text) && dom !== 'macro') return false;
+      } else if (intelDomainFilter === 'crypto') {
+        if (dom !== 'crypto' && dom !== 'forum' && dom !== 'prediction' && !/\b(eth|btc|etf|crypto|sol|xrp|defi|ethereum|bitcoin)\b/i.test(text)) return false;
+      } else if (intelDomainFilter === 'tech') {
+        if (dom !== 'tech' && !/\b(ai|gpu|chip|semi|semiconductor|nvidia|tsmc|amd)\b|\u534a\u5c0e\u9ad4|\u6676\u7247/i.test(text)) return false;
+      } else if (intelDomainFilter === 'geopolitics') {
+        if (dom !== 'geopolitics') return false;
+      }
+    }
+
+    if (intelSearchQuery) {
+      if (text.indexOf(intelSearchQuery) === -1) return false;
+    }
+    return true;
+  }
+
   function renderIntelHub(state) {
     if (!state) return;
     const intel = state.intel_hub || {};
@@ -4409,6 +4896,38 @@ function updateUiClockDisplay() {
       if (throttleLine) throttleLine.classList.toggle('visible', omni.quota_throttled === true);
     }
 
+    // Bencho context-meter segment sync for Token Utilization
+    const meterEl = document.getElementById('omniTokenMeter');
+    const segAct = document.getElementById('omniTokenSegActive');
+    const segSav = document.getElementById('omniTokenSegSaved');
+    const lblAct = document.getElementById('omniMeterActiveLbl');
+    const lblSav = document.getElementById('omniMeterSavedLbl');
+    if (meterEl && segAct && segSav && lblAct && lblSav) {
+      const usedNum = Number(omni.tokens_used || 0);
+      const savedNum = Number(omni.tokens_saved || 0);
+      const totNum = usedNum + savedNum;
+      let activePct = 0;
+      let savedPct = 0;
+      if (totNum > 0) {
+        savedPct = Math.round((savedNum / totNum) * 100);
+        activePct = Math.max(0, 100 - savedPct);
+      } else if (usedNum > 0) {
+        activePct = 100;
+        savedPct = 0;
+      } else if (typeof omni.dedup_pct === 'number' && omni.dedup_pct > 0) {
+        savedPct = Math.min(100, Math.round(omni.dedup_pct));
+        activePct = Math.max(0, 100 - savedPct);
+      }
+      const nextActW = activePct + '%';
+      const nextSavW = savedPct + '%';
+      if (segAct.style.width !== nextActW) segAct.style.width = nextActW;
+      if (segSav.style.width !== nextSavW) segSav.style.width = nextSavW;
+      const nextActLbl = `Used ${activePct}%`;
+      const nextSavLbl = `Saved ${savedPct}%`;
+      if (lblAct.textContent !== nextActLbl) lblAct.textContent = nextActLbl;
+      if (lblSav.textContent !== nextSavLbl) lblSav.textContent = nextSavLbl;
+    }
+
     // AI panels (I5): the Stage-1 / Stage-2 model tags were removed;
     // the ingest/commander model names are no longer displayed.
 
@@ -4433,7 +4952,7 @@ function updateUiClockDisplay() {
     const biasEl = document.getElementById('macroHubBias');
     if (biasEl) {
       const nextBias = macro.directional_bias || 'BIDIRECTIONAL';
-      if (biasEl.textContent !== nextBias) biasEl.textContent = nextBias;
+      if (biasEl.textContent !== nextBias) morphText(biasEl, nextBias);
     }
 
     const biasSub = document.getElementById('macroHubBiasSub');
@@ -4541,6 +5060,7 @@ function updateUiClockDisplay() {
         // expand state and lazy articles survive the 1s re-render.
         const sorted = sortIntelEvents(events);
         const seenKeys = new Set();
+        let visibleCount = 0;
         sorted.forEach(function (evt) {
           const key = intelEventKey(evt);
           seenKeys.add(key);
@@ -4551,6 +5071,9 @@ function updateUiClockDisplay() {
             listContainer.appendChild(card);
           }
           updateIntelEventCard(card, evt, macro);
+          const matches = matchesIntelFilter(evt);
+          card.style.display = matches ? '' : 'none';
+          if (matches) visibleCount += 1;
         });
         Object.keys(intelEventNodes).forEach(function (key) {
           if (!seenKeys.has(key)) {
@@ -4561,6 +5084,24 @@ function updateUiClockDisplay() {
             intelExpandedIds.delete(key);
           }
         });
+        let emptyFilterEl = listContainer.querySelector('.intel-empty-filter');
+        if (visibleCount === 0) {
+          if (!emptyFilterEl) {
+            emptyFilterEl = document.createElement('div');
+            emptyFilterEl.className = 'intel-empty-filter';
+            emptyFilterEl.textContent = 'No events match the active domain chip or search filter.';
+            listContainer.appendChild(emptyFilterEl);
+          }
+        } else if (emptyFilterEl) {
+          emptyFilterEl.parentNode.removeChild(emptyFilterEl);
+        }
+        if (countLbl) {
+          const isFiltered = (intelDomainFilter !== 'all') || (intelSearchQuery.length > 0);
+          const nextFilteredCount = isFiltered
+            ? `${visibleCount} / ${events.length} Filtered`
+            : `${events.length} Curated Events`;
+          if (countLbl.textContent !== nextFilteredCount) countLbl.textContent = nextFilteredCount;
+        }
         const nextOrder = sorted.map(intelEventKey).join('|');
         if (!intelSortTransitionPending && listContainer._intelOrder !== nextOrder) {
           reorderIntelEventCards(listContainer, sorted);
@@ -4570,6 +5111,7 @@ function updateUiClockDisplay() {
         // the list order is the display order, so the cards the user is
         // most likely to open first are preloaded first.
         preloadIntelArticles(sorted.map(intelEventKey));
+        if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
       }
     }
   }
@@ -4614,6 +5156,13 @@ function updateUiClockDisplay() {
 
     window.addEventListener('resize', triggerSmoothResize);
 
+    if (typeof initIntelFilterControls === 'function') initIntelFilterControls();
+    if (typeof initAdminPasswordStrength === 'function') initAdminPasswordStrength();
+    if (typeof initScrollAreaFades === 'function') initScrollAreaFades();
+    if (typeof initResetSlideConfirm === 'function') initResetSlideConfirm();
+    if (typeof initCommandPalette === 'function') initCommandPalette();
+    if (typeof initAmbientBackdrop === 'function') initAmbientBackdrop();
+
     setTimeout(pollBackend, 120);
     window.pollIntervalTimer = setInterval(pollBackend, 1000);
   });
@@ -4622,6 +5171,7 @@ function updateUiClockDisplay() {
     if (document.body) {
       document.body.classList.toggle('window-hidden', document.hidden);
     }
+    if (typeof syncAmbientShaderMotion === 'function') syncAmbientShaderMotion();
     if (!document.hidden) {
       if (!isPolling) pollBackend();
       if (currentMainView === 'intel') pumpIntelArticlePreload();
@@ -4695,6 +5245,7 @@ function updateUiClockDisplay() {
     if (splashSafetyTimer) { clearTimeout(splashSafetyTimer); splashSafetyTimer = null; }
     stopRuntimeInstallPoll();
     stopSaveLaunchPoll();
+    if (typeof destroyAmbientBackdrop === 'function') destroyAmbientBackdrop();
     isPolling = true;
 
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.shutdown === 'function') {
@@ -4758,6 +5309,7 @@ function updateUiClockDisplay() {
     if (keyGeminiInput) keyGeminiInput.value = '';
     if (pwInput) pwInput.value = '';
     if (pwConfirm) pwConfirm.value = '';
+    if (typeof updateAdminPasswordStrength === 'function') updateAdminPasswordStrength('');
     const curInst = window.__runtimeInstallStatus && window.__runtimeInstallStatus.status;
     if (curInst !== 'downloading-node' && curInst !== 'installing-omniroute') {
       setWizardBanner('');
@@ -4835,6 +5387,7 @@ function updateUiClockDisplay() {
     if (keyGeminiInput) keyGeminiInput.value = '';
     if (pwInput) pwInput.value = '';
     if (pwConfirm) pwConfirm.value = '';
+    if (typeof updateAdminPasswordStrength === 'function') updateAdminPasswordStrength('');
     const modal = document.getElementById('setupWizardModal');
     if (modal) {
       modal.classList.remove('wizard-visible');
@@ -4893,14 +5446,10 @@ function updateUiClockDisplay() {
       pwdBadge.classList.toggle('pwd-revealed', Boolean(omniPwdRevealed && omniPwdCachedValue));
     }
     if (eyeBtn) {
-      const openSvg = eyeBtn.querySelector('.pwd-eye-open');
-      const offSvg = eyeBtn.querySelector('.pwd-eye-off');
       eyeBtn.classList.toggle('is-revealed', omniPwdRevealed);
       eyeBtn.setAttribute('aria-pressed', omniPwdRevealed ? 'true' : 'false');
       eyeBtn.setAttribute('aria-label', omniPwdRevealed ? 'Hide password' : 'Show password');
       eyeBtn.title = omniPwdRevealed ? 'Hide password' : 'Show password';
-      if (openSvg) openSvg.style.display = omniPwdRevealed ? 'none' : '';
-      if (offSvg) offSvg.style.display = omniPwdRevealed ? '' : 'none';
     }
   }
 
@@ -5560,8 +6109,13 @@ function updateUiClockDisplay() {
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       // Dismiss topmost visible modal strictly in descending z-index order:
-      // #shutdownModal (10005) > #wizardCloseConfirmModal (10003) >
+      // #commandPaletteModal (10006) > #shutdownModal (10005) > #wizardCloseConfirmModal (10003) >
       // #installCancelConfirmModal (10002) > #setupWizardModal (10001) > #resetConfirmModal (9999)
+      const cmdModal = document.getElementById('commandPaletteModal');
+      if (cmdModal && cmdModal.classList.contains('modal-visible')) {
+        closeCommandPalette();
+        return;
+      }
       const shutdownModal = document.getElementById('shutdownModal');
       if (shutdownModal && shutdownModal.classList.contains('modal-visible')) {
         closeShutdownModal();
@@ -5598,6 +6152,7 @@ function updateUiClockDisplay() {
   function requestResetArena() {
     if (resetCloseTimer) { clearTimeout(resetCloseTimer); resetCloseTimer = null; }
     blurActiveFocus();
+    if (typeof resetSlideConfirmState === 'function') resetSlideConfirmState();
     const modal = document.getElementById('resetConfirmModal');
     if (modal) {
       modal.style.display = 'flex';
@@ -5620,6 +6175,7 @@ function updateUiClockDisplay() {
         if (!modal.classList.contains('modal-visible')) {
           modal.style.display = 'none';
           modal.classList.remove('modal-closing');
+          if (typeof resetSlideConfirmState === 'function') resetSlideConfirmState();
         }
       }, 1250);
     }
@@ -5635,4 +6191,722 @@ function updateUiClockDisplay() {
     closeResetModal();
     resetArena();
   }
+
+  /* ==========================================================================
+     PHASE 3-4: SEARCH/CHIPS, SCROLL FADES, PASSWORD STRENGTH, SLIDE CONFIRM,
+     COMMAND PALETTE, AND HORIZONX SILVER STREAM + GRAINIENT BACKDROP
+     ========================================================================== */
+
+  function initIntelFilterControls() {
+    const searchInput = document.getElementById('intelSearchInput');
+    const clearBtn = document.getElementById('btnIntelSearchClear');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        intelSearchQuery = String(searchInput.value || '').trim().toLowerCase();
+        const hasQuery = intelSearchQuery.length > 0;
+        if (clearBtn) clearBtn.classList.toggle('visible', hasQuery);
+        if (latestState) renderIntelHub(latestState);
+      });
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          if (intelSearchQuery) {
+            clearIntelSearch();
+          } else {
+            toggleIntelSearch(false);
+          }
+        }
+      });
+    }
+  }
+
+  function updateAdminPasswordStrength(rawValue) {
+    const wrap = document.getElementById('adminPwdStrengthWrap');
+    const bar = document.getElementById('adminPwdStrengthBar');
+    const txt = document.getElementById('adminPwdStrengthText');
+    if (!wrap || !txt) return;
+    if (bar && !bar._initialized) bar._initialized = true;
+
+    const val = String(rawValue == null ? '' : rawValue);
+    let level = 0;
+    let label = 'Min 8 chars';
+    if (val.length > 0 && val.length < 8) {
+      level = 1;
+      label = `${8 - val.length} more chars`;
+    } else if (val.length >= 8) {
+      let score = 1;
+      if (/[a-z]/.test(val) && /[A-Z]/.test(val)) score += 1;
+      if (/\d/.test(val)) score += 1;
+      if (/[^A-Za-z0-9]/.test(val) || val.length >= 14) score += 1;
+      level = Math.min(4, Math.max(1, score));
+      const labels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+      label = labels[level] || 'Fair';
+    }
+    wrap.setAttribute('data-level', String(level));
+    if (txt.textContent !== label) txt.textContent = label;
+  }
+
+  function initAdminPasswordStrength() {
+    const pwInput = document.getElementById('keyAdminPassword');
+    if (!pwInput) return;
+    pwInput.addEventListener('input', () => {
+      updateAdminPasswordStrength(pwInput.value || '');
+    });
+    updateAdminPasswordStrength(pwInput.value || '');
+  }
+
+  function updateScrollAreaFades(el) {
+    if (!el) return;
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    const top = el.scrollTop || 0;
+    const hasTop = top > 4;
+    const hasBottom = (maxScroll - top) > 4;
+    el.classList.toggle('has-scroll-top', hasTop);
+    el.classList.toggle('has-scroll-bottom', hasBottom);
+  }
+
+  function refreshScrollAreaFades() {
+    document.querySelectorAll('.scroll-area-faded').forEach(updateScrollAreaFades);
+  }
+
+  function initScrollAreaFades() {
+    const els = document.querySelectorAll('.scroll-area-faded');
+    const ro = typeof ResizeObserver === 'function'
+      ? new ResizeObserver((entries) => {
+          entries.forEach((entry) => updateScrollAreaFades(entry.target));
+        })
+      : null;
+    els.forEach((el) => {
+      el.addEventListener('scroll', () => updateScrollAreaFades(el), { passive: true });
+      if (ro) ro.observe(el);
+      updateScrollAreaFades(el);
+    });
+  }
+
+  function resetSlideConfirmState() {
+    const track = document.getElementById('resetSlideTrack');
+    const fill = document.getElementById('resetSlideFill');
+    const thumb = document.getElementById('resetSlideThumb');
+    const label = document.getElementById('resetSlideLabel');
+    if (!track || !fill || !thumb || !label) return;
+    track._slideCommitted = false;
+    track._dragging = false;
+    track.classList.remove('is-dragging', 'is-committed');
+    track.setAttribute('aria-valuenow', '0');
+    thumb.style.transform = '';
+    fill.style.width = '0px';
+    label.style.opacity = '1';
+    label.textContent = 'Slide to Reset Arena';
+  }
+
+  function initResetSlideConfirm() {
+    const track = document.getElementById('resetSlideTrack');
+    const fill = document.getElementById('resetSlideFill');
+    const thumb = document.getElementById('resetSlideThumb');
+    const label = document.getElementById('resetSlideLabel');
+    if (!track || !fill || !thumb || !label) return;
+
+    const getBounds = () => {
+      const tw = track.clientWidth || 320;
+      const hw = thumb.offsetWidth || 32;
+      const pad = 3;
+      return { maxOffset: Math.max(1, tw - hw - pad * 2), pad, hw };
+    };
+
+    const renderRatio = (ratio) => {
+      const clamped = Math.max(0, Math.min(1, ratio));
+      const { maxOffset, pad, hw } = getBounds();
+      const x = clamped * maxOffset;
+      thumb.style.transform = `translateX(${x.toFixed(1)}px)`;
+      fill.style.width = `${(x + hw * 0.5 + pad).toFixed(1)}px`;
+      label.style.opacity = String(Math.max(0.15, 1 - clamped * 1.15));
+      track.setAttribute('aria-valuenow', String(Math.round(clamped * 100)));
+      return clamped;
+    };
+
+    const commitSlide = () => {
+      if (track._slideCommitted) return;
+      track._slideCommitted = true;
+      track._dragging = false;
+      track.classList.remove('is-dragging');
+      track.classList.add('is-committed');
+      renderRatio(1);
+      label.style.opacity = '1';
+      label.textContent = 'Resetting Arena...';
+      setTimeout(() => {
+        confirmResetArena();
+      }, 140);
+    };
+
+    track.addEventListener('pointerdown', (e) => {
+      if (track._slideCommitted || e.button !== 0) return;
+      track._dragging = true;
+      track._startX = e.clientX;
+      track.classList.add('is-dragging');
+      if (typeof track.setPointerCapture === 'function') {
+        try { track.setPointerCapture(e.pointerId); } catch (_) { }
+      }
+      const rect = track.getBoundingClientRect();
+      const { maxOffset, hw } = getBounds();
+      const rel = e.clientX - rect.left - hw * 0.5 - 3;
+      renderRatio(rel / maxOffset);
+    });
+
+    track.addEventListener('pointermove', (e) => {
+      if (!track._dragging || track._slideCommitted) return;
+      const rect = track.getBoundingClientRect();
+      const { maxOffset, hw } = getBounds();
+      const rel = e.clientX - rect.left - hw * 0.5 - 3;
+      const ratio = renderRatio(rel / maxOffset);
+      if (ratio >= 0.85) {
+        commitSlide();
+      }
+    });
+
+    const releaseSlide = () => {
+      if (!track._dragging || track._slideCommitted) return;
+      track._dragging = false;
+      track.classList.remove('is-dragging');
+      const nowPct = Number(track.getAttribute('aria-valuenow') || 0) / 100;
+      if (nowPct >= 0.85) {
+        commitSlide();
+      } else {
+        resetSlideConfirmState();
+      }
+    };
+
+    track.addEventListener('pointerup', releaseSlide);
+    track.addEventListener('pointercancel', releaseSlide);
+    track.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        commitSlide();
+      }
+    });
+  }
+
+  let cmdPaletteMode = 'commands';
+  let cmdPaletteSelectedIdx = 0;
+  let cmdPaletteCloseTimer = null;
+
+  function getCommandPaletteItems() {
+    const isPaused = Boolean(latestState && latestState.paused);
+    const modeLabel = backdropMode === 'shader'
+      ? 'Shader (HorizonX)'
+      : (backdropMode === 'grainient' ? 'Grainient Silk' : 'Minimal Obsidian');
+    return [
+      { id: 'arena', group: 'Navigation', title: 'Switch to Trading Arena', sub: 'Primary live chart, orderflow & strategy matrix', kbd: '1', run: () => switchMainView('arena') },
+      { id: 'intel', group: 'Navigation', title: 'Switch to Market Intelligence Hub', sub: 'AI news digest, regime commander & curated events', kbd: '2', run: () => switchMainView('intel') },
+      { id: 'pause', group: 'Trading Control', title: isPaused ? 'Resume Live Feed' : 'Pause Live Feed', sub: 'Toggle real-time price ticks & strategy simulation', kbd: 'Space', run: () => togglePause() },
+      { id: 'evolve', group: 'Trading Control', title: 'Trigger Evolution Now', sub: 'Run tournament selection & genome crossover', kbd: 'E', run: () => triggerEvolution() },
+      { id: 'scale', group: 'Chart', title: 'Toggle Chart Scale Mode (Focus / Full)', sub: 'Zoom on candle range or include distant brackets', kbd: 'F', run: () => setScaleMode(scaleMode === 'auto' ? 'full' : 'auto') },
+      { id: 'refresh_intel', group: 'Intelligence', title: 'Refresh News Analysis', sub: 'Synthesize latest multi-domain macro digest', kbd: '', run: () => requestAiIntelDigest() },
+      { id: 'console', group: 'Intelligence', title: 'Launch OmniRoute Console', sub: 'Open gateway admin console in browser', kbd: '', run: () => openOmniRouteConsole() },
+      { id: 'backdrop', group: 'Appearance', title: `Cycle Backdrop Mode (${modeLabel})`, sub: 'Switch between HorizonX WebGL Shader, Grainient WebP, and Minimal Obsidian', kbd: '', run: () => cycleBackdropMode() },
+      { id: 'settings', group: 'System', title: 'Open AI Services Setup', sub: 'Configure Gemini API key & gateway credentials', kbd: '', run: () => openSetupWizardModal(true) },
+      { id: 'fullscreen', group: 'System', title: 'Toggle Fullscreen', sub: 'Expand or restore desktop window', kbd: 'F11', run: () => toggleFullscreen() },
+      { id: 'shortcuts', group: 'Help', title: 'View Keyboard Shortcuts Cheat Sheet', sub: 'Inspect all hotkeys and navigation keys', kbd: '?', run: () => { openCommandPalette('shortcuts'); return false; } },
+      { id: 'reset', group: 'Danger', title: 'Reset Quant Arena Session', sub: 'Open confirmation dialog to reset $100k ledgers', kbd: '', run: () => requestResetArena() },
+    ];
+  }
+
+  function renderCommandPaletteContent() {
+    const listEl = document.getElementById('cmdPaletteList');
+    const shortcutsEl = document.getElementById('cmdPaletteShortcutsView');
+    const toggleBtn = document.getElementById('btnCmdToggleMode');
+    const input = document.getElementById('cmdPaletteInput');
+    const badgeEl = document.getElementById('cmdPaletteBackdropBadge');
+    if (badgeEl) {
+      const labels = { shader: 'Shader', grainient: 'Grainient', minimal: 'Minimal' };
+      badgeEl.textContent = labels[backdropMode] || 'Shader';
+    }
+    if (!listEl || !shortcutsEl) return;
+
+    const isShortcuts = cmdPaletteMode === 'shortcuts';
+    if (toggleBtn) toggleBtn.textContent = isShortcuts ? 'Commands' : 'Shortcuts';
+    listEl.style.display = isShortcuts ? 'none' : 'flex';
+    shortcutsEl.style.display = isShortcuts ? 'flex' : 'none';
+
+    if (isShortcuts) {
+      const shortcuts = [
+        { kbd: '1', desc: 'Switch to Trading Arena' },
+        { kbd: '2', desc: 'Switch to Market Intelligence Hub' },
+        { kbd: 'Space', desc: 'Pause or Resume Live Market Feed' },
+        { kbd: 'E', desc: 'Trigger Genetic Evolution Tournament' },
+        { kbd: 'F', desc: 'Toggle Price Chart Scale (Focus / Full)' },
+        { kbd: 'Ctrl+K', desc: 'Open Command Palette' },
+        { kbd: '?', desc: 'Open Keyboard Shortcuts Cheat Sheet' },
+        { kbd: 'F11', desc: 'Toggle Window Fullscreen' },
+        { kbd: 'Esc', desc: 'Close Active Overlay or Modal' },
+      ];
+      shortcutsEl.innerHTML = shortcuts.map((s) => (
+        `<div class="cmd-shortcut-row"><span class="cmd-shortcut-desc">${escapeHtml(s.desc)}</span><kbd class="cmd-palette-kbd">${escapeHtml(s.kbd)}</kbd></div>`
+      )).join('');
+      return;
+    }
+
+    const q = input ? String(input.value || '').trim().toLowerCase() : '';
+    const items = getCommandPaletteItems().filter((it) => {
+      if (!q) return true;
+      return (it.title + ' ' + it.sub + ' ' + it.group).toLowerCase().indexOf(q) !== -1;
+    });
+
+    if (items.length === 0) {
+      listEl.innerHTML = '<div class="cmd-palette-empty">No matching commands found.</div>';
+      cmdPaletteSelectedIdx = 0;
+      return;
+    }
+    if (cmdPaletteSelectedIdx >= items.length) cmdPaletteSelectedIdx = 0;
+    if (cmdPaletteSelectedIdx < 0) cmdPaletteSelectedIdx = items.length - 1;
+
+    let lastGroup = '';
+    let html = '';
+    items.forEach((it, idx) => {
+      if (it.group !== lastGroup) {
+        lastGroup = it.group;
+        html += `<div class="cmd-palette-group">${escapeHtml(it.group)}</div>`;
+      }
+      const selCls = idx === cmdPaletteSelectedIdx ? 'cmd-palette-item is-selected' : 'cmd-palette-item';
+      const kbdHtml = it.kbd ? `<kbd class="cmd-palette-kbd">${escapeHtml(it.kbd)}</kbd>` : '';
+      html += `<button type="button" class="${selCls}" role="option" data-cmd-idx="${idx}"><span class="cmd-palette-item-left"><span class="cmd-palette-item-title">${escapeHtml(it.title)}</span><span class="cmd-palette-item-sub">${escapeHtml(it.sub)}</span></span>${kbdHtml}</button>`;
+    });
+    listEl.innerHTML = html;
+    listEl._filteredItems = items;
+  }
+
+  function runCommandPaletteItem(item) {
+    if (!item || typeof item.run !== 'function') return;
+    const res = item.run();
+    if (res !== false) {
+      closeCommandPalette();
+    }
+  }
+
+  function openCommandPalette(mode = 'commands') {
+    if (cmdPaletteCloseTimer) { clearTimeout(cmdPaletteCloseTimer); cmdPaletteCloseTimer = null; }
+    cmdPaletteMode = mode === 'shortcuts' ? 'shortcuts' : 'commands';
+    cmdPaletteSelectedIdx = 0;
+    const modal = document.getElementById('commandPaletteModal');
+    const card = document.getElementById('cmdPaletteCard');
+    const input = document.getElementById('cmdPaletteInput');
+    if (!modal || !card) return;
+    if (input) input.value = '';
+    renderCommandPaletteContent();
+    modal.style.display = 'flex';
+    modal.classList.remove('modal-closing');
+    void modal.offsetWidth;
+    modal.classList.add('modal-visible');
+    syncAppShellInert();
+    if (input && cmdPaletteMode === 'commands') {
+      setTimeout(() => input.focus(), 40);
+    }
+  }
+
+  function closeCommandPalette() {
+    const modal = document.getElementById('commandPaletteModal');
+    if (!modal) return;
+    modal.classList.remove('modal-visible');
+    modal.classList.add('modal-closing');
+    syncAppShellInert();
+    if (cmdPaletteCloseTimer) clearTimeout(cmdPaletteCloseTimer);
+    cmdPaletteCloseTimer = setTimeout(() => {
+      cmdPaletteCloseTimer = null;
+      if (!modal.classList.contains('modal-visible')) {
+        modal.style.display = 'none';
+        modal.classList.remove('modal-closing');
+      }
+    }, 260);
+  }
+
+  function toggleCommandPalette(mode = 'commands') {
+    const modal = document.getElementById('commandPaletteModal');
+    if (modal && modal.classList.contains('modal-visible')) {
+      closeCommandPalette();
+    } else {
+      openCommandPalette(mode);
+    }
+  }
+
+  function toggleCommandPaletteMode() {
+    cmdPaletteMode = cmdPaletteMode === 'shortcuts' ? 'commands' : 'shortcuts';
+    renderCommandPaletteContent();
+    const input = document.getElementById('cmdPaletteInput');
+    if (input && cmdPaletteMode === 'commands') setTimeout(() => input.focus(), 20);
+  }
+
+  function handleCmdPaletteOverlayClick(e) {
+    if (e && e.target && e.target.id === 'commandPaletteModal') {
+      closeCommandPalette();
+    }
+  }
+
+  function initCommandPalette() {
+    const input = document.getElementById('cmdPaletteInput');
+    const listEl = document.getElementById('cmdPaletteList');
+    if (input) {
+      input.addEventListener('input', () => {
+        if (cmdPaletteMode !== 'commands') cmdPaletteMode = 'commands';
+        cmdPaletteSelectedIdx = 0;
+        renderCommandPaletteContent();
+      });
+      input.addEventListener('keydown', (e) => {
+        if (cmdPaletteMode !== 'commands') return;
+        const items = (listEl && listEl._filteredItems) || [];
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          cmdPaletteSelectedIdx = items.length > 0 ? (cmdPaletteSelectedIdx + 1) % items.length : 0;
+          renderCommandPaletteContent();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          cmdPaletteSelectedIdx = items.length > 0 ? (cmdPaletteSelectedIdx - 1 + items.length) % items.length : 0;
+          renderCommandPaletteContent();
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (items[cmdPaletteSelectedIdx]) runCommandPaletteItem(items[cmdPaletteSelectedIdx]);
+        }
+      });
+    }
+    if (listEl) {
+      listEl.addEventListener('click', (e) => {
+        const btn = e.target.closest('.cmd-palette-item');
+        if (!btn) return;
+        const idx = Number(btn.getAttribute('data-cmd-idx'));
+        const items = listEl._filteredItems || [];
+        if (Number.isFinite(idx) && items[idx]) {
+          runCommandPaletteItem(items[idx]);
+        }
+      });
+    }
+  }
+
+  window.openCommandPalette = openCommandPalette;
+  window.closeCommandPalette = closeCommandPalette;
+  window.toggleCommandPaletteMode = toggleCommandPaletteMode;
+  window.handleCmdPaletteOverlayClick = handleCmdPaletteOverlayClick;
+
+  let backdropMode = 'shader';
+  let ambientShaderHandle = null;
+
+  function applyBackdropMode(mode) {
+    const valid = ['shader', 'grainient', 'minimal'];
+    backdropMode = valid.indexOf(mode) !== -1 ? mode : 'shader';
+    if (document.body) {
+      document.body.setAttribute('data-backdrop-mode', backdropMode);
+    }
+    try {
+      localStorage.setItem('tb0_backdrop_mode', backdropMode);
+    } catch (_) { }
+    const grainEl = document.getElementById('lgAmbientGrainient');
+    const canvasEl = document.getElementById('lgAmbientShaderCanvas');
+    if (grainEl) grainEl.setAttribute('data-mode', backdropMode);
+    if (canvasEl) canvasEl.setAttribute('data-mode', backdropMode);
+    syncAmbientShaderMotion();
+    if (document.getElementById('commandPaletteModal')?.classList.contains('modal-visible')) {
+      renderCommandPaletteContent();
+    }
+  }
+
+  function cycleBackdropMode() {
+    const order = ['shader', 'grainient', 'minimal'];
+    const next = order[(order.indexOf(backdropMode) + 1) % order.length];
+    applyBackdropMode(next);
+    if (typeof showChartToast === 'function') {
+      const names = { shader: 'HorizonX Shader', grainient: 'Grainient Obsidian', minimal: 'Minimal Obsidian' };
+      showChartToast({ triggerReason: 'Backdrop: ' + (names[next] || next), action: 'VIEW' });
+    }
+  }
+  window.cycleBackdropMode = cycleBackdropMode;
+
+  function mountSilverStreamAmbient(canvas) {
+    if (!canvas) return null;
+    let gl = null;
+    try {
+      gl = canvas.getContext('webgl', { alpha: false, antialias: false, powerPreference: 'low-power', preserveDrawingBuffer: false });
+    } catch (_) {
+      gl = null;
+    }
+    if (!gl) return null;
+
+    const cfg = {
+      bg: [4 / 255, 6 / 255, 10 / 255],
+      fg: [159 / 255, 216 / 255, 232 / 255],
+      speed: 0.24,
+      density: 84,
+      pointSize: 2.1,
+      trails: 1.0,
+      bend: 1.0,
+      spread: 1.0,
+      exposure: 0.56,
+      scale: 1.0,
+      phase: 0.0,
+    };
+
+    const vsSrc = `
+precision highp float;
+attribute vec3 particle;
+attribute vec2 corner;
+uniform vec2 resolution;
+uniform float time, phase, pointSize, trails, bend, spread, scale, exposure;
+varying vec2 local;
+varying float light, extent;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float bell(float x) { return exp(-x*x); }
+vec2 surface(float u, float v, float layer) {
+  vec2 p;
+  if (layer < 0.5) {
+    float theta = -1.35 + 2.6*u;
+    float r = 0.33 + 1.55*v;
+    float twist = 0.12*sin(r*3.1)*bend;
+    theta += twist + 0.035*sin(u*8.0+r*2.3)*bend;
+    p = vec2(0.28 + r*sin(theta)*spread, 0.255 + r*cos(theta)*0.50);
+    p.x += 0.13*bell((r-0.47)*3.8);
+    p.y += (0.020*sin(u*9.0+r*3.8) - 0.015*cos(u*5.0+r*2.2))*bend;
+    p.x += 0.008*sin(u*17.0+r*9.0)*bell((r-0.7)*3.0)*bend;
+  } else if (layer < 1.5) {
+    float t = v;
+    vec2 a = vec2(0.28+u*0.80,-0.16);
+    vec2 b = vec2(0.67+u*0.32,0.09);
+    vec2 c = vec2(-0.55+u*2.2,0.14-u*0.015+0.24*pow(u,4.0));
+    p = (1.0-t)*(1.0-t)*a + 2.0*t*(1.0-t)*b+t*t*c;
+    p.x = 0.76+(p.x-0.76)*spread;
+    p.x += 0.008*sin(u*54.0+t*11.0)*bend;
+    p.y += 0.006*sin(u*42.0+t*15.0)*bend;
+  } else if (layer < 2.5) {
+    float x = -0.25+v*1.65;
+    p = vec2(x, 0.125 + x*0.18 + x*x*0.015 + (u-0.5)*0.045*spread);
+    p.y += 0.005*sin(x*5.0+u*2.0)*bend;
+    p.x += 0.10*sin(u*3.14159)*sin(v*2.0);
+  } else {
+    p = vec2(-0.16+u*0.34 + 0.05*sin(v*5.0+u*2.0), -0.1+v*0.25);
+  }
+  float t = (time+phase)*0.24;
+  p += vec2(sin(t+v*5.0+u*3.0)-sin(v*5.0+u*3.0), cos(t*0.7+u*4.0)-cos(u*4.0))*0.012*bend;
+  return p;
+}
+void main() {
+  float u = particle.x, v = particle.y, layer = particle.z;
+  float seed = hash(vec2(u*83.0+layer*43.0,v*139.0));
+  float flow = mod(v + time*0.015,1.0);
+  vec2 p = surface(u,flow,layer);
+  float lengthFactor;
+  if (layer < 0.5) {
+    lengthFactor = (smoothstep(0.56,0.74,u)*0.016 + smoothstep(0.56,0.86,p.y)*0.027)*(0.45+seed*0.8);
+  } else if (layer < 1.5) {
+    lengthFactor = 0.065*(0.08+seed);
+  } else if (layer < 2.5) {
+    lengthFactor = 0.042*(0.05+seed);
+  } else lengthFactor = 0.0001;
+  lengthFactor *= seed > 0.16 ? 0.25+0.75*seed : 0.005;
+  float dt = max(0.00008,lengthFactor*trails);
+  vec2 tail = surface(u,flow-dt,layer);
+  float aspect = resolution.x/max(resolution.y,1.0);
+  vec2 fit = vec2(max(1.0,0.5/aspect),max(1.0,aspect/0.5));
+  vec2 head = (p-0.5)*vec2(2.0,-2.0)*fit*scale;
+  vec2 end = (tail-0.5)*vec2(2.0,-2.0)*fit*scale;
+  vec2 metric = resolution*0.5;
+  vec2 d = (head-end)*metric;
+  float len = length(d);
+  vec2 tangent = d/max(len,0.0001);
+  vec2 normal = vec2(-tangent.y,tangent.x);
+  float radius = max(0.55, pointSize*(0.6+seed*0.65)*resolution.y/2048.0);
+  vec2 midpoint = (head+end)*0.5;
+  vec2 offset = (tangent*corner.x*(len*0.5+radius) + normal*corner.y*radius*1.6)/metric;
+  gl_Position = vec4(midpoint+offset,0.0,1.0);
+  local = vec2(corner.x*(len*0.5+radius)/radius,corner.y*1.6);
+  extent = len*0.5/radius;
+  light = (0.42+0.58*seed)*exposure;
+  float cavity = bell((p.x-0.25)*5.0)*bell((p.y-0.355)*14.0);
+  light *= 1.0-0.85*cavity;
+  if (layer < 0.5) light *= mix(0.27,1.0,max(smoothstep(0.42,0.65,p.y),smoothstep(0.59,0.78,p.x)));
+  if (layer > 0.5 && layer < 1.5) light *= 1.42;
+  if (layer > 1.5 && layer < 2.5) light *= 0.74;
+  light *= 0.55+0.45*hash(vec2(floor(u*72.0)+layer*18.0,5.0));
+  light *= 0.60+0.40*sin(u*24.0+flow*13.0+layer)*sin(u*24.0+flow*13.0+layer);
+}`;
+
+    const fsSrc = `
+precision highp float;
+uniform vec3 foreground;
+float hash(vec2 p) { return fract(sin(dot(p,vec2(127.101,311.699)))*43758.54531); }
+varying vec2 local;
+varying float light, extent;
+void main() {
+  vec2 q=vec2(max(abs(local.x)-extent,0.0),local.y);
+  float shape=1.00001-smoothstep(0.549999,1.19999,length(q));
+  float tail=mix(0.14,1.00001,clamp((local.x+extent+1.0)/(1.99999*extent+2.0),0.0,0.99999));
+  float core=exp(-local.y*local.y*4.0);
+  float head=0.99999-smoothstep(0.350001,1.24999,length(local-vec2(extent,0.0)));
+  float alpha=light*(shape*tail*0.850001 + head*0.850001)*(0.749999+0.250001*core);
+  alpha *= 0.579999+0.42*hash(floor(gl_FragCoord.xy));
+  gl_FragColor=vec4(foreground,alpha);
+}`;
+
+    let shaders = [];
+    let program = null;
+    let buffer = null;
+    let count = 0;
+    const uniforms = {};
+    let rafId = 0;
+    let lastTs = 0;
+    let lastDrawTs = 0;
+    let simTime = 0;
+    let destroyed = false;
+
+    const compile = (type, src) => {
+      const sh = gl.createShader(type);
+      shaders.push(sh);
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error('Shader compile error');
+      return sh;
+    };
+
+    try {
+      program = gl.createProgram();
+      gl.attachShader(program, compile(gl.VERTEX_SHADER, vsSrc));
+      gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fsSrc));
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error('Shader link error');
+      gl.useProgram(program);
+      buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+
+      const values = [];
+      const corners = [[-1, -1], [1, -1], [-1, 1], [-1, 1], [1, -1], [1, 1]];
+      const d = cfg.density;
+      for (let layer = 0; layer < 4; layer++) {
+        const cols = layer === 2 ? Math.round(d * 0.35) : layer === 3 ? Math.round(d * 0.25) : layer === 1 ? Math.round(d * 1.3) : d;
+        const rows = layer === 0 ? Math.round(d * 1.2) : Math.round(d * 0.45);
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const jx = Math.sin(c * 123.701 + r * 327.1 + layer * 8.1) * 0.18;
+            const jy = Math.sin(c * 73.0999 + r * 171.301 + layer * 42.0001) * 0.18;
+            for (const [cx, cy] of corners) {
+              values.push((c + 0.5 + jx) / cols, (r + 0.5 + jy) / rows, layer, cx, cy);
+            }
+          }
+        }
+      }
+      count = values.length / 5;
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(values), gl.STATIC_DRAW);
+
+      const pLoc = gl.getAttribLocation(program, 'particle');
+      gl.enableVertexAttribArray(pLoc);
+      gl.vertexAttribPointer(pLoc, 3, gl.FLOAT, false, 20, 0);
+      const cLoc = gl.getAttribLocation(program, 'corner');
+      gl.enableVertexAttribArray(cLoc);
+      gl.vertexAttribPointer(cLoc, 2, gl.FLOAT, false, 20, 12);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      ['resolution', 'time', 'phase', 'pointSize', 'trails', 'bend', 'spread', 'scale', 'exposure', 'foreground'].forEach((k) => {
+        uniforms[k] = gl.getUniformLocation(program, k);
+      });
+    } catch (_) {
+      return null;
+    }
+
+    const drawFrame = () => {
+      if (destroyed || !program) return;
+      const box = canvas.getBoundingClientRect();
+      if (box.width < 2 || box.height < 2) return;
+      const w = Math.max(1, Math.round(box.width));
+      const h = Math.max(1, Math.round(box.height));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      gl.viewport(0, 0, w, h);
+      gl.useProgram(program);
+      gl.clearColor(cfg.bg[0], cfg.bg[1], cfg.bg[2], 1.0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.uniform2f(uniforms.resolution, w, h);
+      gl.uniform1f(uniforms.time, simTime);
+      gl.uniform1f(uniforms.phase, cfg.phase);
+      gl.uniform1f(uniforms.pointSize, cfg.pointSize);
+      gl.uniform1f(uniforms.trails, cfg.trails);
+      gl.uniform1f(uniforms.bend, cfg.bend);
+      gl.uniform1f(uniforms.spread, cfg.spread);
+      gl.uniform1f(uniforms.scale, cfg.scale);
+      gl.uniform1f(uniforms.exposure, cfg.exposure);
+      gl.uniform3fv(uniforms.foreground, cfg.fg);
+      gl.drawArrays(gl.TRIANGLES, 0, count);
+    };
+
+    const shouldRun = () => (
+      !destroyed &&
+      backdropMode === 'shader' &&
+      !document.hidden &&
+      !(document.body && (document.body.classList.contains('window-hidden') || document.body.classList.contains('arena-paused'))) &&
+      !isReducedMotionPreferred()
+    );
+
+    const tick = (now) => {
+      rafId = 0;
+      if (!shouldRun()) return;
+      if (!lastDrawTs || (now - lastDrawTs) >= 32) {
+        const dt = lastTs ? Math.min((now - lastTs) / 1000, 0.05) : (1 / 30);
+        simTime += dt * cfg.speed;
+        lastTs = now;
+        lastDrawTs = now;
+        drawFrame();
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    const sync = () => {
+      if (shouldRun()) {
+        if (!rafId) {
+          lastTs = 0;
+          drawFrame();
+          rafId = requestAnimationFrame(tick);
+        }
+      } else if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+    };
+
+    drawFrame();
+    return {
+      sync,
+      drawOnce: drawFrame,
+      destroy() {
+        destroyed = true;
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+        shaders.forEach((s) => gl.deleteShader(s));
+        if (buffer) gl.deleteBuffer(buffer);
+        if (program) gl.deleteProgram(program);
+      },
+    };
+  }
+
+  function syncAmbientShaderMotion() {
+    if (ambientShaderHandle && typeof ambientShaderHandle.sync === 'function') {
+      ambientShaderHandle.sync();
+    }
+  }
+
+  function destroyAmbientBackdrop() {
+    if (ambientShaderHandle && typeof ambientShaderHandle.destroy === 'function') {
+      ambientShaderHandle.destroy();
+      ambientShaderHandle = null;
+    }
+  }
+
+  function initAmbientBackdrop() {
+    let savedMode = 'shader';
+    try {
+      savedMode = localStorage.getItem('tb0_backdrop_mode') || 'shader';
+    } catch (_) {
+      savedMode = 'shader';
+    }
+    const canvas = document.getElementById('lgAmbientShaderCanvas');
+    ambientShaderHandle = mountSilverStreamAmbient(canvas);
+    if (!ambientShaderHandle && savedMode === 'shader') {
+      savedMode = 'grainient';
+    }
+    applyBackdropMode(savedMode);
+  }
+
 

@@ -126,15 +126,15 @@
     "semantic_hash": ""
   },
   "src/gui/assets/app.js": {
-    "mtime": 1795370176.4259925,
-    "seen": 1795370205.622305,
-    "ast_hash": "2a0681846c42bf0cebb404ab54bbb9ae",
+    "mtime": 1795427863.128827,
+    "seen": 1795427947.4120631,
+    "ast_hash": "b863db059ad0fdd18326bcae6645cab5",
     "semantic_hash": ""
   },
   "src/gui/dashboard.py": {
-    "mtime": 1795409389.0608275,
-    "seen": 1795409471.3646646,
-    "ast_hash": "6f9d68c5edc6747822f4d57f6cb626c4",
+    "mtime": 1795427141.2589161,
+    "seen": 1795427947.4120631,
+    "ast_hash": "f2d863bf165bc2f1367f68902aa001d8",
     "semantic_hash": ""
   },
   "src/intelligence/__init__.py": {
@@ -252,9 +252,9 @@
     "semantic_hash": ""
   },
   "src/gui/assets/index.html": {
-    "mtime": 1795369985.4817803,
-    "seen": 1795370205.622305,
-    "ast_hash": "0da4857fa49ec82b318fa0cac2755d25",
+    "mtime": 1795427427.8987696,
+    "seen": 1795427947.4130719,
+    "ast_hash": "d6b956dc1a75824f38e2602831ce00f1",
     "semantic_hash": ""
   },
   "src/data/mtf_engine.py": {
@@ -885,6 +885,18 @@
     "mtime": 1795409241.277434,
     "seen": 1795409471.3646646,
     "ast_hash": "d7cb4e821b0cf7b94796f135c7d373e3",
+    "semantic_hash": ""
+  },
+  "tests/test_ui_optimization_v26.py": {
+    "mtime": 1795427755.7695165,
+    "seen": 1795427947.4130719,
+    "ast_hash": "b56b370ade580b1e7f9146d247fc7649",
+    "semantic_hash": ""
+  },
+  "src/gui/assets/grainient_obsidian.webp": {
+    "mtime": 1795427056.617828,
+    "seen": 1795427947.4130719,
+    "ast_hash": "6fcacfb2c7be8c0ea4d536f88ebe2352",
     "semantic_hash": ""
   }
 }
