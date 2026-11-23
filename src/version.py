@@ -31,6 +31,7 @@ V2.4.1 (2026-11-22): Installer wizard detects existing user data and asks whethe
 V2.5.0 (2026-11-22): Full debug & optimization sweep across Arena/BrokerSim/Portfolio/Competitors, LiveEngine/SessionCodec/Persistence/WebSocket/MTF/MonteCarlo, OmniRoute/GatewaySupervisor/MacroCommander/Harvester, and GUI/ViewModel/Frontend/Installer/Tooling.
 V2.5.1 (2026-11-23): Restored graphify CLI toolchain and refreshed codebase knowledge graph (graphify-out/) to match V2.5.x architecture.
 V2.5.2 (2026-11-23): Fixed brand pod subtitle truncation, added styled password reveal eye button alongside copy, added collapse-then-FLIP news sort animations, removed seconds from event timestamps, and upgraded article loading to real streamed multi-stage progress.
+V2.5.3 (2026-11-23): Added installer "Launch TradeBot0" post-install option (checked by default) and instant PyInstaller native startup splash screen auto-closing when the main window opens.
 Going forward each new batch bumps the matching number by 1 (new
 feature group -> Y, fix / optimization batch -> Z, breaking change
 -> X with Y and Z reset to 0). The comparison helper accepts an
@@ -38,4 +39,4 @@ optional ``v``/``V`` prefix and plain ``X.Y.Z`` too.
 """
 
 APP_NAME = "TradeBot0"
-APP_VERSION = "V2.5.2"
+APP_VERSION = "V2.5.3"

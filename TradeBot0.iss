@@ -12,7 +12,7 @@
 ; Version: the single source of truth is src/version.py (APP_VERSION);
 ; keep MyAppVersion in sync with it at release time. Bump both per release.
 #define MyAppName "TradeBot0"
-#define MyAppVersion "V2.5.2"
+#define MyAppVersion "V2.5.3"
 #define MyAppPublisher "TradeBot0"
 #define MyAppExeName "TradeBot0_Arena.exe"
 
@@ -21,7 +21,7 @@ AppId={{A21CE6E9-710C-4C80-B1A0-B1A4DF694A6E}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 ; Numeric form of MyAppVersion (no V prefix) for the version resource.
-VersionInfoVersion=2.5.2
+VersionInfoVersion=2.5.3
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
@@ -46,6 +46,9 @@ Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 var

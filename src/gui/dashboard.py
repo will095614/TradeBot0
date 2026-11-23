@@ -730,6 +730,23 @@ class _ArenaBridgeApi:
             logger.error("Error cancelling gateway runtime install: %s", e)
             return {"ok": False, "message": str(e)}
 
+def close_native_splash() -> bool:
+    """Closes the PyInstaller native bootloader splash screen if active.
+
+    Idempotent and safe when running from source (where `pyi_splash` does
+    not exist) or after the splash has already been closed. Never raises.
+    """
+    try:
+        import pyi_splash  # type: ignore[import-not-found]
+        is_alive = getattr(pyi_splash, "is_alive", None)
+        if not callable(is_alive) or is_alive():
+            pyi_splash.close()
+            return True
+    except Exception:
+        pass
+    return False
+
+
 class ArenaDashboard:
     """
     Native Windows GPU-Accelerated HiDPI Live Multi-Strategy Trading Desk.
@@ -1136,6 +1153,7 @@ class ArenaDashboard:
                 logger.debug("Foreground startup activation error: %s", e)
 
         def _on_window_shown(*args):
+            close_native_splash()
             logger.info("Window shown: activating foremost layer on startup & maximizing window (non-fullscreen)...")
             _activate_foreground_startup()
 
@@ -1188,5 +1206,6 @@ class ArenaDashboard:
         try:
             webview.start(debug=False)
         finally:
+            close_native_splash()
             logger.info("Shutting down TradeBot0 engine and background workers...")
             self.stop()

@@ -26,6 +26,11 @@ try {
         "--noconfirm", "--onefile", "--windowed", "--name", "TradeBot0_Arena",
         "--add-data", "src/gui/assets;src/gui/assets"
     )
+    if (Test-Path "src/gui/assets/splash_logo.png") {
+        $pyiArgs += @("--splash", "src/gui/assets/splash_logo.png")
+    } else {
+        Write-Host "[!] Splash asset src/gui/assets/splash_logo.png not found; building without native splash." -ForegroundColor Yellow
+    }
     if (Test-Path "src/compat/win7/api-ms-win-core-path-l1-1-0.dll") {
         $pyiArgs += @("--add-binary", "src/compat/win7/api-ms-win-core-path-l1-1-0.dll;.")
     } else {

@@ -9,7 +9,7 @@ from src.logging_setup import configure_logging
 configure_logging()
 logger = logging.getLogger("TradeBot0")
 
-from src.gui.dashboard import ArenaDashboard
+from src.gui.dashboard import ArenaDashboard, close_native_splash
 from src.data.timemachine import TimeMachineArena
 from src.data.eth_feed import ETHFeed
 
@@ -49,6 +49,7 @@ def check_and_ensure_environment() -> bool:
         has_webview2 = True
 
     if not has_webview2:
+        close_native_splash()
         import ctypes
         import webbrowser
         MB_YESNO = 0x04
@@ -70,6 +71,7 @@ def check_and_ensure_environment() -> bool:
 
 def main() -> None:
     if "--self-test" in sys.argv:
+        close_native_splash()
         import ctypes
         import ssl
         import sqlite3
@@ -88,6 +90,7 @@ def main() -> None:
         return
 
     if "--cli" in sys.argv:
+        close_native_splash()
         generations = 1
         if "--evolve" in sys.argv:
             idx = sys.argv.index("--evolve")
@@ -122,6 +125,7 @@ def main() -> None:
         try:
             app.run()
         finally:
+            close_native_splash()
             logger.info("Exiting TradeBot0 process cleanly...")
             try:
                 app.stop()

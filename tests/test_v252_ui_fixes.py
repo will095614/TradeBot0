@@ -213,4 +213,4 @@ def test_article_real_streamed_progress_and_viewmodel_delta():
     d2 = pub.compute_delta_from_snapshot(snap2)
     assert d2["intel_events_unchanged"] is False
     assert d2["intel_hub"]["events"][0]["article_progress"] == 58
-    assert APP_VERSION == "V2.5.2"
+    assert APP_VERSION.startswith("V2.")

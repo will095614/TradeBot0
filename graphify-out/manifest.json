@@ -1,14 +1,14 @@
 {
   "build_exe.ps1": {
-    "mtime": 1795356184.4237652,
-    "seen": 1795367931.2483194,
-    "ast_hash": "b0adb0a69a6b7ff176828dc461a9f408",
+    "mtime": 1795409383.878275,
+    "seen": 1795409471.3646646,
+    "ast_hash": "bac150fd2cc80c7b7baeb7255aea6d3e",
     "semantic_hash": ""
   },
   "main.py": {
-    "mtime": 1795355233.8883798,
-    "seen": 1795367931.2483194,
-    "ast_hash": "31ce7628c41b4823499a8a1c5b3280dd",
+    "mtime": 1795409398.8163383,
+    "seen": 1795409471.3646646,
+    "ast_hash": "f471dc78d12f51faca4c8152524329a6",
     "semantic_hash": ""
   },
   "src/__init__.py": {
@@ -132,9 +132,9 @@
     "semantic_hash": ""
   },
   "src/gui/dashboard.py": {
-    "mtime": 1795369927.780213,
-    "seen": 1795370205.622305,
-    "ast_hash": "ce757e8482e4060bbeddca78f99f6ff9",
+    "mtime": 1795409389.0608275,
+    "seen": 1795409471.3646646,
+    "ast_hash": "6f9d68c5edc6747822f4d57f6cb626c4",
     "semantic_hash": ""
   },
   "src/intelligence/__init__.py": {
@@ -240,9 +240,9 @@
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1795370105.56485,
-    "seen": 1795370205.622305,
-    "ast_hash": "006d0a48e53afdffbb4086851bed34ec",
+    "mtime": 1795409421.5231526,
+    "seen": 1795409471.3646646,
+    "ast_hash": "698dac4a489c027de4fdea28e894d177",
     "semantic_hash": ""
   },
   "requirements.txt": {
@@ -432,9 +432,9 @@
     "semantic_hash": ""
   },
   "src/version.py": {
-    "mtime": 1795370101.5305488,
-    "seen": 1795370205.622305,
-    "ast_hash": "a0853845c04052d62de12c0047bb7292",
+    "mtime": 1795409418.6928978,
+    "seen": 1795409471.3646646,
+    "ast_hash": "3e942249218ddc21d777365d4c44196b",
     "semantic_hash": ""
   },
   "tests/test_311_last_records.py": {
@@ -750,9 +750,9 @@
     "semantic_hash": ""
   },
   "tests/test_update_checker.py": {
-    "mtime": 1795370106.5744028,
-    "seen": 1795370205.622305,
-    "ast_hash": "0c8d84a29c1bc50d3547649a82726ead",
+    "mtime": 1795409423.58418,
+    "seen": 1795409471.3646646,
+    "ast_hash": "781918f8bb20e3e936a8aa3479f77b7a",
     "semantic_hash": ""
   },
   "tests/test_v200_fixes.py": {
@@ -792,9 +792,9 @@
     "semantic_hash": ""
   },
   "tests/test_v250_fixes.py": {
-    "mtime": 1795370108.1571374,
-    "seen": 1795370205.622305,
-    "ast_hash": "d9d7a9a0003ab87fea5973d09f0b64a9",
+    "mtime": 1795409425.1851466,
+    "seen": 1795409471.3646646,
+    "ast_hash": "e28ea1a1f2a30442e79f99ea4bc3bf22",
     "semantic_hash": ""
   },
   "docs/intro/slide-01.jpg": {
@@ -870,9 +870,21 @@
     "semantic_hash": ""
   },
   "tests/test_v252_ui_fixes.py": {
-    "mtime": 1795370186.248554,
-    "seen": 1795370205.622305,
-    "ast_hash": "bf3ec8ac60a4e3d8c8f26248da67275b",
+    "mtime": 1795409427.4547026,
+    "seen": 1795409471.3646646,
+    "ast_hash": "31b5de2490b23cc7dd21f6c7edaa2d1d",
+    "semantic_hash": ""
+  },
+  "tests/test_v253_installer_and_splash.py": {
+    "mtime": 1795409446.9799314,
+    "seen": 1795409471.3646646,
+    "ast_hash": "7245a28ea0656583f496ae966b1ffad0",
+    "semantic_hash": ""
+  },
+  "src/gui/assets/splash_logo.png": {
+    "mtime": 1795409241.277434,
+    "seen": 1795409471.3646646,
+    "ast_hash": "d7cb4e821b0cf7b94796f135c7d373e3",
     "semantic_hash": ""
   }
 }
