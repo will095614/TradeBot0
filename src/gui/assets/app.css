@@ -1065,11 +1065,13 @@ body.arena-paused #liveBadge .lg-wave-bars i,
 }
 
 #pauseBtn {
-  width: 112px !important;
-  min-width: 112px !important;
-  max-width: 112px !important;
+  width: 122px !important;
+  min-width: 122px !important;
+  max-width: 122px !important;
   height: 30px !important;
-  padding: 0 8px !important;
+  padding: 0 10px !important;
+  gap: 6px !important;
+  overflow: hidden !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -1083,13 +1085,23 @@ body.arena-paused #liveBadge .lg-wave-bars i,
   transition: background 0.35s ease, border-color 0.35s ease, color 0.35s ease, box-shadow 0.35s ease !important;
 }
 
-#pauseBtn > span {
+#pauseBtn > .icon-morph-wrap {
+  display: inline-flex !important;
+  width: 12px !important;
+  min-width: 12px !important;
+  max-width: 12px !important;
+  height: 12px !important;
+  flex-shrink: 0 !important;
+}
+
+#pauseBtn > .action-swap-label {
   display: inline-block !important;
-  width: 92px !important;
-  min-width: 92px !important;
-  max-width: 92px !important;
-  text-align: center !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: left !important;
   white-space: nowrap !important;
+  line-height: 1 !important;
 }
 
 .interval-select,
@@ -6472,14 +6484,6 @@ body:not(.arena-ready) .lg-glass {
   display: inline-block;
   white-space: nowrap;
   transition: opacity var(--arc-dur-fast) var(--arc-ease-out);
-}
-
-#pauseBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-width: 106px;
 }
 
 .pwd-eye-morph {

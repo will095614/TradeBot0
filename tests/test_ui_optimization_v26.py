@@ -117,3 +117,12 @@ def test_new_continuous_animations_respect_hidden_and_reduced_motion():
     for selector in (".border-beam-ring", ".thinking-orb", ".lg-ambient-shader"):
         assert selector in hidden_block, f"{selector} not paused under body.window-hidden"
         assert selector in reduced_block, f"{selector} not paused under prefers-reduced-motion"
+
+
+def test_pause_btn_scopes_icon_and_label_widths_without_overflow():
+    css = (ASSETS / "app.css").read_text(encoding="utf-8")
+    assert "#pauseBtn > span" not in css
+    assert "#pauseBtn > .icon-morph-wrap" in css
+    assert "#pauseBtn > .action-swap-label" in css
+    icon_rule = css.split("#pauseBtn > .icon-morph-wrap", 1)[1].split("}", 1)[0]
+    assert "width: 12px !important" in icon_rule

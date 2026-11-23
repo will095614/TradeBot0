@@ -888,9 +888,9 @@
     "semantic_hash": ""
   },
   "tests/test_ui_optimization_v26.py": {
-    "mtime": 1795428825.3718116,
-    "seen": 1795428919.6151135,
-    "ast_hash": "4e6901233244bec61d8864b20dad46ac",
+    "mtime": 1795431057.082232,
+    "seen": 1795431086.0786316,
+    "ast_hash": "5d4a3c889c68140fcf8d4ac83452208a",
     "semantic_hash": ""
   },
   "src/gui/assets/grainient_obsidian.webp": {

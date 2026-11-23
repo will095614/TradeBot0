@@ -1,38 +1,38 @@
 # Graph Report - TradeBot0_Local  (2026-11-23)
 
 ## Corpus Check
-- 134 files · ~184,151 words
+- 134 files · ~184,190 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 11 file(s) not represented in the graph (top: (none) 4, .iss 1, .lnk 1)
 
 ## Summary
-- 2832 nodes · 7951 edges · 138 communities (98 shown, 40 thin omitted)
+- 2833 nodes · 7952 edges · 126 communities (94 shown, 32 thin omitted)
 - Extraction: 87% EXTRACTED · 13% INFERRED · 0% AMBIGUOUS · INFERRED: 1024 edges (avg confidence: 0.89)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `218d5264`
+- Built from commit: `b4a87544`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - test_phase2_omniroute_client.py
-- .get_intel_hub_telemetry
+- test_debug_optimize_regression.py
 - test_update_checker.py
 - test_v200_fixes.py
 - TimeMachineArena
 - logging
 - test_item10_packaging.py
-- CompetitorGenome
+- BrokerSim
 - Leaderboard
-- test_ui_contract.py
+- re
 - ArenaDashboard
 - live_engine.py
 - IntelligenceHarvester
 - ingestion.py
 - ViewModelPublisher
 - OmniRouteClient
-- Portfolio
+- FillEvent
 - _ArenaBridgeApi
 - MacroCommander
 - test_gateway_install_progress_cancel.py
@@ -42,41 +42,41 @@
 - test_phase3_ingestion.py
 - soak_engine.py
 - Stage
-- test_npm_install_clamps_at_99_until_exit_zero
-- test_article_prompt_snippet_210.py
+- ._run_runtime_install
+- Any
 - test_track_c_gateway_npm_strips_secrets_and_no_blind_retry
-- build_engine_view_model
-- dashboard.py
-- test_intel_stream_redesign.py
-- logging
+- test_gui_item7.py
+- test_performance_and_optimizations.py
+- RawEvent
+- .shutdown
 - ConfigManager
 - test_gateway_autolaunch_mandatory.py
 - test_live_engine.py
 - _SliceableDeque
 - threading
-- .reset_engine
+- test_debug_report_fixes.py
 - test_intel_veto.py
 - test_save_launch_progress.py
 - test_ai_panels_frontend.py
 - test_event_article.py
 - test_live_chop_gate.py
 - StreamingCryptoFeed
-- re
+- gateway_supervisor.py
 - LiveStrategyRunnerMixin
-- test_chop_gate_seed.py
+- config_manager.py
 - test_gateway_diagnosis.py
-- test_llm_concurrent_sessions.py
+- test_phase1_debug_sweep.py
 - test_llm_json_mode_fallback.py
 - soak_engine.py
-- test_phase1_debug_sweep.py
-- .get_gateway_diagnosis
+- DeduplicationBuffer
+- test_autosave_35.py
 - MultiTimeframeEngine
 - RawEvent
-- pytest
-- StructuredEvent
+- ._npm_install_omniroute
+- InterruptDebouncer
 - renderIntelHub
 - test_phase3_soak.py
-- test_performance_and_optimizations.py
+- .omniroute_installed
 - test_intel_hub_layout.py
 - renderAll
 - test_item12a_omniroute.py
@@ -84,58 +84,44 @@
 - getCommandPaletteItems
 - LiveQuote
 - controls/index.ts
-- test_debug_report_fixes.py
-- test_competitors.py
+- .total_equity
+- test_508_chop_gate.py
 - ArenaStorage
 - SessionCodecMixin
 - saveAndLaunchGateway
 - test_ui_feedback.py
-- _FakeDownloadResp
+- test_digest_refresh_session.py
 - ._live_loop
 - test_504_omni_env_cache.py
 - _mock_resp
-- _open_short
-- test_v287_render_guards.py
+- Any
+- _supervisor
 - .test_single_key
 - test_card_reorder_anim.py
-- time
-- test_322_apply_fill_failure.py
-- test_npm_install_reports_growing_determinate_progress
+- _make_dash
+- _client
+- _FakeWindow
 - ._try_enter_bracket
 - test_digest_refresh_session.py
-- test_502_ui_state_delta.py
+- test_article_real_streamed_progress_and_viewmodel_delta
 - .run_digest_sync
-- test_npm_install_progress_monotonic_if_dir_shrinks
-- _referenced_classes
+- _error_body_text
+- test_telemetry_no_articles.py
 - _symbols_from_registry
 - test_bootstrap_hydrates_fresh_sqlite_candles
 - test_phase2g_graphics.py
-- test_track_c_gateway_npm_strips_secrets_and_no_blind_retry
-- live_engine.py
+- _retry_window_seconds
+- CandleBar
 - test_321_auto_redeploy.py
 - _FakeThread
-- test_319_src_ai_gone.py
-- test_orb_day_rollover.py
-- test_frontend_progress_bar_and_cancel_confirm_ids
-- test_wizard_close_confirm_dialog
 - cursors/index.tsx
-- _open_short
-- test_v200_bug07_reset_engine_preserves_full_evolved_genomes
 - OrderSide
-- _FakeHTTPResponse
-- .compute_r_multiple_qty
-- _FakeWindow
-- CompetitorGenome
-- OmniRouteClient
+- test_gateway_item8.py
 - closeResetModal
-- test_v200_bug01_competitors_import_before_arena
-- test_v200_frontend_and_prompt_consistency
 - isReducedMotionPreferred
-- test_312_gateway_failed.py
 - .bootstrap_intraday_session
 - fix_item5_patch.py
 - Choreography
-- smoke_external.py
 
 ## God Nodes (most connected - your core abstractions)
 1. `LiveArenaEngine` - 222 edges
@@ -143,176 +129,184 @@
 3. `GatewaySupervisor` - 113 edges
 4. `BrokerSim` - 112 edges
 5. `OmniRouteClient` - 106 edges
-6. `Portfolio` - 102 edges
-7. `OrderTicket` - 102 edges
+6. `OrderTicket` - 102 edges
+7. `Portfolio` - 102 edges
 8. `MacroCommander` - 92 edges
 9. `OrderType` - 83 edges
 10. `_ArenaBridgeApi` - 77 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `Architectural Highlights` --references--> `Portfolio`  [INFERRED]
-  README.md → src/arena/portfolio.py
+- `Architectural Highlights` --references--> `CompetitorGenome`  [INFERRED]
+  README.md → src/competitors/base.py
 - `Architectural Highlights` --references--> `GeneticEvolver`  [INFERRED]
   README.md → src/arena/evolution.py
 - `Architectural Highlights` --references--> `LiveArenaEngine`  [INFERRED]
   README.md → src/data/live_engine.py
-- `Architectural Highlights` --references--> `BrokerSim`  [INFERRED]
-  README.md → src/arena/broker_sim.py
 - `test_dashboard_init_passes_configured_port_to_supervisor()` --uses--> `ArenaDashboard`  [INFERRED]
   tests/test_item10_packaging.py → src/gui/dashboard.py
+- `Architectural Highlights` --references--> `Portfolio`  [INFERRED]
+  README.md → src/arena/portfolio.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (138 total, 40 thin omitted)
+## Communities (126 total, 32 thin omitted)
 
 ### Community 0 - "test_phase2_omniroute_client.py"
-Cohesion: 0.09
-Nodes (24): compute_backoff(), extract_json(), _mock_429_session(), _mock_resp(), test_chat_json_400_response_format_rejection_is_not_quota(), _run(), test_chat_json_all_retries_429_returns_none(), _run() (+16 more)
+Cohesion: 0.11
+Nodes (14): compute_backoff(), extract_json(), test_chat_json_400_response_format_rejection_is_not_quota(), test_chat_json_all_retries_429_returns_none(), test_chat_json_per_call_timeout_override(), test_chat_json_repair_retry_gives_up_after_one_failure(), test_chat_json_retries_then_succeeds(), test_chat_json_sends_response_format_json_object() (+6 more)
 
-### Community 1 - ".get_intel_hub_telemetry"
-Cohesion: 0.16
-Nodes (4): test_quota_pct_has_no_invented_denominator(), _run_429(), test_quota_pct_uses_user_set_budget(), test_quota_throttling_slows_digest()
+### Community 1 - "test_debug_optimize_regression.py"
+Cohesion: 0.11
+Nodes (11): MonteCarloBracketOdds, MonteCarloOddsEvaluator, test_track_b_non_integer_cadence_advances_slots(), test_track_b_quote_feeds_rejects_non_positive_and_non_finite(), test_track_b_timemachine_rejects_wrong_side_tp(), test_track_d_frontend_contracts_css_html_js(), test_v24_track_b_timemachine_single_sim_and_flat_empirical_candles(), test_monte_carlo_ev_gate_odds_evaluation() (+3 more)
 
 ### Community 2 - "test_update_checker.py"
-Cohesion: 0.06
-Nodes (30): _check(), _dedup_normalize_title(), DeduplicationBuffer, _retry_window_seconds(), check_for_updates(), compare_versions(), get_manifest_url(), _is_date_version() (+22 more)
+Cohesion: 0.09
+Nodes (20): _check(), check_for_updates(), compare_versions(), get_manifest_url(), _is_date_version(), test_track_c_update_checker_rejects_non_https_and_clears_download_url_when_up_to_date(), _mock_response(), test_check_failed_on_bad_manifest() (+12 more)
 
 ### Community 3 - "test_v200_fixes.py"
-Cohesion: 0.12
-Nodes (22): AggressiveCompetitor, BaseCompetitor, ConservativeCompetitor, ORBCompetitor, SessionMeanPullbackCompetitor, TrailingGuardCompetitor, test_all_four_competitors_initialization_and_first_buy(), _ranked_three() (+14 more)
+Cohesion: 0.09
+Nodes (29): ExecutionReason, AggressiveCompetitor, BaseCompetitor, CompetitorGenome, ConservativeCompetitor, ORBCompetitor, SessionMeanPullbackCompetitor, TrailingGuardCompetitor (+21 more)
 
 ### Community 6 - "TimeMachineArena"
-Cohesion: 0.09
-Nodes (16): CompetitorStats, TimeMachineArena, _bar(), _choppy_bars(), test_efficiency_ratio_unit(), test_gate_blocks_entries_on_choppy_tape(), test_gate_inactive_on_trend_tape(), test_gate_never_blocks_closes() (+8 more)
+Cohesion: 0.14
+Nodes (10): CompetitorStats, TimeMachineArena, test_backtest_opens_shorts_on_downtrend(), test_evolution_tournament_runs_multiple_generations(), test_orb_window_excludes_current_bar(), test_timemachine_evolution_preserves_portfolio(), test_timemachine_simulation_with_synthetic_bars(), test_zero_volume_bar_does_not_invent_volume() (+2 more)
 
 ### Community 7 - "logging"
-Cohesion: 0.11
-Nodes (11): _set_windows_app_user_model_id(), configure_logging(), get_log_dir(), _SafeRotatingFileHandler, _flush_file_handlers(), _remove_test_handlers(), test_configure_logging_never_raises_on_unwritable_dir(), test_get_log_dir_resolution() (+3 more)
+Cohesion: 0.08
+Nodes (24): check_binance_rest(), check_binance_ws(), _run(), check_ccxt_kraken(), check_coinbase_rest(), check_feed_registry(), check_kraken_rest(), check_node_head() (+16 more)
 
 ### Community 8 - "test_item10_packaging.py"
 Cohesion: 0.08
 Nodes (15): _FakeNpmProc, _FakeNpmProcFail, _FakeURLDownload, _make_bridge(), _make_node_zip_bytes(), _node_supervisor(), test_admin_password_required_before_onboarding(), test_console_url_follows_gateway_port() (+7 more)
 
-### Community 9 - "CompetitorGenome"
-Cohesion: 0.10
-Nodes (19): BrokerSim, test_every_ticket_satisfies_tp_ge_sl(), test_stop_market_waits_until_trigger(), test_evaluate_signal_short_entries_mirror_long_brackets(), test_orb_competitor_box_breakout_and_r_multiple(), test_session_mean_competitor_pullback_and_r_multiple(), test_track_a_broker_stop_market_gap_fill_at_open_and_cb_purges_pending(), test_v24_track_a_broker_liquidation_precedes_tp_at_exact_liq_price() (+11 more)
+### Community 9 - "BrokerSim"
+Cohesion: 0.07
+Nodes (45): Architectural Highlights, BrokerSim, OrderTicket, OrderType, Portfolio, RiskGuard, _open_long(), test_apply_fill_value_error_does_not_kill_cadence() (+37 more)
 
 ### Community 10 - "Leaderboard"
-Cohesion: 0.10
-Nodes (18): Leaderboard, _counting_periods(), _portfolio_with_history(), test_fill_invalidates_cache(), test_metrics_cached_across_ticks_with_no_fills(), test_replace_equity_history_invalidates_cache(), test_reset_invalidates_cache(), test_risk_free_rate_change_invalidates_cache() (+10 more)
+Cohesion: 0.08
+Nodes (22): Leaderboard, _counting_periods(), _portfolio_with_history(), test_fill_invalidates_cache(), test_metrics_cached_across_ticks_with_no_fills(), test_replace_equity_history_invalidates_cache(), test_reset_invalidates_cache(), test_risk_free_rate_change_invalidates_cache() (+14 more)
 
-### Community 11 - "test_ui_contract.py"
-Cohesion: 0.15
-Nodes (15): _badge_cls_producer_values(), _bridge_class_node(), _bridge_methods(), _bridge_obj_calls(), _bridge_self_calls(), _defined_classes(), _html_ids(), _js_defined_functions() (+7 more)
+### Community 11 - "re"
+Cohesion: 0.06
+Nodes (50): _scanned_files(), test_no_src_ai_reference_remains(), _css(), _css_block(), _fn_body(), _html(), _js(), test_article_failure_shows_reason_not_summary() (+42 more)
 
 ### Community 12 - "ArenaDashboard"
-Cohesion: 0.05
-Nodes (25): check_and_ensure_environment(), main(), _apply_window_icon(), ArenaDashboard, _activate_foreground_startup(), _on_window_closing(), _on_window_shown(), _delayed_activation() (+17 more)
+Cohesion: 0.06
+Nodes (26): check_and_ensure_environment(), main(), _set_windows_app_user_model_id(), ArenaDashboard, _activate_foreground_startup(), _on_window_closing(), _on_window_shown(), _delayed_activation() (+18 more)
 
 ### Community 14 - "live_engine.py"
-Cohesion: 0.16
-Nodes (8): __getattr__(), ExecutionReason, OrderStatus, PositionSide, _keyframes_block(), _make_fill(), test_splash_overlay_is_lightened_not_removed(), test_old_save_without_reason_falls_back_to_signal()
+Cohesion: 0.07
+Nodes (18): do_slice(), make_quote(), __getattr__(), OrderStatus, PositionSide, parse_symbol_pairs(), efficiency_ratio(), _keyframes_block() (+10 more)
 
 ### Community 15 - "IntelligenceHarvester"
-Cohesion: 0.07
-Nodes (11): IntelligenceHarvester, test_fetch_live_feeds_still_returns_test_fixtures(), test_process_batch_carries_tier_thread_and_consensus(), _run(), test_dedup_hits_counted_not_token_estimate(), test_fetch_from_registry_filters_stale_articles_and_sorts_newest_first(), test_newly_fetched_news_always_summarized_in_traditional_chinese(), _run() (+3 more)
+Cohesion: 0.11
+Nodes (9): IntelligenceHarvester, test_process_batch_carries_tier_thread_and_consensus(), _run(), test_process_batch_fallback_consensus_from_score(), _run(), test_newly_fetched_news_always_summarized_in_traditional_chinese(), _run(), test_harvester_stage1_processing_and_urgent_interrupt() (+1 more)
 
 ### Community 16 - "ingestion.py"
-Cohesion: 0.10
-Nodes (7): do_slice(), make_quote(), synth_bars(), _clean_html_text(), _parse_feed_ts(), parse_stocktwits_stream(), _parse_event_epoch()
+Cohesion: 0.11
+Nodes (7): _compile_word_group(), _compiled_word_re(), _contains_word(), _first_child_text(), _parse_feed_ts(), _parse_iso_ts(), test_structured_event_new_fields_default()
 
 ### Community 17 - "ViewModelPublisher"
-Cohesion: 0.11
-Nodes (6): _build_engine_view_model_impl(), _empty_view_model(), ViewModelPublisher, test_track_d_view_model_publisher_excludes_fills_and_detects_is_live_change(), test_view_model_delta_omits_unchanged_history_and_intel_events_equivalently(), test_article_real_streamed_progress_and_viewmodel_delta()
+Cohesion: 0.15
+Nodes (5): _build_engine_view_model_impl(), _empty_view_model(), ViewModelPublisher, test_track_d_view_model_publisher_excludes_fills_and_detects_is_live_change(), test_view_model_delta_omits_unchanged_history_and_intel_events_equivalently()
 
 ### Community 18 - "OmniRouteClient"
-Cohesion: 0.09
-Nodes (3): _shutting_down(), _looks_like_format_rejection(), test_omniroute_client_shutdown_short_circuit_and_bounded_extract_json()
+Cohesion: 0.04
+Nodes (38): _looks_like_format_rejection(), OmniRouteClient, _mock_resp(), _mock_session(), test_chat_json_402_records_quota_failure(), _run(), test_chat_json_connection_refused_records_connection(), _run() (+30 more)
 
-### Community 19 - "Portfolio"
-Cohesion: 0.09
-Nodes (24): FillEvent, Portfolio, _breakeven_portfolio(), test_breakeven_close_counts_as_closed_trade(), test_breakeven_close_keeps_win_rate_decided_only(), test_breakeven_count_resets(), test_track_a_portfolio_cross_gen_leverage_partial_close_conserves_equity(), test_track_a_portfolio_failed_fill_does_not_corrupt_fees() (+16 more)
+### Community 19 - "FillEvent"
+Cohesion: 0.16
+Nodes (12): FillEvent, test_track_a_portfolio_cross_gen_leverage_partial_close_conserves_equity(), test_track_a_portfolio_failed_fill_does_not_corrupt_fees(), test_v24_track_a_portfolio_apply_fill_upfront_quantization(), _assert_equity_conservation(), _fill(), test_add_to_short_recomputes_avg_entry_and_margin(), test_equity_conservation_across_all_fill_cases() (+4 more)
+
+### Community 20 - "_ArenaBridgeApi"
+Cohesion: 0.06
+Nodes (3): _ArenaBridgeApi, test_track_c_save_and_launch_aborts_if_password_db_sync_fails(), test_track_d_dashboard_save_launch_aborts_on_key_sync_failure()
 
 ### Community 21 - "MacroCommander"
-Cohesion: 0.05
-Nodes (17): _dedup_tickers(), _event_age_min(), MacroCommander, _runner(), _on_progress(), MacroRegimeState, _safe_float(), test_synthesize_plumbs_raw_snippet() (+9 more)
+Cohesion: 0.07
+Nodes (26): StructuredEvent, _dedup_tickers(), _event_age_min(), MacroCommander, _shutting_down(), MacroRegimeState, _parse_event_epoch(), _safe_float() (+18 more)
 
 ### Community 22 - "test_gateway_install_progress_cancel.py"
-Cohesion: 0.26
-Nodes (10): _make_supervisor(), _SlowResp, test_bridge_cancel_and_status_shape(), test_cancel_during_node_download(), test_cancel_during_npm_install_removes_partial_package(), test_cancel_when_idle_returns_not_running(), test_install_runtime_status_includes_progress_fields(), test_omniroute_eta_message_formatting() (+2 more)
+Cohesion: 0.06
+Nodes (25): _fake_node_zip_bytes(), _FakeDownloadResp, _make_supervisor(), _setup_npm_only_env(), _SlowResp, test_bridge_cancel_and_status_shape(), test_cancel_during_node_download(), test_cancel_during_npm_install_removes_partial_package() (+17 more)
 
 ### Community 23 - "GatewaySupervisor"
-Cohesion: 0.03
-Nodes (20): GatewaySupervisor, _InstallCancelledError, test_track_c_gateway_sync_admin_password_fresh_and_existing_db(), test_watchdog_backoff_schedule(), test_daemon_log_rotates_over_5mb(), test_existing_daemon_check_uses_2s_probe(), test_probe_health_success_failure_timeout(), test_start_daemon_polls_health_with_2s_timeout_and_logs_to_file() (+12 more)
+Cohesion: 0.13
+Nodes (4): GatewaySupervisor, test_watchdog_backoff_schedule(), test_daemon_log_rotates_over_5mb(), test_gateway_supervisor_port_and_health_conflict()
 
 ### Community 24 - "GeneticEvolver"
 Cohesion: 0.08
-Nodes (15): GeneticEvolver, test_evolve_generation_early_return_does_not_crash(), test_last_records_class_default_present(), _records(), test_save_history_closes_storage_it_creates(), close(), __init__(), test_save_history_reuses_caller_storage_without_closing() (+7 more)
+Nodes (16): GeneticEvolver, test_evolve_generation_early_return_does_not_crash(), test_evolve_now_with_fewer_than_two_rankings_does_not_raise(), test_last_records_class_default_present(), _records(), test_save_history_closes_storage_it_creates(), close(), __init__() (+8 more)
 
 ### Community 25 - "syncAppShellInert"
 Cohesion: 0.14
 Nodes (20): blurActiveFocus(), closeInstallCancelConfirm(), closeSetupWizardModal(), closeWizardCloseConfirm(), confirmCancelInstallAndClose(), confirmCloseWizardWithoutSaving(), handleInstallCancelOverlayClick(), handleWizardCloseOverlayClick() (+12 more)
 
 ### Community 26 - "test_phase3_ingestion.py"
-Cohesion: 0.08
-Nodes (23): _first_child_text(), parse_polymarket_events(), parse_reddit_posts(), parse_rss_atom(), _rank_fresh_events(), test_feed_numeric_parsing_never_raises(), test_parse_rss_atom_extracts_real_pubdate_and_atom_updated(), test_rank_fresh_events_caps_single_source_flooding_per_batch() (+15 more)
+Cohesion: 0.13
+Nodes (18): parse_polymarket_events(), parse_reddit_posts(), test_feed_numeric_parsing_never_raises(), _fake_registry_response(), _new_harvester(), _registry_get_ok(), _rss_and_atom_payloads(), test_feed_registry_completeness_r3() (+10 more)
 
 ### Community 27 - "soak_engine.py"
-Cohesion: 0.14
-Nodes (12): ETHFeed, _bar(), _ccxt_ohlcv(), test_fetch_dataframe_both_sources_fail_raises(), test_fetch_dataframe_falls_back_to_ccxt_kraken(), test_fetch_historical_bars_yahoo_multiindex_columns(), test_fetch_historical_bars_yahoo_success(), test_generate_signal_real_path_setups_and_exits() (+4 more)
+Cohesion: 0.07
+Nodes (26): ETHFeed, isolate_arena_memory(), _git(), test_system_config_is_ignored_by_git(), test_system_config_is_untracked_but_present_on_disk(), _engine(), _feed_1m(), _tape_end_anchored() (+18 more)
 
 ### Community 28 - "Stage"
 Cohesion: 0.05
 Nodes (45): animCandles, changeEvolveInterval(), chartBeacons, closeShutdownModal(), copyOmniPassword(), currentSplashSteps, EVOLVE_INTERVAL_OPTIONS, fillRoundRect() (+37 more)
 
-### Community 29 - "test_npm_install_clamps_at_99_until_exit_zero"
-Cohesion: 0.20
-Nodes (5): test_npm_install_clamps_at_99_until_exit_zero(), _populate(), _populate(), _populate(), _wait_until()
+### Community 29 - "._run_runtime_install"
+Cohesion: 0.09
+Nodes (4): test_track_c_gateway_sync_admin_password_fresh_and_existing_db(), test_daemon_command_falls_back_to_global(), test_daemon_command_prefers_runtime_install(), test_gateway_cli_command_never_falls_back_to_npx()
 
-### Community 30 - "test_article_prompt_snippet_210.py"
-Cohesion: 0.36
-Nodes (6): build_event_article_prompts(), _event_dict(), test_prompt_includes_raw_snippet(), test_prompt_without_snippet_omits_line(), test_telemetry_strips_raw_snippet(), test_article_prompt_asks_for_1000_words_and_six_paragraphs()
+### Community 30 - "Any"
+Cohesion: 0.08
+Nodes (8): build_event_article_prompts(), _runner(), _on_progress(), _event_dict(), test_prompt_includes_raw_snippet(), test_prompt_without_snippet_omits_line(), test_telemetry_strips_raw_snippet(), test_article_prompt_asks_for_1000_words_and_six_paragraphs()
 
 ### Community 31 - "test_track_c_gateway_npm_strips_secrets_and_no_blind_retry"
-Cohesion: 0.22
-Nodes (3): _FakeProc, test_gateway_env_sets_server_host_and_strips_provider_keys_when_env_exists(), _fake_popen()
+Cohesion: 0.13
+Nodes (5): test_track_c_gateway_npm_strips_secrets_and_no_blind_retry(), _fake_popen(), _FakeProc, test_gateway_env_sets_server_host_and_strips_provider_keys_when_env_exists(), _fake_popen()
 
-### Community 32 - "build_engine_view_model"
-Cohesion: 0.33
-Nodes (4): build_engine_view_model(), test_v24_track_d_view_model_sanitizes_mc_stats_and_dev_bat_structure(), test_view_model_survives_missing_or_broken_engine(), test_v200_bug06_monotonic_live_fill_seq_past_200()
+### Community 32 - "test_gui_item7.py"
+Cohesion: 0.16
+Nodes (11): _get_native_hwnd(), build_engine_view_model(), _rankings(), test_run_loads_config_once_and_uses_window_title_constant(), test_setup_status_never_returns_password(), test_shutdown_closes_window_on_calling_thread(), test_view_model_does_not_fabricate_take_profit(), test_view_model_reports_unknown_mc_and_quota() (+3 more)
 
-### Community 33 - "dashboard.py"
-Cohesion: 0.04
-Nodes (21): _build_html_template(), _get_assets_dir(), _load_asset(), _load_binary_data_uri(), parse_omni_env_line(), _default_daemon_log_path(), _default_install_log_path(), test_app_icon_ico_multi_resolution_and_win32_load() (+13 more)
+### Community 33 - "test_performance_and_optimizations.py"
+Cohesion: 0.06
+Nodes (21): _apply_window_icon(), _build_html_template(), _destroy_window_hicons(), _get_app_icon_path(), _get_assets_dir(), _load_asset(), _load_binary_data_uri(), test_app_icon_ico_multi_resolution_and_win32_load() (+13 more)
 
-### Community 34 - "test_intel_stream_redesign.py"
-Cohesion: 0.21
-Nodes (16): _fn_body(), _html(), _js(), test_article_failure_shows_reason_not_summary(), test_article_lazy_once_and_cached(), test_article_loading_shows_determinate_stage_progress_bar(), test_article_render_is_not_rewritten_every_tick(), test_articles_preload_while_collapsed() (+8 more)
+### Community 34 - "RawEvent"
+Cohesion: 0.12
+Nodes (8): parse_rss_atom(), _rank_fresh_events(), RawEvent, test_dedup_hits_counted_not_token_estimate(), test_fetch_from_registry_filters_stale_articles_and_sorts_newest_first(), test_parse_rss_atom_extracts_real_pubdate_and_atom_updated(), test_rank_fresh_events_caps_single_source_flooding_per_batch(), test_p2_fetch_from_registry_parallel_same_events_faster()
+
+### Community 35 - ".shutdown"
+Cohesion: 0.10
+Nodes (8): test_start_daemon_polls_health_with_2s_timeout_and_logs_to_file(), fake_probe(), test_start_daemon_spawns_and_waits_with_fake_proc(), test_start_daemon_times_out_when_health_never_ok(), _free_port(), test_shutdown_does_not_kill_foreign_process(), test_shutdown_kills_own_child(), test_start_daemon_concurrent_calls_spawn_once()
 
 ### Community 36 - "ConfigManager"
-Cohesion: 0.07
-Nodes (12): ConfigManager, format_omni_env_value(), test_track_c_config_manager_refuses_to_wipe_unreadable_env(), test_v24_track_c_env_roundtrip_and_no_initial_password_in_environ(), test_gateway_auto_spawn_option_removed(), test_bridge_stepwise_simulation_erroneous_then_valid(), test_config_manager_atomic_recovery_from_corruption(), test_config_manager_env_preservation() (+4 more)
+Cohesion: 0.06
+Nodes (13): ConfigManager, format_omni_env_value(), test_track_c_config_manager_refuses_to_wipe_unreadable_env(), test_v24_track_c_env_roundtrip_and_no_initial_password_in_environ(), test_gateway_auto_spawn_option_removed(), test_bridge_stepwise_simulation_erroneous_then_valid(), test_config_manager_atomic_recovery_from_corruption(), test_config_manager_env_preservation() (+5 more)
 
 ### Community 37 - "test_gateway_autolaunch_mandatory.py"
-Cohesion: 0.11
-Nodes (9): _assets_root(), _FakeEvent, _FakeWebview, _FakeWindow, _make_bridge(), test_run_spawns_despite_stored_false(), test_save_and_launch_spawns_despite_stored_false(), test_setup_status_has_no_autolaunch_option() (+1 more)
+Cohesion: 0.12
+Nodes (8): _assets_root(), _FakeEvent, _FakeWebview, _FakeWindow, _make_bridge(), test_save_and_launch_spawns_despite_stored_false(), test_setup_status_has_no_autolaunch_option(), test_wizard_has_no_autolaunch_checkbox()
 
 ### Community 38 - "test_live_engine.py"
-Cohesion: 0.07
-Nodes (41): LiveArenaEngine, test_get_ui_state_mutation_isolation(), test_stale_engine_save_session_state_refused(), _drive(), _drive_fixed(), _fixture_bars(), _quote(), _startup_engine_long() (+33 more)
+Cohesion: 0.06
+Nodes (42): LiveArenaEngine, test_get_ui_state_mutation_isolation(), test_stale_engine_save_session_state_refused(), _drive(), _drive_fixed(), _fixture_bars(), _open_long(), _open_short() (+34 more)
 
 ### Community 40 - "threading"
 Cohesion: 0.23
 Nodes (6): _drive(), _make_engine(), _quote(), test_concurrent_publish_harvests_each_fill_once(), test_publish_state_snapshot_holds_engine_lock(), publish_many()
 
-### Community 41 - ".reset_engine"
-Cohesion: 0.15
-Nodes (6): test_v24_track_b_live_engine_custom_gateway_url_and_reset_broker_binding(), _raise_no_network(), test_cooperative_stop_event(), test_slow_bootstrap_stop_safety(), test_reset_engine_preserves_cadence(), test_start_live_loop_refuses_second_thread_while_old_alive()
+### Community 41 - "test_debug_report_fixes.py"
+Cohesion: 0.10
+Nodes (10): _fixture_bars(), _raise_no_network(), test_cooperative_stop_event(), test_full_restore_bootstrap_start_integration(), test_offline_start_does_not_execute_stale_candles(), test_session_save_and_restore_with_locked_margin(), test_slow_bootstrap_stop_safety(), test_start_live_trading_does_not_wipe_restored_positions() (+2 more)
 
 ### Community 42 - "test_intel_veto.py"
-Cohesion: 0.23
-Nodes (10): _fallback_structured(), _run(), _free_port(), _mock_commander(), test_keyword_word_boundaries_no_substring_false_positives(), test_no_fabricated_seed_events_and_honest_quota(), test_shutdown_does_not_kill_foreign_process(), test_shutdown_kills_own_child() (+2 more)
+Cohesion: 0.27
+Nodes (7): _fallback_structured(), _run(), _mock_commander(), test_keyword_word_boundaries_no_substring_false_positives(), test_no_fabricated_seed_events_and_honest_quota(), test_veto_never_blocks_close(), _wait_port_open()
 
 ### Community 43 - "test_save_launch_progress.py"
 Cohesion: 0.13
@@ -334,65 +328,61 @@ Nodes (11): _bars(), _choppy_closes(), _engine_with_15m(), test_chop_gate_blocks
 Cohesion: 0.05
 Nodes (17): QuoteManager, StreamingCryptoFeed, test_dead_cascade_state_is_gone(), test_ws_quote_path_still_works(), FakeWS, _run_feed(), SlowFakeWS, test_parse_binance_ticker_rejects_garbage() (+9 more)
 
-### Community 48 - "re"
-Cohesion: 0.22
-Nodes (10): _compile_word_group(), _compiled_word_re(), _contains_word(), _css(), _css_block(), test_article_renders_with_fade_in(), test_chevron_and_accordion_spring(), test_get_event_article_removed_from_dead_list() (+2 more)
+### Community 48 - "gateway_supervisor.py"
+Cohesion: 0.13
+Nodes (4): parse_omni_env_line(), _default_daemon_log_path(), _default_install_log_path(), test_daemon_log_default_path_is_project_logs()
 
-### Community 50 - "test_chop_gate_seed.py"
-Cohesion: 0.29
-Nodes (10): _engine(), _feed_1m(), _tape_end_anchored(), _tape_slot_aligned(), test_seed_helper_feeds_continuous_chain_and_arms_gate(), test_seed_helper_gap_truncates_to_suffix_after_gap(), test_seed_helper_malformed_row_skipped_not_fabricated(), test_seed_helper_misaligned_or_empty_seeds_nothing() (+2 more)
+### Community 50 - "config_manager.py"
+Cohesion: 0.12
+Nodes (4): test_password_eye_button_and_reveal_bridge(), _assets_root(), test_skip_bridge_deleted_but_mode_readers_kept(), test_wizard_has_no_skip_button()
 
 ### Community 51 - "test_gateway_diagnosis.py"
-Cohesion: 0.05
-Nodes (49): classify_llm_error(), _error_body_text(), _walk(), _extract_error_provider(), _client(), _css(), _FakeEvent, _FakeWebview (+41 more)
+Cohesion: 0.14
+Nodes (19): classify_llm_error(), _css(), _js(), test_classifier_402_plain_text_body_is_quota(), test_classifier_429_without_markers_is_transient(), test_classifier_auth_and_unknown(), test_classifier_deepseek_402_vs_429(), test_classifier_gemini_402_is_quota() (+11 more)
 
-### Community 52 - "test_llm_concurrent_sessions.py"
-Cohesion: 0.18
-Nodes (5): _StubGateway, test_four_threads_expand_concurrently_without_closing_each_other(), _one(), _worker(), test_gateway_supervisor_atexit_does_not_retain_instances()
+### Community 52 - "test_phase1_debug_sweep.py"
+Cohesion: 0.09
+Nodes (11): _StubGateway, test_four_threads_expand_concurrently_without_closing_each_other(), _one(), _worker(), _OKHandler, _safe_refresh(), test_deserialize_ticket_garbage_numbers_return_none(), test_ensure_active_live_positions_respects_strategy_cooldown() (+3 more)
 
 ### Community 53 - "test_llm_json_mode_fallback.py"
 Cohesion: 0.18
 Nodes (7): _client_with(), _CM, _FakeSession, _Resp, test_generic_400_does_not_trigger_the_format_retry(), test_rejected_format_is_remembered_for_later_calls(), test_rejected_response_format_retries_without_it_and_parses()
 
 ### Community 54 - "soak_engine.py"
-Cohesion: 0.16
-Nodes (11): closing_fills_since(), db_stats(), genome_valid(), main(), _sample(), _parse_args(), _PMC, rss_mb() (+3 more)
-
-### Community 55 - "test_phase1_debug_sweep.py"
 Cohesion: 0.15
-Nodes (6): _OKHandler, _safe_refresh(), test_deserialize_ticket_garbage_numbers_return_none(), test_refresh_intel_digest_is_serialized_under_concurrent_calls(), _run(), test_rejected_entry_sets_cooldown_and_rejection_audit_capped()
+Nodes (12): closing_fills_since(), db_stats(), genome_valid(), main(), _sample(), _parse_args(), _PMC, rss_mb() (+4 more)
 
-### Community 56 - ".get_gateway_diagnosis"
-Cohesion: 0.20
-Nodes (6): _mock_resp(), _mock_session(), test_chat_json_402_records_quota_failure(), _run(), test_chat_json_transient_429_then_200_clears_quota_records(), _run()
+### Community 55 - "DeduplicationBuffer"
+Cohesion: 0.17
+Nodes (6): _clean_html_text(), _dedup_normalize_title(), DeduplicationBuffer, test_v24_track_c_omniroute_extract_json_retry_hint_dedup_and_https_redirect(), test_deduplication_buffer(), test_ingestion_clean_html_strips_script_style_and_dedup_forget()
+
+### Community 56 - "test_autosave_35.py"
+Cohesion: 0.18
+Nodes (8): _bars(), _engine(), _raise_no_network(), test_autosave_does_not_fire_when_stopped_or_superseded(), test_crash_like_stop_leaves_restorable_autosave(), test_evolution_marks_autosave_pending_and_it_fires_immediately(), test_live_loop_triggers_periodic_autosave(), test_periodic_autosave_writes_snapshot_when_interval_elapses()
 
 ### Community 57 - "MultiTimeframeEngine"
-Cohesion: 0.05
-Nodes (24): IndicatorEngineMixin, MultiTimeframeEngine, MonteCarloBracketOdds, MonteCarloOddsEvaluator, test_track_b_mtf_engine_delta_volume_and_neutral_on_conflict(), test_track_b_timemachine_rejects_wrong_side_tp(), test_v24_track_b_mtf_seed_1h_merges_same_slot(), test_v24_track_b_timemachine_single_sim_and_flat_empirical_candles() (+16 more)
+Cohesion: 0.07
+Nodes (16): IndicatorEngineMixin, MultiTimeframeEngine, test_track_b_mtf_engine_delta_volume_and_neutral_on_conflict(), test_v24_track_b_mtf_seed_1h_merges_same_slot(), _buckets(), _hourly_bars(), _minute_bars(), test_engine_seed_fetch_failure_stays_neutral() (+8 more)
 
 ### Community 58 - "RawEvent"
 Cohesion: 0.10
-Nodes (17): ForumCollector, RawEvent, _registry_mock_get(), _stream_json(), test_fetch_from_registry_dispatches_by_type_and_skips_forum(), test_forum_batch_scored_without_llm_when_offline(), mock_get(), test_forum_collector_fast_test_short_circuits() (+9 more)
+Nodes (16): ForumCollector, parse_stocktwits_stream(), _registry_mock_get(), _stream_json(), test_fetch_from_registry_dispatches_by_type_and_skips_forum(), test_fetch_live_feeds_still_returns_test_fixtures(), test_forum_batch_scored_without_llm_when_offline(), mock_get() (+8 more)
 
-### Community 59 - "pytest"
-Cohesion: 0.23
-Nodes (5): isolate_arena_memory(), _git(), test_system_config_is_ignored_by_git(), test_system_config_is_untracked_but_present_on_disk(), test_genome_rejects_nonsense()
-
-### Community 60 - "StructuredEvent"
-Cohesion: 0.12
-Nodes (13): InterruptDebouncer, StructuredEvent, test_structured_event_new_fields_default(), test_fallback_thresholds_do_not_veto_on_single_word(), _run(), test_llm_numeric_parsing_never_raises(), _run(), test_macro_commander_curated_events_uses_real_publish_time_and_sorts() (+5 more)
+### Community 60 - "InterruptDebouncer"
+Cohesion: 0.27
+Nodes (3): InterruptDebouncer, test_stage2_interrupt_debouncing_r4(), _run()
 
 ### Community 61 - "renderIntelHub"
 Cohesion: 0.12
 Nodes (24): buildIntelEventCard(), cleanIntelSummary(), clearIntelSearch(), formatIntelEventTime(), hashTickerName(), initIntelFilterControls(), intelArticleBodyEl(), intelEventKey() (+16 more)
 
 ### Community 62 - "test_phase3_soak.py"
-Cohesion: 0.28
-Nodes (4): _bootstrapped_engine(), _load_soak_helpers(), soak(), test_p3_mini_soak_many_ticks_no_growth_blowup()
+Cohesion: 0.29
+Nodes (3): _load_soak_helpers(), soak(), test_p3_breaker_trips_force_closes_and_resets_on_evolve()
 
-### Community 63 - "test_performance_and_optimizations.py"
-Cohesion: 0.17
-Nodes (9): test_launchers_and_shortcut_integrity(), test_macro_veto_intent_preserved_in_live_evaluation(), test_phase4_mtf_trend_confluence_gatekeeper(), test_portfolio_no_duplicate_apply_fill_returns(), test_session_state_save_and_restore_and_shutdown_bridge(), test_splash_logo_concentric_alignment_and_svg_zap(), test_stageshow_ui_design_system_integrity(), test_window_startup_foreground_configuration() (+1 more)
+### Community 63 - ".omniroute_installed"
+Cohesion: 0.22
+Nodes (3): test_gateway_unavailable_reason_no_node(), test_gateway_unavailable_reason_node_but_no_omniroute(), test_start_runtime_install_does_not_start_twice()
 
 ### Community 64 - "test_intel_hub_layout.py"
 Cohesion: 0.25
@@ -411,24 +401,24 @@ Cohesion: 0.15
 Nodes (17): applyBackdropMode(), closeCommandPalette(), cycleBackdropMode(), getCommandPaletteItems(), handleCmdPaletteOverlayClick(), initCommandPalette(), openCommandPalette(), openOmniRouteConsole() (+9 more)
 
 ### Community 69 - "LiveQuote"
-Cohesion: 0.13
-Nodes (6): LiveQuote, QuoteFeedsMixin, test_track_b_quote_feeds_rejects_non_positive_and_non_finite(), test_phase1_websocket_feed_parsing_and_fast_path_fallback(), _quote(), test_slice_ticks_capped_while_paused_and_cleared_on_resume()
+Cohesion: 0.14
+Nodes (5): LiveQuote, QuoteFeedsMixin, test_phase1_websocket_feed_parsing_and_fast_path_fallback(), _quote(), test_slice_ticks_capped_while_paused_and_cleared_on_resume()
 
 ### Community 70 - "controls/index.ts"
 Cohesion: 0.24
 Nodes (10): _broker(), _commander(), test_backtest_default_sizing_is_one(), test_compute_r_multiple_qty_scales_budget_and_clamps(), test_evaluate_signal_sizing_shrinks_qty_not_sl(), test_no_confidence_means_no_sizing_effect(), test_per_strategy_sensitivity_scales_the_deviation(), test_sizing_formula_exact_values() (+2 more)
 
-### Community 71 - "test_debug_report_fixes.py"
-Cohesion: 0.15
-Nodes (5): _fixture_bars(), test_portfolio_reset_clears_all_metrics(), test_session_save_and_restore_with_locked_margin(), test_setup_status_has_no_gateway_auto_spawn_option(), test_trade_and_equity_history_persistence()
+### Community 71 - ".total_equity"
+Cohesion: 0.28
+Nodes (4): test_portfolio_reset_clears_all_metrics(), test_portfolio_buy_and_sell_accounting(), test_portfolio_initialization(), test_portfolio_short_accounting_and_overcovering()
 
-### Community 72 - "test_competitors.py"
-Cohesion: 0.29
-Nodes (5): _fresh_broker_competitor(), _r_multiple(), test_evaluate_signal_returns_none_when_breaker_tripped_all_strategies(), test_evaluate_signal_short_entries_mirror_long_brackets_all_strategies(), test_strategy_qty_zero_returns_none()
+### Community 72 - "test_508_chop_gate.py"
+Cohesion: 0.23
+Nodes (8): _bar(), _choppy_bars(), test_efficiency_ratio_unit(), test_gate_blocks_entries_on_choppy_tape(), test_gate_inactive_on_trend_tape(), test_gate_never_blocks_closes(), _total_closed(), _trend_bars()
 
 ### Community 73 - "ArenaStorage"
-Cohesion: 0.08
-Nodes (26): ArenaStorage, _retry_on_db_error(), wrapper(), _sanitize_json_value(), _counting_save(), _engine(), test_bar_close_persists_final_bar_once(), test_closed_bar_is_in_sqlite_after_close() (+18 more)
+Cohesion: 0.07
+Nodes (31): ArenaStorage, _retry_on_db_error(), wrapper(), _sanitize_json_value(), _engine(), _snapshot(), test_deepcopy_never_receives_heavy_arrays_on_unchanged_poll(), test_delta_is_still_a_defensive_copy() (+23 more)
 
 ### Community 75 - "saveAndLaunchGateway"
 Cohesion: 0.18
@@ -438,13 +428,13 @@ Nodes (18): applyGatewayAvailability(), clearSplashTimers(), confirmShutdown(), 
 Cohesion: 0.23
 Nodes (7): _copy_text_to_clipboard_windows(), _bridge_with_env(), test_copy_password_copies_value_but_never_returns_it(), test_copy_password_helper_failure(), test_copy_password_not_configured(), test_copy_text_to_clipboard_windows_non_windows(), test_copy_text_to_clipboard_windows_roundtrip()
 
-### Community 77 - "_FakeDownloadResp"
-Cohesion: 0.22
-Nodes (4): _fake_node_zip_bytes(), _FakeDownloadResp, test_node_download_reports_real_percent(), test_node_download_without_content_length_is_indeterminate()
+### Community 77 - "test_digest_refresh_session.py"
+Cohesion: 0.23
+Nodes (5): _FakeForum, _FakeHarvester, _make_commander(), test_concurrent_article_call_survives_refresh(), test_two_refreshes_leave_session_open()
 
 ### Community 78 - "._live_loop"
-Cohesion: 0.08
-Nodes (9): _on_done(), test_evolve_now_with_fewer_than_two_rankings_does_not_raise(), test_pause_feed_updates_ui_snapshot_immediately(), test_start_live_trading_does_not_wipe_restored_positions(), test_start_live_trading_readiness_handshake(), test_stale_engine_evolve_now_refused(), test_stale_engine_harvest_fills_refused(), test_stale_engine_state_publish_skipped() (+1 more)
+Cohesion: 0.07
+Nodes (10): _on_done(), test_pause_feed_updates_ui_snapshot_immediately(), test_stale_engine_evolve_now_refused(), test_stale_engine_harvest_fills_refused(), test_stale_engine_state_publish_skipped(), test_auto_evolve_fires_on_closed_trades(), _round_trips(), test_auto_evolve_timer_and_toggle() (+2 more)
 
 ### Community 79 - "test_504_omni_env_cache.py"
 Cohesion: 0.28
@@ -454,45 +444,41 @@ Nodes (8): _counting_read_text(), _manager(), test_content_change_is_visible_aft
 Cohesion: 0.31
 Nodes (10): _coinbase_stats_payload(), _coinbase_ticker_payload(), _kraken_payload(), _mock_resp(), test_binance_quote_success_parses_all_fields(), test_coinbase_quote_success_parses(), test_kraken_quote_success_parses(), dispatch() (+2 more)
 
-### Community 81 - "_open_short"
-Cohesion: 0.20
-Nodes (5): _open_short(), test_evaluate_live_strategies_short_exits_are_signal_only(), test_evaluate_live_strategies_small_gain_does_not_close_shorts(), test_stagnation_exit_closes_after_40m(), test_trailing_guard_short_ratchet_moves_stop_down()
-
-### Community 82 - "test_v287_render_guards.py"
-Cohesion: 0.40
-Nodes (7): _fn_body(), _js(), test_hub_header_writes_guarded(), test_intel_card_element_refs_cached(), test_macro_ribbon_writes_guarded(), test_spotlight_vars_written_once_per_frame(), test_strat_color_and_gen_label_writes_guarded()
+### Community 82 - "_supervisor"
+Cohesion: 0.18
+Nodes (10): _supervisor(), test_watchdog_backs_off_between_failures(), test_watchdog_does_not_restart_healthy_gateway(), test_watchdog_first_tick_waits_one_interval(), test_watchdog_gives_up_after_repeated_failures(), test_watchdog_never_restarts_during_install(), test_watchdog_recovers_when_gateway_comes_back(), test_watchdog_restarts_dead_gateway_it_has_seen_healthy() (+2 more)
 
 ### Community 83 - ".test_single_key"
-Cohesion: 0.16
-Nodes (6): test_v24_track_c_gemini_header_and_save_gateway_no_split_brain(), test_gateway_supervisor_http_responses(), test_gateway_supervisor_key_validation_defensive(), test_gateway_supervisor_nvidia_endpoint(), test_key_rate_limit_429_is_not_verified(), test_gateway_test_single_key_non_ascii_and_gemini_400()
+Cohesion: 0.17
+Nodes (5): test_v24_track_c_gemini_header_and_save_gateway_no_split_brain(), test_gateway_supervisor_http_responses(), test_gateway_supervisor_key_validation_defensive(), test_gateway_supervisor_nvidia_endpoint(), test_key_rate_limit_429_is_not_verified()
 
 ### Community 84 - "test_card_reorder_anim.py"
 Cohesion: 0.35
 Nodes (10): _css(), _js(), _reorder_block(), test_cards_are_stable_nodes_never_recreated_on_reorder(), test_flip_cleanup_clears_class_and_transform(), test_flip_inverts_with_translate_and_plays_via_class(), test_flip_records_first_rects_before_moving_nodes(), test_flip_runs_only_when_order_changes() (+2 more)
 
-### Community 85 - "time"
-Cohesion: 0.33
-Nodes (5): _parse_iso_ts(), _quote(), test_generate_fallback_bars_deleted(), test_is_quote_fresh(), test_provider_cooldown_respected_when_all_cooling()
+### Community 85 - "_make_dash"
+Cohesion: 0.25
+Nodes (7): _FakeWebview, _make_dash(), test_bridge_state_carries_diagnosis(), test_dashboard_diagnosis_states(), test_run_skips_watchdog_without_admin_password(), test_run_starts_watchdog_when_gateway_expected(), test_save_and_launch_starts_watchdog()
 
-### Community 86 - "test_322_apply_fill_failure.py"
-Cohesion: 0.38
-Nodes (4): _open_long(), test_apply_fill_value_error_does_not_kill_cadence(), _boom(), test_submit_order_returns_none_when_apply_fill_fails()
+### Community 86 - "_client"
+Cohesion: 0.25
+Nodes (8): _client(), test_all_providers_quota_exhausted_needs_every_provider(), test_daily_budget_exhausted(), test_no_configured_providers_is_never_exhausted(), test_stale_quota_records_expire(), test_success_clears_quota_records(), test_transient_failures_never_count_as_quota(), test_unattributed_quota_counts_only_for_single_provider()
 
 ### Community 88 - "._try_enter_bracket"
-Cohesion: 0.36
-Nodes (12): _ev(), _now_iso(), _offline_commander(), test_direction_thresholds_long_and_short(), test_events_older_than_60_min_excluded(), test_fallback_never_enters_hold_cash(), test_half_life_decay_60_min_is_half_weight(), test_llm_hold_cash_with_confidence_passes_through() (+4 more)
+Cohesion: 0.23
+Nodes (17): _dead_gateway_commander(), _mock_pipeline(), _structured(), test_sync_status_done_when_dead_gateway_still_yields_fallback_digest(), test_sync_status_failed_when_gateway_dead_and_nothing_produced(), _ev(), _now_iso(), _offline_commander() (+9 more)
 
 ### Community 89 - "test_digest_refresh_session.py"
-Cohesion: 0.07
-Nodes (11): test_track_c_omniroute_max_concurrent_1_repair_no_deadlock(), post(), _FakeCM, _FakeForum, _FakeHarvester, _FakeResp, _FakeSession, _make_commander() (+3 more)
+Cohesion: 0.09
+Nodes (6): test_track_c_omniroute_max_concurrent_1_repair_no_deadlock(), post(), _FakeCM, _FakeResp, _FakeSession, post()
 
-### Community 90 - "test_502_ui_state_delta.py"
+### Community 92 - "_error_body_text"
 Cohesion: 0.33
-Nodes (5): _engine(), _snapshot(), test_deepcopy_never_receives_heavy_arrays_on_unchanged_poll(), test_delta_is_still_a_defensive_copy(), test_delta_output_identical_to_old_path()
+Nodes (3): _error_body_text(), _walk(), _extract_error_provider()
 
-### Community 93 - "_referenced_classes"
-Cohesion: 0.33
-Nodes (3): _class_value_tokens(), _referenced_classes(), _string_literals()
+### Community 93 - "test_telemetry_no_articles.py"
+Cohesion: 0.53
+Nodes (4): _commander_with_expanded_events(), test_article_lock_map_stays_bounded(), test_on_demand_article_is_intact_after_the_snapshot(), test_snapshot_carries_no_article_bodies()
 
 ### Community 95 - "test_bootstrap_hydrates_fresh_sqlite_candles"
 Cohesion: 0.22
@@ -502,33 +488,25 @@ Nodes (3): _cache_rows(), test_bootstrap_hydrates_fresh_sqlite_candles(), test_b
 Cohesion: 0.31
 Nodes (4): _js(), test_p2g_chart_loop_capped_at_60fps(), test_p2g_hidden_view_stops_chart_loop(), test_p2g_no_temporary_probe_left_in_shipped_assets()
 
-### Community 98 - "live_engine.py"
-Cohesion: 0.09
-Nodes (13): CandleBar, _fixture_bars(), _bars(), _raise_no_network(), test_live_loop_triggers_periodic_autosave(), _fixture_bars(), _tape_bar(), _warmup_bars() (+5 more)
+### Community 98 - "CandleBar"
+Cohesion: 0.08
+Nodes (17): CandleBar, _fixture_bars(), test_bootstrap_resets_live_trading_state_when_orders_disabled(), test_backtest_slippage_uses_measured_atr(), _bars(), _fixture_bars(), test_bootstrap_spawns_mtf_seed_thread_instead_of_blocking(), _tape_bar() (+9 more)
 
 ### Community 99 - "test_321_auto_redeploy.py"
 Cohesion: 0.39
 Nodes (5): _flat_engine(), test_no_redeploy_when_any_position_open(), test_redeploy_logs_once_per_flat_episode(), test_switch_off_does_not_redeploy(), test_switch_on_default_redeploys_when_flat()
 
-### Community 104 - "test_orb_day_rollover.py"
-Cohesion: 0.36
-Nodes (5): _minute_candles(), _tape_bar(), test_backtest_orb_range_rolls_at_utc_midnight(), test_live_orb_range_is_forming_on_a_partial_new_day(), test_live_orb_range_rolls_at_utc_midnight()
-
 ### Community 108 - "cursors/index.tsx"
 Cohesion: 0.23
 Nodes (13): clearOverlapTransitionStyles(), drawPriceChart(), invalidateCanvasSizeCache(), locateMouseAndRefreshChart(), setIntelSortMode(), setLgWallpaper(), setRightTab(), setScaleMode() (+5 more)
 
-### Community 111 - "OrderSide"
-Cohesion: 0.09
-Nodes (31): OrderSide, OrderTicket, OrderType, RiskGuard, test_backtest_slippage_uses_measured_atr(), _bars(), test_broker_sim_bracket_stop_loss_trigger(), test_broker_sim_leverage_liquidation_long_crash() (+23 more)
+### Community 113 - "OrderSide"
+Cohesion: 0.06
+Nodes (15): OrderSide, _parse_pos_dec(), test_depth_impact_pool_depth_is_disclosed(), _fresh_broker_competitor(), _r_multiple(), test_evaluate_signal_returns_none_when_breaker_tripped_all_strategies(), test_evaluate_signal_short_entries_mirror_long_brackets_all_strategies(), test_strategy_qty_zero_returns_none() (+7 more)
 
-### Community 113 - ".compute_r_multiple_qty"
-Cohesion: 0.11
-Nodes (3): _parse_pos_dec(), _broker(), test_aggressive_stopout_loss_capped_at_risk_pct()
-
-### Community 121 - "OmniRouteClient"
-Cohesion: 0.08
-Nodes (20): OmniRouteClient, test_chat_json_connection_refused_records_connection(), _run(), test_success_counted_only_after_parseable_json(), _run(), _mock_200_session(), test_key_present_sends_authorization(), _run() (+12 more)
+### Community 114 - "test_gateway_item8.py"
+Cohesion: 0.10
+Nodes (7): _FakeEvent, _FakeHTTPResponse, _FakeWindow, test_existing_daemon_check_uses_2s_probe(), test_probe_health_success_failure_timeout(), test_save_and_launch_gateway_waits_30_seconds(), test_start_daemon_default_wait_is_30_seconds()
 
 ### Community 123 - "closeResetModal"
 Cohesion: 0.40
@@ -538,13 +516,9 @@ Nodes (6): closeResetModal(), confirmResetArena(), handleResetOverlayClick(), in
 Cohesion: 0.40
 Nodes (5): initAmbientBackdrop(), isReducedMotionPreferred(), morphText(), mountSilverStreamAmbient(), renderMacroRibbon()
 
-### Community 130 - "test_312_gateway_failed.py"
-Cohesion: 0.52
-Nodes (5): _dead_gateway_commander(), _mock_pipeline(), _structured(), test_sync_status_done_when_dead_gateway_still_yields_fallback_digest(), test_sync_status_failed_when_gateway_dead_and_nothing_produced()
-
 ### Community 138 - ".bootstrap_intraday_session"
-Cohesion: 0.05
-Nodes (24): test_bootstrap_resets_live_trading_state_when_orders_disabled(), test_signal_exit_fast_path_closes_under_hold_cash(), _engine(), test_autosave_does_not_fire_when_stopped_or_superseded(), test_crash_like_stop_leaves_restorable_autosave(), test_evolution_marks_autosave_pending_and_it_fires_immediately(), test_periodic_autosave_writes_snapshot_when_interval_elapses(), test_full_restore_bootstrap_start_integration() (+16 more)
+Cohesion: 0.09
+Nodes (16): test_signal_exit_fast_path_closes_under_hold_cash(), test_v24_track_d_view_model_sanitizes_mc_stats_and_dev_bat_structure(), test_close_ticket_bypasses_veto_and_gates_under_hold_cash(), test_session_state_save_and_restore_and_shutdown_bridge(), _fixture_bars(), test_candle_cadence_dispatcher_timing_and_dispatch(), test_micro_bar_aggregation_preserves_wick_extremes_r1(), test_engine_stop_closes_quote_session_pool() (+8 more)
 
 ### Community 139 - "fix_item5_patch.py"
 Cohesion: 0.18
@@ -554,27 +528,23 @@ Nodes (15): addChartBeacon(), attachToastInteractions(), checkOnboardingBoot(), 
 Cohesion: 0.29
 Nodes (6): 1. Launch Packaged Desktop Executable (`.exe`), 2. Run Self-Test Verification, 3. Run Automated Unit Test Suite (32 Tests), 4. Build Standalone Windows Executable, Quick Start Guide, TradeBot0: Multi-Agent Paper Trading & Genetic Evolution Arena (BTC/USD)
 
-### Community 161 - "smoke_external.py"
-Cohesion: 0.25
-Nodes (14): check_binance_rest(), check_binance_ws(), _run(), check_ccxt_kraken(), check_coinbase_rest(), check_feed_registry(), check_kraken_rest(), check_node_head() (+6 more)
-
 ## Knowledge Gaps
-- **40 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **32 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `LiveArenaEngine` connect `test_live_engine.py` to `test_v200_fixes.py`, `logging`, `CompetitorGenome`, `Leaderboard`, `.bootstrap_intraday_session`, `live_engine.py`, `ingestion.py`, `ViewModelPublisher`, `Portfolio`, `MacroCommander`, `GeneticEvolver`, `soak_engine.py`, `build_engine_view_model`, `dashboard.py`, `ConfigManager`, `threading`, `.reset_engine`, `test_intel_veto.py`, `test_live_chop_gate.py`, `StreamingCryptoFeed`, `LiveStrategyRunnerMixin`, `test_chop_gate_seed.py`, `soak_engine.py`, `test_phase1_debug_sweep.py`, `MultiTimeframeEngine`, `test_phase3_soak.py`, `test_performance_and_optimizations.py`, `._build_snapshot_locked`, `LiveQuote`, `controls/index.ts`, `test_debug_report_fixes.py`, `ArenaStorage`, `SessionCodecMixin`, `._live_loop`, `_mock_resp`, `_open_short`, `time`, `test_502_ui_state_delta.py`, `test_bootstrap_hydrates_fresh_sqlite_candles`, `live_engine.py`, `test_321_auto_redeploy.py`, `test_orb_day_rollover.py`, `OrderSide`, `CompetitorGenome`, `OmniRouteClient`?**
-  _High betweenness centrality (0.140) - this node is a cross-community bridge._
+- **Why does `LiveArenaEngine` connect `test_live_engine.py` to `test_debug_optimize_regression.py`, `test_v200_fixes.py`, `BrokerSim`, `Leaderboard`, `.bootstrap_intraday_session`, `ArenaDashboard`, `live_engine.py`, `ViewModelPublisher`, `OmniRouteClient`, `FillEvent`, `MacroCommander`, `GeneticEvolver`, `soak_engine.py`, `test_gui_item7.py`, `test_performance_and_optimizations.py`, `ConfigManager`, `threading`, `test_debug_report_fixes.py`, `test_intel_veto.py`, `test_live_chop_gate.py`, `StreamingCryptoFeed`, `LiveStrategyRunnerMixin`, `test_phase1_debug_sweep.py`, `soak_engine.py`, `test_autosave_35.py`, `MultiTimeframeEngine`, `test_phase3_soak.py`, `._build_snapshot_locked`, `LiveQuote`, `controls/index.ts`, `ArenaStorage`, `SessionCodecMixin`, `._live_loop`, `_mock_resp`, `test_bootstrap_hydrates_fresh_sqlite_candles`, `CandleBar`, `test_321_auto_redeploy.py`, `OrderSide`?**
+  _High betweenness centrality (0.150) - this node is a cross-community bridge._
 - **Are the 28 inferred relationships involving `LiveArenaEngine` (e.g. with `Architectural Highlights` and `BrokerSim`) actually correct?**
   _`LiveArenaEngine` has 28 INFERRED edges - model-reasoned connections that need verification._
 - **Should `test_phase2_omniroute_client.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.0907563025210084 - nodes in this community are weakly interconnected._
-- **Why does `GatewaySupervisor` connect `GatewaySupervisor` to `test_item10_packaging.py`, `test_ui_contract.py`, `ArenaDashboard`, `live_engine.py`, `Portfolio`, `test_gateway_install_progress_cancel.py`, `test_track_c_gateway_npm_strips_secrets_and_no_blind_retry`, `dashboard.py`, `ConfigManager`, `test_gateway_autolaunch_mandatory.py`, `test_intel_veto.py`, `test_save_launch_progress.py`, `test_gateway_diagnosis.py`, `test_llm_concurrent_sessions.py`, `test_phase1_debug_sweep.py`, `test_item12a_omniroute.py`, `.test_single_key`, `test_npm_install_progress_monotonic_if_dir_shrinks`, `test_track_c_gateway_npm_strips_secrets_and_no_blind_retry`?**
-  _High betweenness centrality (0.081) - this node is a cross-community bridge._
+  _Cohesion score 0.11067193675889328 - nodes in this community are weakly interconnected._
+- **Why does `GatewaySupervisor` connect `GatewaySupervisor` to `test_debug_optimize_regression.py`, `test_item10_packaging.py`, `re`, `ArenaDashboard`, `live_engine.py`, `_ArenaBridgeApi`, `test_gateway_install_progress_cancel.py`, `._run_runtime_install`, `test_track_c_gateway_npm_strips_secrets_and_no_blind_retry`, `test_gui_item7.py`, `test_performance_and_optimizations.py`, `.shutdown`, `ConfigManager`, `test_gateway_autolaunch_mandatory.py`, `test_intel_veto.py`, `test_save_launch_progress.py`, `gateway_supervisor.py`, `config_manager.py`, `test_gateway_diagnosis.py`, `test_phase1_debug_sweep.py`, `._npm_install_omniroute`, `.omniroute_installed`, `test_item12a_omniroute.py`, `Any`, `_supervisor`, `.test_single_key`, `_make_dash`, `test_gateway_item8.py`?**
+  _High betweenness centrality (0.075) - this node is a cross-community bridge._
 - **Are the 104 inferred relationships involving `OrderSide` (e.g. with `main()` and `BrokerSim`) actually correct?**
   _`OrderSide` has 104 INFERRED edges - model-reasoned connections that need verification._
-- **Should `test_update_checker.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.056107539450613676 - nodes in this community are weakly interconnected._
-- **Why does `OmniRouteClient` connect `OmniRouteClient` to `test_phase2_omniroute_client.py`, `.get_intel_hub_telemetry`, `test_v200_fixes.py`, `test_item10_packaging.py`, `live_engine.py`, `IntelligenceHarvester`, `ingestion.py`, `ViewModelPublisher`, `OmniRouteClient`, `Portfolio`, `MacroCommander`, `dashboard.py`, `test_live_engine.py`, `test_intel_veto.py`, `test_gateway_diagnosis.py`, `test_llm_concurrent_sessions.py`, `test_llm_json_mode_fallback.py`, `.get_gateway_diagnosis`, `RawEvent`, `StructuredEvent`, `test_performance_and_optimizations.py`, `test_item12a_omniroute.py`, `test_digest_refresh_session.py`, `.run_digest_sync`, `live_engine.py`?**
-  _High betweenness centrality (0.074) - this node is a cross-community bridge._
+- **Should `test_debug_optimize_regression.py` be split into smaller, more focused modules?**
+  _Cohesion score 0.10846560846560846 - nodes in this community are weakly interconnected._
+- **Why does `MacroCommander` connect `MacroCommander` to `test_v200_fixes.py`, `live_engine.py`, `IntelligenceHarvester`, `OmniRouteClient`, `Any`, `test_performance_and_optimizations.py`, `RawEvent`, `test_live_engine.py`, `test_intel_veto.py`, `test_event_article.py`, `config_manager.py`, `RawEvent`, `test_intel_hub_layout.py`, `test_item12a_omniroute.py`, `controls/index.ts`, `test_digest_refresh_session.py`, `._try_enter_bracket`, `test_article_real_streamed_progress_and_viewmodel_delta`, `.run_digest_sync`, `test_telemetry_no_articles.py`?**
+  _High betweenness centrality (0.066) - this node is a cross-community bridge._
