@@ -6339,42 +6339,83 @@ body:not(.arena-ready) .lg-glass {
   opacity: 1;
 }
 
-/* Overlap Page Transition (details.so page-transition-03 ported to vanilla) */
+/* Overlap Page Transition Stage & 60fps GPU Layer Choreography (details.so page-transition-03) */
+.view-stage-host {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--r-lg);
+}
+
+.view-stage-host > .workspace-grid,
+.view-stage-host > #intelHubMainView {
+  grid-area: 1 / 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.view-stage-host.is-view-transitioning .lg-glass {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.view-stage-host.is-view-transitioning .border-beam-ring,
+.view-stage-host.is-view-transitioning .thinking-orb {
+  animation-play-state: paused !important;
+}
+
+.view-transition-prepare {
+  position: relative;
+  z-index: 3;
+  background: linear-gradient(180deg, #070b14 0%, #03050a 100%);
+  border-radius: var(--r-lg);
+  box-shadow: 0 -24px 56px rgba(0, 0, 0, 0.92), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transform: translate3d(0, 38%, 0);
+  opacity: 0.96;
+  will-change: transform, opacity;
+  transition: none !important;
+}
+
 .view-transition-entering {
-  z-index: 2;
-  animation: viewOverlapEnter 0.36s var(--arc-ease-out) forwards !important;
-  will-change: transform, opacity, clip-path;
+  position: relative;
+  z-index: 3;
+  background: linear-gradient(180deg, #070b14 0%, #03050a 100%);
+  border-radius: var(--r-lg);
+  box-shadow: 0 -24px 56px rgba(0, 0, 0, 0.92), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transform: translate3d(0, 0, 0);
+  opacity: 1;
+  will-change: transform, opacity;
+  transition: transform 0.54s cubic-bezier(0.4, 0.3, 0, 1), opacity 0.42s cubic-bezier(0.4, 0.3, 0, 1) !important;
+}
+
+.view-transition-leaving-base {
+  position: relative;
+  z-index: 1;
+  pointer-events: none !important;
+  transform-origin: center top;
+  transform: translate3d(0, 0, 0) scale(1);
+  opacity: 1;
+  will-change: transform, opacity;
+  transition: none !important;
 }
 
 .view-transition-leaving {
+  position: relative;
   z-index: 1;
   pointer-events: none !important;
-  animation: viewOverlapLeave 0.34s var(--arc-ease-out) forwards !important;
+  transform-origin: center top;
+  transform: translate3d(0, -64px, 0) scale(0.96);
+  opacity: 0.15;
   will-change: transform, opacity;
-}
-
-@keyframes viewOverlapEnter {
-  0% {
-    opacity: 0.25;
-    transform: translateY(18px);
-    clip-path: inset(12% 0% 0% 0%);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0);
-    clip-path: inset(0% 0% 0% 0%);
-  }
-}
-
-@keyframes viewOverlapLeave {
-  0% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-22px) scale(0.975);
-  }
+  transition: transform 0.54s cubic-bezier(0.4, 0.3, 0, 1), opacity 0.48s cubic-bezier(0.4, 0.3, 0, 1) !important;
 }
 
 /* Liquid Droplet Toggle Stretch (bencho.dev liq-toggle) */

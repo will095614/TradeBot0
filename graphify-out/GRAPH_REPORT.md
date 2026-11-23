@@ -1,17 +1,17 @@
 # Graph Report - TradeBot0_Local  (2026-11-23)
 
 ## Corpus Check
-- 132 files · ~181,874 words
+- 132 files · ~181,989 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 10 file(s) not represented in the graph (top: (none) 4, .iss 1, .lnk 1)
 
 ## Summary
-- 2801 nodes · 7852 edges · 140 communities (99 shown, 41 thin omitted)
+- 2801 nodes · 7855 edges · 139 communities (98 shown, 41 thin omitted)
 - Extraction: 87% EXTRACTED · 13% INFERRED · 0% AMBIGUOUS · INFERRED: 1022 edges (avg confidence: 0.89)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `0b64d193`
+- Built from commit: `a38b7079`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -113,7 +113,6 @@
 - test_orb_anchor_34.py
 - test_321_auto_redeploy.py
 - test_507_candle_write_on_close.py
-- renderPriceCanvas
 - test_orb_day_rollover.py
 - MultiTimeframeEngine
 - cursors/index.tsx
@@ -158,13 +157,13 @@
   README.md → src/data/live_engine.py
 - `test_dashboard_init_passes_configured_port_to_supervisor()` --uses--> `ArenaDashboard`  [INFERRED]
   tests/test_item10_packaging.py → src/gui/dashboard.py
-- `test_omniroute_eta_message_formatting()` --uses--> `GatewaySupervisor`  [INFERRED]
-  tests/test_gateway_install_progress_cancel.py → src/intelligence/gateway_supervisor.py
+- `test_generate_fallback_bars_deleted()` --uses--> `LiveArenaEngine`  [INFERRED]
+  tests/test_offline_removal.py → src/data/live_engine.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (140 total, 41 thin omitted)
+## Communities (139 total, 41 thin omitted)
 
 ### Community 0 - "test_phase2_omniroute_client.py"
 Cohesion: 0.10
@@ -255,8 +254,8 @@ Cohesion: 0.07
 Nodes (27): ETHFeed, _engine(), _feed_1m(), _tape_end_anchored(), _tape_slot_aligned(), test_seed_helper_feeds_continuous_chain_and_arms_gate(), test_seed_helper_gap_truncates_to_suffix_after_gap(), test_seed_helper_malformed_row_skipped_not_fabricated() (+19 more)
 
 ### Community 28 - "Stage"
-Cohesion: 0.06
-Nodes (36): animCandles, changeEvolveInterval(), chartBeacons, closeShutdownModal(), copyOmniPassword(), currentSplashSteps, EVOLVE_INTERVAL_OPTIONS, flashOmniPwdBadge() (+28 more)
+Cohesion: 0.05
+Nodes (45): animCandles, changeEvolveInterval(), chartBeacons, closeShutdownModal(), copyOmniPassword(), currentSplashSteps, EVOLVE_INTERVAL_OPTIONS, fillRoundRect() (+37 more)
 
 ### Community 29 - "re"
 Cohesion: 0.22
@@ -494,10 +493,6 @@ Nodes (5): _flat_engine(), test_no_redeploy_when_any_position_open(), test_redep
 Cohesion: 0.42
 Nodes (7): _counting_save(), _engine(), test_bar_close_persists_final_bar_once(), test_closed_bar_is_in_sqlite_after_close(), test_out_of_order_tick_does_not_double_save(), test_three_minutes_persist_two_closed_bars(), test_ticks_within_one_minute_write_nothing()
 
-### Community 101 - "renderPriceCanvas"
-Cohesion: 0.22
-Nodes (9): fillRoundRect(), isSplashGateOpen(), renderPriceCanvas(), setSplashTarget(), setupHiDPICanvas(), startChartAnimLoop(), stepChartAnimLoop(), strokeRoundRect() (+1 more)
-
 ### Community 104 - "test_orb_day_rollover.py"
 Cohesion: 0.36
 Nodes (5): _minute_candles(), _tape_bar(), test_backtest_orb_range_rolls_at_utc_midnight(), test_live_orb_range_is_forming_on_a_partial_new_day(), test_live_orb_range_rolls_at_utc_midnight()
@@ -507,7 +502,7 @@ Cohesion: 0.08
 Nodes (16): IndicatorEngineMixin, MultiTimeframeEngine, test_track_b_mtf_engine_delta_volume_and_neutral_on_conflict(), test_v24_track_b_mtf_seed_1h_merges_same_slot(), _buckets(), _hourly_bars(), _minute_bars(), test_engine_seed_fetch_failure_stays_neutral() (+8 more)
 
 ### Community 108 - "cursors/index.tsx"
-Cohesion: 0.21
+Cohesion: 0.23
 Nodes (13): clearOverlapTransitionStyles(), drawPriceChart(), invalidateCanvasSizeCache(), locateMouseAndRefreshChart(), setIntelSortMode(), setLgWallpaper(), setRightTab(), setScaleMode() (+5 more)
 
 ### Community 110 - "_open_short"
@@ -569,16 +564,16 @@ Nodes (14): check_binance_rest(), check_binance_ws(), _run(), check_ccxt_kraken(
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `LiveArenaEngine` connect `LiveArenaEngine` to `test_intel_veto.py`, `test_performance_and_optimizations.py`, `CandleBar`, `CompetitorGenome`, `Leaderboard`, `test_snapshot_counters_37.py`, `ArenaDashboard`, `live_engine.py`, `ViewModelPublisher`, `OmniRouteClient`, `Portfolio`, `MacroCommander`, `soak_engine.py`, `test_v250_fixes.py`, `dashboard.py`, `.stop`, `StreamingCryptoFeed`, `ConfigManager`, `test_live_engine.py`, `test_cooperative_stop_event`, `test_live_chop_gate.py`, `LiveStrategyRunnerMixin`, `test_phase1_debug_sweep.py`, `soak_engine.py`, `ArenaStorage`, `MonteCarloOddsEvaluator`, `QuoteManager`, `._build_snapshot_locked`, `LiveQuote`, `controls/index.ts`, `test_generation_fence.py`, `test_phase2_optimize.py`, `SessionCodecMixin`, `test_autosave_35.py`, `.bootstrap_intraday_session`, `time`, `.load_session_snapshot`, `test_502_ui_state_delta.py`, `test_bootstrap_hydrates_fresh_sqlite_candles`, `.is_fresh`, `test_orb_anchor_34.py`, `test_321_auto_redeploy.py`, `test_507_candle_write_on_close.py`, `test_orb_day_rollover.py`, `MultiTimeframeEngine`, `_open_short`, `test_debug_report_fixes.py`, `OrderSide`?**
-  _High betweenness centrality (0.173) - this node is a cross-community bridge._
+  _High betweenness centrality (0.162) - this node is a cross-community bridge._
 - **Are the 28 inferred relationships involving `LiveArenaEngine` (e.g. with `Architectural Highlights` and `BrokerSim`) actually correct?**
   _`LiveArenaEngine` has 28 INFERRED edges - model-reasoned connections that need verification._
 - **Should `test_phase2_omniroute_client.py` be split into smaller, more focused modules?**
   _Cohesion score 0.1 - nodes in this community are weakly interconnected._
 - **Why does `GatewaySupervisor` connect `GatewaySupervisor` to `test_intel_veto.py`, `test_item10_packaging.py`, `test_ui_contract.py`, `ArenaDashboard`, `.start_daemon`, `_make_supervisor`, `._get_daemon_command`, `test_track_c_gateway_npm_strips_secrets_and_no_blind_retry`, `test_v250_fixes.py`, `dashboard.py`, `.stop`, `ConfigManager`, `test_gateway_autolaunch_mandatory.py`, `.omniroute_installed`, `.shutdown`, `test_save_launch_progress.py`, `._run_runtime_install`, `test_gateway_diagnosis.py`, `test_phase1_debug_sweep.py`, `MonteCarloOddsEvaluator`, `test_item12a_omniroute.py`, `.sync_admin_password`, `_FakeHTTPResponse`?**
-  _High betweenness centrality (0.084) - this node is a cross-community bridge._
+  _High betweenness centrality (0.119) - this node is a cross-community bridge._
 - **Are the 104 inferred relationships involving `OrderSide` (e.g. with `main()` and `BrokerSim`) actually correct?**
   _`OrderSide` has 104 INFERRED edges - model-reasoned connections that need verification._
 - **Should `test_update_checker.py` be split into smaller, more focused modules?**
   _Cohesion score 0.07676767676767676 - nodes in this community are weakly interconnected._
 - **Why does `OmniRouteClient` connect `OmniRouteClient` to `test_phase2_omniroute_client.py`, `test_intel_veto.py`, `test_performance_and_optimizations.py`, `test_item10_packaging.py`, `live_engine.py`, `IntelligenceHarvester`, `MacroCommander`, `test_v250_fixes.py`, `dashboard.py`, `test_gateway_diagnosis.py`, `test_phase1_debug_sweep.py`, `test_llm_json_mode_fallback.py`, `MonteCarloOddsEvaluator`, `RawEvent`, `InterruptDebouncer`, `LiveArenaEngine`, `test_item12a_omniroute.py`, `.fetch_from_registry`, `test_digest_refresh_session.py`, `.run_digest_sync`, `test_article_real_streamed_progress_and_viewmodel_delta`, `test_track_c_omniroute_max_concurrent_1_repair_no_deadlock`, `._all_sessions`, `test_telemetry_no_articles.py`?**
-  _High betweenness centrality (0.067) - this node is a cross-community bridge._
+  _High betweenness centrality (0.079) - this node is a cross-community bridge._

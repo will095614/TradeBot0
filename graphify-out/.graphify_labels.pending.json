@@ -95,7 +95,6 @@
   "98": "test_orb_anchor_34.py",
   "99": "test_321_auto_redeploy.py",
   "100": "test_507_candle_write_on_close.py",
-  "101": "renderPriceCanvas",
   "102": "Decimal",
   "103": "Path",
   "104": "test_orb_day_rollover.py",

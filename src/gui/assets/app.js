@@ -2833,7 +2833,7 @@ function drawPriceChart(state) {
   // values to their targets so switching back to the arena shows the
   // current chart immediately (no catch-up glide).
   const intelEl = document.getElementById('intelHubMainView');
-  if (intelEl && intelEl.style.display !== 'none') {
+  if (intelEl && intelEl.style.display !== 'none' && !intelEl.classList.contains('view-transition-leaving')) {
     animSpot = targetSpot;
     animMinP = targetMinP;
     animMaxP = targetMaxP;
@@ -4079,15 +4079,18 @@ function updateUiClockDisplay() {
   let currentMainView = 'arena';
   let viewSwitchToken = 0;
   let viewSwitchTimer = null;
+  let viewSwitchRaf = 0;
+  let isViewTransitioning = false;
 
   function clearOverlapTransitionStyles(el) {
     if (!el) return;
-    el.classList.remove('view-transition-entering', 'view-transition-leaving', 'view-entering');
-    el.style.position = '';
-    el.style.top = '';
-    el.style.left = '';
-    el.style.width = '';
-    el.style.height = '';
+    el.classList.remove(
+      'view-transition-prepare',
+      'view-transition-entering',
+      'view-transition-leaving-base',
+      'view-transition-leaving',
+      'view-entering'
+    );
   }
 
   function switchMainView(viewName) {
@@ -4095,6 +4098,7 @@ function updateUiClockDisplay() {
     currentMainView = viewName;
     syncSegThumb('mainViewSeg', viewName === 'intel' ? 1 : 0);
 
+    const stageHost = document.getElementById('viewStageHost');
     const arenaEl = document.querySelector('.workspace-grid');
     const intelEl = document.getElementById('intelHubMainView');
     const incoming = viewName === 'intel' ? intelEl : arenaEl;
@@ -4104,47 +4108,84 @@ function updateUiClockDisplay() {
       clearTimeout(viewSwitchTimer);
       viewSwitchTimer = null;
     }
+    if (viewSwitchRaf) {
+      cancelAnimationFrame(viewSwitchRaf);
+      viewSwitchRaf = 0;
+    }
     clearOverlapTransitionStyles(arenaEl);
     clearOverlapTransitionStyles(intelEl);
 
     const token = ++viewSwitchToken;
     const reduce = isReducedMotionPreferred() || document.hidden;
 
-    if (reduce || !outgoing || !incoming || outgoing.style.display === 'none') {
+    if (reduce || !outgoing || !incoming || !stageHost || outgoing.style.display === 'none') {
+      isViewTransitioning = false;
+      if (stageHost) stageHost.classList.remove('is-view-transitioning');
       if (outgoing) outgoing.style.display = 'none';
       if (incoming) incoming.style.display = 'grid';
-    } else {
-      const rect = outgoing.getBoundingClientRect();
-      outgoing.style.position = 'fixed';
-      outgoing.style.top = rect.top + 'px';
-      outgoing.style.left = rect.left + 'px';
-      outgoing.style.width = rect.width + 'px';
-      outgoing.style.height = rect.height + 'px';
-      outgoing.style.display = 'grid';
-      outgoing.classList.add('view-transition-leaving');
-
-      incoming.style.display = 'grid';
-      void incoming.offsetWidth;
-      incoming.classList.add('view-transition-entering');
-
-      viewSwitchTimer = setTimeout(() => {
-        if (viewSwitchToken !== token) return;
-        viewSwitchTimer = null;
-        clearOverlapTransitionStyles(outgoing);
-        clearOverlapTransitionStyles(incoming);
-        outgoing.style.display = 'none';
-      }, 370);
+      if (viewName === 'intel') {
+        if (latestState) renderIntelHub(latestState);
+        pumpIntelArticlePreload();
+      } else {
+        if (latestState) renderAll(latestState);
+        triggerSmoothResize();
+      }
+      if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
+      if (typeof syncAmbientShaderMotion === 'function') syncAmbientShaderMotion();
+      return;
     }
+
+    isViewTransitioning = true;
+    stageHost.classList.add('is-view-transitioning');
+    if (typeof syncAmbientShaderMotion === 'function') syncAmbientShaderMotion();
+
+    // Prepare outgoing/incoming layers on the same grid track & pre-render before frame 1
+    outgoing.style.display = 'grid';
+    outgoing.classList.add('view-transition-leaving-base');
+    incoming.style.display = 'grid';
+    incoming.classList.add('view-transition-prepare');
 
     if (viewName === 'intel') {
       if (latestState) renderIntelHub(latestState);
-      pumpIntelArticlePreload();
-      if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
     } else {
-      if (latestState) renderAll(latestState);
-      triggerSmoothResize();
-      if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
+      if (latestState) {
+        renderAll(latestState);
+        invalidateCanvasSizeCache();
+        drawPriceChart(latestState);
+      }
     }
+
+    // Force single layout flush before GPU transition kicks off on next compositor frame
+    void incoming.offsetHeight;
+
+    viewSwitchRaf = requestAnimationFrame(() => {
+      if (viewSwitchToken !== token) return;
+      viewSwitchRaf = requestAnimationFrame(() => {
+        viewSwitchRaf = 0;
+        if (viewSwitchToken !== token) return;
+        outgoing.classList.remove('view-transition-leaving-base');
+        outgoing.classList.add('view-transition-leaving');
+        incoming.classList.remove('view-transition-prepare');
+        incoming.classList.add('view-transition-entering');
+      });
+    });
+
+    viewSwitchTimer = setTimeout(() => {
+      if (viewSwitchToken !== token) return;
+      viewSwitchTimer = null;
+      outgoing.style.display = 'none';
+      clearOverlapTransitionStyles(outgoing);
+      clearOverlapTransitionStyles(incoming);
+      stageHost.classList.remove('is-view-transitioning');
+      isViewTransitioning = false;
+      if (typeof syncAmbientShaderMotion === 'function') syncAmbientShaderMotion();
+      if (viewName === 'intel') {
+        pumpIntelArticlePreload();
+      } else {
+        triggerSmoothResize();
+      }
+      if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
+    }, 560);
   }
 
   async function requestAiIntelDigest() {
@@ -6835,6 +6876,7 @@ void main() {
 
     const shouldRun = () => (
       !destroyed &&
+      !isViewTransitioning &&
       backdropMode === 'shader' &&
       !document.hidden &&
       !(document.body && (document.body.classList.contains('window-hidden') || document.body.classList.contains('arena-paused'))) &&
