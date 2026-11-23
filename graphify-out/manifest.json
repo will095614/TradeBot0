@@ -126,9 +126,9 @@
     "semantic_hash": ""
   },
   "src/gui/assets/app.js": {
-    "mtime": 1795429946.9933765,
-    "seen": 1795430119.2950475,
-    "ast_hash": "a2a930ae8af1d47610a7ca930d40184f",
+    "mtime": 1795431476.347646,
+    "seen": 1795431598.954718,
+    "ast_hash": "aa265cf4dc1cb3d3dd3a38946b3d92b4",
     "semantic_hash": ""
   },
   "src/gui/dashboard.py": {
@@ -888,9 +888,9 @@
     "semantic_hash": ""
   },
   "tests/test_ui_optimization_v26.py": {
-    "mtime": 1795431057.082232,
-    "seen": 1795431086.0786316,
-    "ast_hash": "5d4a3c889c68140fcf8d4ac83452208a",
+    "mtime": 1795431479.7303486,
+    "seen": 1795431598.954718,
+    "ast_hash": "620124777aaa0e1145f22b43a965a749",
     "semantic_hash": ""
   },
   "src/gui/assets/grainient_obsidian.webp": {

@@ -9,6 +9,8 @@
 let splashProgress = 0;
 let targetSplashProgress = 15;
 let splashCompleted = false;
+let isSplashTransitioning = false;
+let pendingSplashRenderState = null;
 let hasFirstChartDrawn = false;
 let hasFirstTableRendered = false;
 let splashLoop = null;
@@ -172,6 +174,15 @@ function startSplashSequence(isReset = false) {
       appShell.style.opacity = '0';
     }
 
+    if (document.body) {
+      document.body.classList.remove('is-splash-transitioning');
+    }
+    isSplashTransitioning = false;
+    pendingSplashRenderState = null;
+    if (typeof syncAmbientShaderMotion === 'function') {
+      syncAmbientShaderMotion();
+    }
+
     splashProgress = 0;
     targetSplashProgress = 15;
     splashCompleted = false;
@@ -239,6 +250,69 @@ function startSplashSequence(isReset = false) {
       scheduleSplashTimer(() => setSplashTarget(100), 2350);
     }
 
+    const revealArenaFromSplash = () => {
+      isSplashTransitioning = true;
+      pendingSplashRenderState = null;
+      if (document.body) {
+        document.body.classList.add('is-splash-transitioning');
+      }
+      if (typeof syncAmbientShaderMotion === 'function') {
+        syncAmbientShaderMotion();
+      }
+      const startReveal = () => {
+        if (document.body) {
+          document.body.classList.add('arena-ready');
+        }
+        const appShell = document.querySelector('.app-shell');
+        if (appShell) {
+          appShell.style.opacity = '';
+          appShell.classList.add('arena-entering');
+        }
+        const overlayEl = document.getElementById('splashOverlay');
+        if (overlayEl) {
+          overlayEl.style.opacity = '';
+          overlayEl.style.visibility = '';
+          overlayEl.classList.add('fade-out');
+        }
+        scheduleSplashTimer(() => {
+          if (overlayEl) {
+            overlayEl.style.display = 'none';
+            overlayEl.classList.remove('fade-out');
+          }
+          if (appShell) {
+            appShell.classList.remove('arena-entering');
+          }
+          if (document.body) {
+            document.body.classList.remove('is-splash-transitioning');
+          }
+          isSplashTransitioning = false;
+          const finishPostReveal = () => {
+            if (typeof syncAmbientShaderMotion === 'function') {
+              syncAmbientShaderMotion();
+            }
+            if (pendingSplashRenderState) {
+              const deferred = pendingSplashRenderState;
+              pendingSplashRenderState = null;
+              renderAll(deferred);
+            }
+            locateMouseAndRefreshChart();
+            hasInitializedPositions = true;
+            ensureLiveTradingStarted();
+          };
+          if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(finishPostReveal);
+          } else {
+            finishPostReveal();
+          }
+        }, 600);
+      };
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(startReveal);
+      } else {
+        startReveal();
+      }
+    };
+
     // Smooth animation loop for progress bar
     splashLoop = setInterval(() => {
       if (splashCompleted) {
@@ -289,40 +363,7 @@ function startSplashSequence(isReset = false) {
         }
 
         scheduleSplashTimer(() => {
-          // Reveal the workspace smoothly once everything is 100% ready
-          if (document.body) {
-            document.body.classList.add('arena-ready');
-          }
-
-          const appShell = document.querySelector('.app-shell');
-          if (appShell) {
-            appShell.style.opacity = '';
-            appShell.classList.add('arena-entering');
-          }
-
-          const overlayEl = document.getElementById('splashOverlay');
-          if (overlayEl) {
-            overlayEl.style.opacity = '';
-            overlayEl.style.visibility = '';
-            overlayEl.classList.add('fade-out');
-          }
-
-          // Automatic mouse location and immediate chart refresh upon entering arena
-          locateMouseAndRefreshChart();
-
-          // Second refresh and final live order activation after overlay transition
-          scheduleSplashTimer(() => {
-            if (overlayEl) {
-              overlayEl.style.display = 'none';
-              overlayEl.classList.remove('fade-out');
-            }
-            if (appShell) {
-              appShell.classList.remove('arena-entering');
-            }
-            locateMouseAndRefreshChart();
-            hasInitializedPositions = true;
-            ensureLiveTradingStarted();
-          }, 1650);
+          revealArenaFromSplash();
         }, 250);
       }
     }, 25);
@@ -344,32 +385,21 @@ function startSplashSequence(isReset = false) {
         clearInterval(splashLoop);
         splashLoop = null;
       }
-      if (document.body) {
-        document.body.classList.add('arena-ready');
-      }
-      const appShell = document.querySelector('.app-shell');
-      if (appShell) {
-        appShell.style.opacity = '1';
-        appShell.classList.add('arena-entering');
-      }
-      const overlayEl = document.getElementById('splashOverlay');
-      if (overlayEl) {
-        overlayEl.classList.add('fade-out');
-        scheduleSplashTimer(() => {
-          overlayEl.style.display = 'none';
-          overlayEl.classList.remove('fade-out');
-          if (appShell) appShell.classList.remove('arena-entering');
-        }, 1200);
-      }
-      locateMouseAndRefreshChart();
-      hasInitializedPositions = true;
-      ensureLiveTradingStarted();
+      revealArenaFromSplash();
     };
     splashSafetyTimer = setTimeout(runSplashSafetyFallback, 3500);
   } catch (err) {
     console.error('CRITICAL: startSplashSequence failed, recovering arena display:', err);
     splashCompleted = true;
-    if (document.body) document.body.classList.add('arena-ready');
+    isSplashTransitioning = false;
+    pendingSplashRenderState = null;
+    if (document.body) {
+      document.body.classList.remove('is-splash-transitioning');
+      document.body.classList.add('arena-ready');
+    }
+    if (typeof syncAmbientShaderMotion === 'function') {
+      syncAmbientShaderMotion();
+    }
     const appShell = document.querySelector('.app-shell');
     if (appShell) {
       appShell.style.opacity = '1';
@@ -1063,7 +1093,7 @@ async function pollBackend() {
           }
         }
 
-        if (state.is_bootstrapped && splashCompleted && !state.live_orders_enabled) {
+        if (state.is_bootstrapped && splashCompleted && !isSplashTransitioning && !state.live_orders_enabled) {
           ensureLiveTradingStarted();
         }
 
@@ -1151,7 +1181,11 @@ async function pollBackend() {
           }
         }
 
-        renderAll(state);
+        if (isSplashTransitioning) {
+          pendingSplashRenderState = state;
+        } else {
+          renderAll(state);
+        }
       } else if (useDelta) {
         // Discarded delta advanced backend watermarks; request a full payload next tick.
         forceNextFullDelta = true;
@@ -6878,6 +6912,7 @@ void main() {
     const shouldRun = () => (
       !destroyed &&
       !isViewTransitioning &&
+      !isSplashTransitioning &&
       backdropMode === 'shader' &&
       !document.hidden &&
       !(document.body && (document.body.classList.contains('window-hidden') || document.body.classList.contains('arena-paused'))) &&

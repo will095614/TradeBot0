@@ -126,3 +126,24 @@ def test_pause_btn_scopes_icon_and_label_widths_without_overflow():
     assert "#pauseBtn > .action-swap-label" in css
     icon_rule = css.split("#pauseBtn > .icon-morph-wrap", 1)[1].split("}", 1)[0]
     assert "width: 12px !important" in icon_rule
+
+
+def test_splash_to_arena_transition_is_gpu_only_and_pauses_heavy_effects():
+    css = (ASSETS / "app.css").read_text(encoding="utf-8")
+    js = (ASSETS / "app.js").read_text(encoding="utf-8")
+
+    fade_out_block = css.split(".splash-overlay.fade-out {", 1)[1].split("}", 1)[0]
+    assert "filter: blur" not in fade_out_block
+    assert "backdrop-filter: none !important" in fade_out_block
+
+    entering_block = css.split(".arena-entering {", 1)[1].split("}", 1)[0]
+    assert "transition: none !important" in entering_block
+    assert "will-change: transform, opacity" in entering_block
+
+    assert "body.is-splash-transitioning .lg-glass" in css
+    splash_pause_block = css.split("body.is-splash-transitioning .lg-ambient-blob", 1)[1].split("}", 1)[0]
+    assert "animation-play-state: paused !important" in splash_pause_block
+
+    assert "!isSplashTransitioning &&" in js
+    assert "if (isSplashTransitioning)" in js
+    assert "pendingSplashRenderState = state" in js

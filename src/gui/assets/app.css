@@ -503,14 +503,14 @@ body[data-backdrop-mode="minimal"] .lg-ambient-grainient {
   padding: 10px 14px 12px;
   gap: 10px;
   opacity: 0;
-  transform: scale(0.992) translateY(6px);
-  transition: opacity 0.65s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.65s cubic-bezier(0.16, 1, 0.3, 1);
+  transform: translate3d(0, 6px, 0) scale(0.992);
+  transition: opacity 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 body.arena-ready .app-shell {
   opacity: 1 !important;
-  transform: scale(1) translateY(0) !important;
+  transform: translate3d(0, 0, 0) scale(1) !important;
 }
 
 /* ==========================================================================
@@ -4067,12 +4067,11 @@ tbody td {
   backdrop-filter: blur(1px) saturate(115%);
   -webkit-backdrop-filter: blur(1px) saturate(115%);
   opacity: 1;
-  transform: scale(1);
-  filter: blur(0);
-  transition: opacity 1.65s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 1.65s cubic-bezier(0.16, 1, 0.3, 1),
-              filter 1.65s cubic-bezier(0.16, 1, 0.3, 1),
-              visibility 1.65s cubic-bezier(0.16, 1, 0.3, 1);
+  transform: translate3d(0, 0, 0) scale(1);
+  will-change: opacity, transform;
+  transition: opacity 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+              visibility 0.46s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .splash-overlay.hidden {
@@ -4294,29 +4293,48 @@ tbody td {
   opacity: 0.5;
 }
 
-/* Splash fade-out transition */
+/* Splash fade-out transition (pure GPU transform + opacity, zero full-screen blur) */
 .splash-overlay.fade-out {
   opacity: 0 !important;
   visibility: hidden !important;
-  transform: scale(1.03) !important;
-  filter: blur(10px) !important;
+  transform: translate3d(0, 0, 0) scale(1.02) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
   pointer-events: none !important;
+}
+
+body.is-splash-transitioning .lg-glass,
+.splash-overlay.fade-out .lg-glass {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+body.is-splash-transitioning .lg-ambient-blob,
+body.is-splash-transitioning .lg-orbit-ring,
+body.is-splash-transitioning .splash-icon,
+body.is-splash-transitioning .border-beam-ring,
+body.is-splash-transitioning .thinking-orb,
+.splash-overlay.fade-out .lg-orbit-ring,
+.splash-overlay.fade-out .splash-icon {
+  animation-play-state: paused !important;
 }
 
 /* Cinematic Arena Entrance Fade-In (GPU-Accelerated Compositor Transform & Opacity) */
 @keyframes arenaFadeIn {
   0% {
     opacity: 0;
-    transform: scale(0.985) translateY(6px);
+    transform: translate3d(0, 8px, 0) scale(0.992);
   }
   100% {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
 .arena-entering {
-  animation: arenaFadeIn 1.75s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
+  transition: none !important;
+  will-change: transform, opacity;
+  animation: arenaFadeIn 0.56s cubic-bezier(0.22, 1, 0.36, 1) forwards !important;
 }
 
 /* Disable expensive backdrop-filter during entrance animation to avoid GPU compositor pipeline stalls */
