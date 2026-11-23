@@ -130,6 +130,24 @@ def _event_age_min(timestamp: str, now: float) -> float:
         return 0.0
 
 
+def _parse_event_epoch(timestamp: Any, fallback: float) -> float:
+    """Parse an ISO8601 event timestamp to localizable epoch seconds."""
+    if not isinstance(timestamp, str) or not timestamp.strip():
+        return fallback
+    try:
+        dt = datetime.fromisoformat(timestamp.strip().replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        ts = dt.timestamp()
+        if not math.isfinite(ts) or ts <= 0.0:
+            return fallback
+        if ts > fallback + 300.0:
+            return fallback
+        return ts
+    except (TypeError, ValueError, OSError, OverflowError):
+        return fallback
+
+
 def _safe_float(value: Any, default: float) -> float:
     """Parses an untrusted numeric value (LLM output / feed data).
 
@@ -379,7 +397,7 @@ class MacroCommander:
             return self.current_state
         try:
             self._set_sync_stage("fetching", "Fetching live news feeds")
-            raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 3.5)
+            raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 4.0)
             if _shutting_down():
                 return self.current_state
             structured_all: List[StructuredEvent] = []
@@ -1046,7 +1064,6 @@ class MacroCommander:
                     zh_head, zh_sum = IntelligenceHarvester.ensure_traditional_chinese(e)
                     dedup_key = e.raw_title or zh_head
                     digest_hex = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:8]
-                    evt_id = f"evt_{int(now)}_{digest_hex}"
                     already_exists = any(
                         (
                             (e.raw_title == x.get("raw_title"))
@@ -1056,12 +1073,21 @@ class MacroCommander:
                         for x in self.curated_events
                     )
                     if not already_exists:
-                        local_tm = time.localtime(now)
+                        evt_epoch = _parse_event_epoch(e.timestamp, now)
+                        local_tm = time.localtime(evt_epoch)
+                        now_tm = time.localtime(now)
+                        same_day = (local_tm.tm_year, local_tm.tm_yday) == (now_tm.tm_year, now_tm.tm_yday)
+                        display_time = (
+                            time.strftime("%H:%M:%S", local_tm)
+                            if same_day
+                            else time.strftime("%m-%d %H:%M", local_tm)
+                        )
+                        evt_id = f"evt_{int(evt_epoch)}_{digest_hex}"
                         self.curated_events.insert(0, {
                             "id": evt_id,
-                            "event_ts": int(now),
+                            "event_ts": int(evt_epoch),
                             "date_time": time.strftime("%Y-%m-%d %H:%M:%S", local_tm),
-                            "time": time.strftime("%H:%M:%S", local_tm),
+                            "time": display_time,
                             "source": e.source,
                             "domain": e.domain,
                             "urgency": e.urgency_score,
@@ -1081,6 +1107,8 @@ class MacroCommander:
                             "article_stage": "",
                         })
                         inserted = True
+                if inserted:
+                    self.curated_events.sort(key=lambda x: -int(x.get("event_ts") or 0))
                 if len(self.curated_events) > 60:
                     self.curated_events = self.curated_events[:60]
                 if inserted:

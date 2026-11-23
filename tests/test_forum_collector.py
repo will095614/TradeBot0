@@ -125,7 +125,7 @@ def test_fetch_from_registry_dispatches_by_type_and_skips_forum():
     with patch("requests.get", side_effect=_registry_mock_get):
         events = harvester.fetch_from_registry()
     fetchable = [e for e in FEED_REGISTRY if e.get("type") in ("rss", "atom", "rest_json")]
-    assert len(events) == len(fetchable) == 16
+    assert len(events) == len(fetchable) == 19
     assert all(e.domain != "forum" for e in events)
     assert all(e.source != "StockTwits" for e in events)
     # Tiers ride along from the registry.

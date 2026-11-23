@@ -165,30 +165,26 @@ def test_harvester_stage1_processing_and_urgent_interrupt():
 
 def test_feed_registry_completeness_r3():
     """
-    [R3 Checkpoint] Assert that the feed registry explicitly includes
-    Semiconductor/AI Supply Chain feeds and Geopolitics/War/Maritime Chokepoint feeds.
+    [R3 Checkpoint] Assert that the feed registry covers all live no-login
+    domains: Semiconductor/AI, Geopolitics/Defense/Maritime, Crypto, Macro/CBs,
+    Prediction markets, and SEC corporate filings.
     """
     from src.intelligence.ingestion import FEED_REGISTRY
-    names = {f["name"] for f in FEED_REGISTRY}
     ids = {f["id"] for f in FEED_REGISTRY}
 
     # Semiconductor / AI Supply Chain
-    assert any("semianalysis" in i for i in ids)
-    assert any("trendforce" in i for i in ids)
-    assert any("digitimes" in i for i in ids)
-    assert any("technews" in i for i in ids)
+    assert {"tomshardware_ai", "trendforce", "digitimes", "technews_tw"}.issubset(ids)
 
-    # Geopolitics / War / Maritime
-    assert any("isw" in i for i in ids)
-    assert any("war_zone" in i for i in ids)
-    assert any("liveuamap" in i for i in ids)
-    assert any("gcaptain" in i for i in ids)
+    # Geopolitics / Defense / Maritime
+    assert {"aljazeera_world", "breaking_defense", "war_zone", "gcaptain"}.issubset(ids)
 
-    # Core Tape & Macro
-    # Tree News was removed 2026-11-13 (item 12B): it needs an API key and
-    # the user rule is no-login sources only.
-    assert any("polymarket" in i for i in ids)
-    assert any("sec_edgar" in i for i in ids)
+    # Crypto & Forum
+    assert {"theblock_wire", "coindesk_wire", "cointelegraph_wire", "decrypt_wire"}.issubset(ids)
+    assert {"stocktwits_ethx", "stocktwits_btcx"}.issubset(ids)
+
+    # Macro / Central Banks / Prediction / Corporate
+    assert {"forexlive", "fxstreet_wire", "ecb_press", "fred_releases", "fed_press_releases"}.issubset(ids)
+    assert {"polymarket_gamma", "sec_edgar_8k"}.issubset(ids)
 
 
 def test_stage2_interrupt_debouncing_r4():
@@ -237,12 +233,19 @@ def test_stage2_interrupt_debouncing_r4():
 # ---------------------------------------------------------------------------
 # fetch_from_registry: real HTTP payloads, mocked transport (P0C)
 # ---------------------------------------------------------------------------
+from datetime import datetime, timezone
+from email.utils import format_datetime
 import time
 
 import requests
 from unittest.mock import patch
 
-_COINDESK_RSS = """<?xml version="1.0" encoding="UTF-8"?>
+
+def _rss_and_atom_payloads(now: float):
+    t_cd1 = datetime.fromtimestamp(int(now) - 600, tz=timezone.utc)
+    t_cd2 = datetime.fromtimestamp(int(now) - 2400, tz=timezone.utc)
+    t_sec = datetime.fromtimestamp(int(now) - 5400, tz=timezone.utc)
+    coindesk_rss = f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
     <channel>
         <title>CoinDesk</title>
@@ -250,29 +253,29 @@ _COINDESK_RSS = """<?xml version="1.0" encoding="UTF-8"?>
             <title>Bitcoin ETF Sees Record Inflows as ETH Rallies</title>
             <link>https://www.coindesk.com/markets/2026/11/13/bitcoin-etf-inflows</link>
             <description>Spot bitcoin ETFs drew record inflows while ether climbed past key resistance.</description>
-            <pubDate>Thu, 13 Nov 2026 10:00:00 GMT</pubDate>
+            <pubDate>{format_datetime(t_cd1, usegmt=True)}</pubDate>
         </item>
         <item>
             <title>Ethereum Upgrade Scheduled for December</title>
             <link>https://www.coindesk.com/tech/2026/11/13/ethereum-upgrade-december</link>
             <description>Developers confirm the next network upgrade date.</description>
-            <pubDate>Thu, 13 Nov 2026 09:30:00 GMT</pubDate>
+            <pubDate>{format_datetime(t_cd2, usegmt=True)}</pubDate>
         </item>
     </channel>
 </rss>
 """
-
-_SEC_ATOM = """<?xml version="1.0" encoding="utf-8"?>
+    sec_atom = f"""<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
     <title>SEC 8-K Feed</title>
     <entry>
         <title>8-K: MicroStrategy Purchases Additional 25,000 BTC</title>
         <link href="https://www.sec.gov/edgar/data/12345/8k-20261113.htm"/>
         <summary>Registrant reports acquisition of additional bitcoin.</summary>
-        <updated>2026-11-13T08:00:00Z</updated>
+        <updated>{t_sec.strftime("%Y-%m-%dT%H:%M:%SZ")}</updated>
     </entry>
 </feed>
 """
+    return coindesk_rss, sec_atom, t_cd1.timestamp(), t_cd2.timestamp(), t_sec.timestamp()
 
 _POLYMARKET_JSON = [
     {
@@ -295,11 +298,13 @@ def _fake_registry_response(status_code=200, text="", json_data=None):
     return resp
 
 
-def _registry_get_ok(url, headers=None, timeout=None):
+def _registry_get_ok(url, headers=None, timeout=None, now=None):
+    ref_now = time.time() if now is None else now
+    coindesk_rss, sec_atom, *_ = _rss_and_atom_payloads(ref_now)
     if "coindesk.com" in url:
-        return _fake_registry_response(text=_COINDESK_RSS)
+        return _fake_registry_response(text=coindesk_rss)
     if "sec.gov" in url:
-        return _fake_registry_response(text=_SEC_ATOM)
+        return _fake_registry_response(text=sec_atom)
     if "gamma-api.polymarket.com" in url:
         return _fake_registry_response(text="{}", json_data=_POLYMARKET_JSON)
     return _fake_registry_response(status_code=404, text="not found")
@@ -311,13 +316,17 @@ def _new_harvester():
 
 def test_fetch_from_registry_parses_real_rss_xml():
     """RSS (CoinDesk x2) + Atom (SEC x1) + Polymarket JSON (x1) via mocked
-    requests.get: titles/urls/tier/domain correct, dedup pins the second call."""
+    requests.get: titles/urls/tier/domain/timestamps and newest-first order."""
+    from src.intelligence.ingestion import FEED_REGISTRY
+
     harvester = _new_harvester()
     requested = []
+    ref_now = time.time()
+    _, _, ts_cd1, ts_cd2, ts_sec = _rss_and_atom_payloads(ref_now)
 
     def _recording_get(url, headers=None, timeout=None):
         requested.append(url)
-        return _registry_get_ok(url, headers=headers, timeout=timeout)
+        return _registry_get_ok(url, headers=headers, timeout=timeout, now=ref_now)
 
     before = time.time()
     with patch("requests.get", side_effect=_recording_get):
@@ -325,37 +334,38 @@ def test_fetch_from_registry_parses_real_rss_xml():
     after = time.time()
 
     assert len(events) == 4
-    # Registry order: polymarket, sec, ..., coindesk.
-    poly, sec, cd1, cd2 = events
+    # Undated Polymarket snapshot ranks with fetch_now, then real publish dates newest-first.
+    poly, cd1, cd2, sec = events
     assert poly.source == "Polymarket" and poly.domain == "prediction" and poly.tier == 1
+    assert poly.published_at is None
+    assert before <= poly.timestamp <= after
     assert "Fed Rate Decision December 2026" in poly.title
     assert "[Polymarket 24h Vol $1,250,000]" in poly.title
     assert "25bps cut: 62%" in poly.title and "No change: 38%" in poly.title
     assert poly.url == "https://polymarket.com/event/fed-rate-decision-december-2026"
 
-    assert sec.source == "SEC EDGAR 8-K" and sec.domain == "corporate" and sec.tier == 1
-    assert "MicroStrategy" in sec.title
-    assert sec.url == "https://www.sec.gov/edgar/data/12345/8k-20261113.htm"
-    assert "acquisition of additional bitcoin" in sec.raw_content
-
     assert cd1.source == "CoinDesk Live" and cd1.domain == "crypto" and cd1.tier == 2
     assert cd1.title == "Bitcoin ETF Sees Record Inflows as ETH Rallies"
     assert cd1.url == "https://www.coindesk.com/markets/2026/11/13/bitcoin-etf-inflows"
     assert "Spot bitcoin ETFs drew record inflows" in cd1.raw_content
+    assert abs(cd1.timestamp - ts_cd1) < 2.0 and cd1.published_at == cd1.timestamp
     assert cd2.title == "Ethereum Upgrade Scheduled for December"
     assert cd2.url == "https://www.coindesk.com/tech/2026/11/13/ethereum-upgrade-december"
+    assert abs(cd2.timestamp - ts_cd2) < 2.0 and cd2.published_at == cd2.timestamp
 
-    # NOTE: parse_rss_atom stamps ingest time; it does NOT parse pubDate /
-    # <updated>. The timestamps below pin that actual behaviour.
-    for e in events:
-        assert before <= e.timestamp <= after
+    assert sec.source == "SEC EDGAR 8-K" and sec.domain == "corporate" and sec.tier == 1
+    assert "MicroStrategy" in sec.title
+    assert sec.url == "https://www.sec.gov/edgar/data/12345/8k-20261113.htm"
+    assert "acquisition of additional bitcoin" in sec.raw_content
+    assert abs(sec.timestamp - ts_sec) < 2.0 and sec.published_at == sec.timestamp
 
     # Every non-stocktwits registry entry was attempted; stocktwits never was.
-    assert len(requested) == 16
+    fetchable_count = sum(1 for e in FEED_REGISTRY if e.get("type") != "stocktwits")
+    assert len(requested) == fetchable_count == 19
     assert not any("stocktwits.com" in u for u in requested)
 
     # Same payloads again: dedup buffer yields nothing new.
-    with patch("requests.get", side_effect=_registry_get_ok):
+    with patch("requests.get", side_effect=lambda u, headers=None, timeout=None: _registry_get_ok(u, headers, timeout, now=ref_now)):
         assert harvester.fetch_from_registry() == []
 
 

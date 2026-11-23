@@ -126,9 +126,9 @@
     "semantic_hash": ""
   },
   "src/gui/assets/app.js": {
-    "mtime": 1795428820.600087,
-    "seen": 1795428919.614572,
-    "ast_hash": "1a74f7bd43f57b5bd89238c55df7f34e",
+    "mtime": 1795429946.9933765,
+    "seen": 1795430119.2950475,
+    "ast_hash": "a2a930ae8af1d47610a7ca930d40184f",
     "semantic_hash": ""
   },
   "src/gui/dashboard.py": {
@@ -144,15 +144,15 @@
     "semantic_hash": ""
   },
   "src/intelligence/ingestion.py": {
-    "mtime": 1795356171.7295094,
-    "seen": 1795367931.2483194,
-    "ast_hash": "a4c35f9ac404f117a04715b54b3300e8",
+    "mtime": 1795429923.8533998,
+    "seen": 1795430119.2950475,
+    "ast_hash": "997ed33c2504b22736540773b7b94c3e",
     "semantic_hash": ""
   },
   "src/intelligence/macro_commander.py": {
-    "mtime": 1795369922.406627,
-    "seen": 1795370205.622305,
-    "ast_hash": "5ec6e187d26f2bbc8bfc1ba7cb4be933",
+    "mtime": 1795429945.1804423,
+    "seen": 1795430119.2950475,
+    "ast_hash": "d971f532bf0370547c68952bef69b22c",
     "semantic_hash": ""
   },
   "src/intelligence/omniroute_client.py": {
@@ -210,9 +210,9 @@
     "semantic_hash": ""
   },
   "tests/test_phase3_ingestion.py": {
-    "mtime": 1795173704.595392,
-    "seen": 1795367931.2483194,
-    "ast_hash": "af3e3ef867d9f5e43510557c3a8512ac",
+    "mtime": 1795429980.999929,
+    "seen": 1795430119.2950475,
+    "ast_hash": "8586b03644dbe3fbdd35e62e5f592f25",
     "semantic_hash": ""
   },
   "tests/test_phase4_macro_commander.py": {
@@ -360,9 +360,9 @@
     "semantic_hash": ""
   },
   "tests/test_forum_collector.py": {
-    "mtime": 1795173704.5625987,
-    "seen": 1795367931.2483194,
-    "ast_hash": "5bfdca900833fc352406405a92df48f9",
+    "mtime": 1795429983.781009,
+    "seen": 1795430119.2950475,
+    "ast_hash": "243bd0003d49d2d85c9358ac5f6b9445",
     "semantic_hash": ""
   },
   "tests/test_item12a_omniroute.py": {
@@ -684,9 +684,9 @@
     "semantic_hash": ""
   },
   "tests/test_phase2_optimize.py": {
-    "mtime": 1795173704.5943918,
-    "seen": 1795367931.2483194,
-    "ast_hash": "d23d214bae4deed47f4c55285ead34a3",
+    "mtime": 1795429989.3962257,
+    "seen": 1795430119.2950475,
+    "ast_hash": "cf308ad587fdec8069e658925953b93a",
     "semantic_hash": ""
   },
   "tests/test_phase2g_graphics.py": {
@@ -909,6 +909,12 @@
     "mtime": 1795429279.6527953,
     "seen": 1795429433.2525408,
     "ast_hash": "96dfed2ddba4c249ccd0152b31da026c",
+    "semantic_hash": ""
+  },
+  "tests/test_news_freshness.py": {
+    "mtime": 1795429991.8980646,
+    "seen": 1795430119.2950475,
+    "ast_hash": "34346c51e31b20acce40cd4983a84c68",
     "semantic_hash": ""
   }
 }

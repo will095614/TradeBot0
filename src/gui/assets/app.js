@@ -4708,7 +4708,8 @@ function updateUiClockDisplay() {
     const rawTime = evt.time || '';
     const nextTime = formatIntelEventTime(rawTime);
     if (timeEl.textContent !== nextTime) timeEl.textContent = nextTime;
-    if (rawTime && timeEl.title !== rawTime) timeEl.title = rawTime;
+    const timeTip = evt.date_time || rawTime;
+    if (timeTip && timeEl.title !== timeTip) timeEl.title = timeTip;
     const nextDom = (evt.domain || 'macro').toUpperCase();
     if (domEl.textContent !== nextDom) domEl.textContent = nextDom;
     const nextSrc = evt.source || 'News Wire';

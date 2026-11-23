@@ -160,7 +160,7 @@ def test_p2_fetch_from_registry_parallel_same_events_faster(monkeypatch):
 
     monkeypatch.setenv("ARENA_FAST_TEST", "0")
     fetchable = [e for e in FEED_REGISTRY if e.get("type") != "stocktwits"]
-    assert len(fetchable) == 16
+    assert len(fetchable) == 19
 
     def mock_get(url, headers=None, timeout=None):
         time.sleep(0.3)
@@ -193,9 +193,9 @@ def test_p2_fetch_from_registry_parallel_same_events_faster(monkeypatch):
     elapsed = time.perf_counter() - t0
     # Sequential floor would be 16 x 0.3 s = 4.8 s; parallel must be far under it.
     assert elapsed < 2.5, f"parallel fetch took {elapsed:.2f}s"
-    # 15 live sources (16 fetchable minus the dead SEC one), one event each,
+    # 18 live sources (19 fetchable minus the dead SEC one), one event each,
     # in registry order, no forum entries, dedup applied.
-    assert len(events) == 15
+    assert len(events) == 18
     assert all(e.domain != "forum" for e in events)
     expected_sources = [
         ("Polymarket" if e.get("type") == "rest_json" else e["name"])

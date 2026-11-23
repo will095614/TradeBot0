@@ -5,6 +5,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import functools
 import hashlib
 import html
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 TradeBot0-Intelligence/1.0"
 SEC_EDGAR_USER_AGENT = "TradeBot0/2.5 (contact@tradebot0.local)"
+DEFAULT_MAX_ARTICLE_AGE_HOURS: float = 48.0
 
 # [R3] Comprehensive Multi-Domain Feed Registry
 FEED_REGISTRY: List[Dict[str, Any]] = [
@@ -35,24 +37,27 @@ FEED_REGISTRY: List[Dict[str, Any]] = [
     # Tier 1: 30-60s Breaking Wires, Prediction & Geopolitics
     {"id": "polymarket_gamma", "name": "Polymarket Gamma", "tier": 1, "domain": "prediction", "type": "rest_json", "url": "https://gamma-api.polymarket.com/events?limit=25&active=true"},
     {"id": "sec_edgar_8k", "name": "SEC EDGAR 8-K", "tier": 1, "domain": "corporate", "type": "atom", "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&CIK=&type=8-K&company=&dateb=&owner=include&start=0&count=40&output=atom"},
-    {"id": "isw_updates", "name": "Institute for the Study of War (ISW)", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://www.understandingwar.org/rss.xml"},
+    {"id": "aljazeera_world", "name": "Al Jazeera World Wire", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+    {"id": "breaking_defense", "name": "Breaking Defense", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://breakingdefense.com/feed/"},
     {"id": "war_zone", "name": "The War Zone", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://www.twz.com/feed"},
-    {"id": "liveuamap", "name": "Liveuamap", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://liveuamap.com/rss"},
     {"id": "gcaptain", "name": "gCaptain Maritime Security", "tier": 1, "domain": "geopolitics", "type": "rss", "url": "https://gcaptain.com/feed/"},
     {"id": "forexlive", "name": "ForexLive Breaking Wire", "tier": 1, "domain": "macro", "type": "rss", "url": "https://www.forexlive.com/feed/news"},
+    {"id": "fxstreet_wire", "name": "FXStreet Macro Wire", "tier": 1, "domain": "macro", "type": "rss", "url": "https://www.fxstreet.com/rss/news"},
+    {"id": "theblock_wire", "name": "The Block", "tier": 1, "domain": "crypto", "type": "rss", "url": "https://www.theblock.co/rss.xml"},
     # Tier 2: 3-5m Semiconductor/AI Supply Chain, Crypto & Community
-    {"id": "semianalysis", "name": "SemiAnalysis", "tier": 2, "domain": "tech", "type": "rss", "url": "https://www.semianalysis.com/feed"},
-    {"id": "trendforce", "name": "TrendForce Global Tech", "tier": 2, "domain": "tech", "type": "rss", "url": "https://www.trendforce.com/rss"},
+    {"id": "tomshardware_ai", "name": "Tom's Hardware AI & Silicon", "tier": 2, "domain": "tech", "type": "rss", "url": "https://www.tomshardware.com/feeds/all"},
+    {"id": "trendforce", "name": "TrendForce Global Tech", "tier": 2, "domain": "tech", "type": "rss", "url": "https://www.trendforce.com/news/feed/"},
     {"id": "digitimes", "name": "DigiTimes Semiconductor Wire", "tier": 2, "domain": "tech", "type": "rss", "url": "https://www.digitimes.com/rss/daily.xml"},
     {"id": "technews_tw", "name": "TechNews Global Supply Chain", "tier": 2, "domain": "tech", "type": "rss", "url": "https://technews.tw/feed/"},
     {"id": "coindesk_wire", "name": "CoinDesk Live", "tier": 2, "domain": "crypto", "type": "rss", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
     {"id": "cointelegraph_wire", "name": "CoinTelegraph", "tier": 2, "domain": "crypto", "type": "rss", "url": "https://cointelegraph.com/rss"},
     {"id": "decrypt_wire", "name": "Decrypt", "tier": 2, "domain": "crypto", "type": "rss", "url": "https://decrypt.co/feed"},
+    {"id": "ecb_press", "name": "ECB Press Releases", "tier": 2, "domain": "macro", "type": "rss", "url": "https://www.ecb.europa.eu/rss/press.html"},
     {"id": "stocktwits_ethx", "name": "StockTwits ETH.X", "tier": 2, "domain": "forum", "type": "stocktwits", "url": "https://api.stocktwits.com/api/2/streams/symbol/ETH.X.json"},
     {"id": "stocktwits_btcx", "name": "StockTwits BTC.X", "tier": 2, "domain": "forum", "type": "stocktwits", "url": "https://api.stocktwits.com/api/2/streams/symbol/BTC.X.json"},
-    # Tier 3: 15-30m Macro Liquidity & Treasury
-    {"id": "fred_releases", "name": "FRED Economic Data Releases", "tier": 3, "domain": "macro", "type": "rss", "url": "https://fred.stlouisfed.org/rss/releases.xml"},
-    {"id": "us_treasury", "name": "US Treasury Press Releases", "tier": 3, "domain": "macro", "type": "rss", "url": "https://home.treasury.gov/rss/press-releases.xml"},
+    # Tier 3: 15-30m Macro Liquidity & Central Banks
+    {"id": "fred_releases", "name": "FRED Economic Data Releases", "tier": 3, "domain": "macro", "type": "rss", "url": "https://news.research.stlouisfed.org/feed/"},
+    {"id": "fed_press_releases", "name": "Federal Reserve Press Releases", "tier": 3, "domain": "macro", "type": "rss", "url": "https://www.federalreserve.gov/feeds/press_all.xml"},
 ]
 
 
@@ -67,6 +72,7 @@ class RawEvent:
     entities: List[str] = field(default_factory=list)
     tier: int = 2  # source tier from FEED_REGISTRY (0-3); 2 = general news/forum
     thread_id: Optional[str] = None  # forum thread key, e.g. "stocktwits:ETH.X"
+    published_at: Optional[float] = None  # parsed publish epoch; None if feed omitted date
 
 
 @dataclass
@@ -291,6 +297,58 @@ def _contains_word(text: str, word: str) -> bool:
     return _compiled_word_re(w).search(text.lower()) is not None
 
 
+def _first_child_text(parent: Any, tags: Tuple[str, ...]) -> str:
+    """Return the first non-empty stripped child text without truth-testing Element nodes."""
+    if parent is None:
+        return ""
+    for tag in tags:
+        el = parent.find(tag)
+        if el is not None:
+            txt = (el.text or "").strip() or "".join(el.itertext()).strip()
+            if txt:
+                return txt
+    return ""
+
+
+def _parse_feed_ts(value: Any, now: Optional[float] = None) -> Optional[float]:
+    """Parse RFC 2822 / ISO 8601 feed timestamps to epoch seconds, or None."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    ref_now = time.time() if now is None else float(now)
+    dt: Optional[datetime] = None
+
+    if re.match(r"^\d{4}-\d{2}-\d{2}", raw):
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            dt = None
+    if dt is None:
+        try:
+            dt = parsedate_to_datetime(raw)
+        except (ValueError, TypeError):
+            dt = None
+    if dt is None:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    try:
+        ts = dt.timestamp()
+    except (ValueError, OSError, OverflowError):
+        return None
+    if not math.isfinite(ts) or ts <= 0.0:
+        return None
+    if ts > ref_now + 300.0:
+        return ref_now
+    return ts
+
+
 def parse_rss_atom(xml_text: Union[str, bytes], source_name: str, domain: str, tier: int = 2) -> List[RawEvent]:
     """
     Parses RSS 2.0 and Atom feeds into a standardized list of RawEvent items.
@@ -316,6 +374,17 @@ def parse_rss_atom(xml_text: Union[str, bytes], source_name: str, domain: str, t
         title = _clean_html_text(title_el.text) if (title_el is not None and title_el.text) else ""
         link = link_el.text.strip() if (link_el is not None and link_el.text) else ""
         desc = _clean_html_text(desc_el.text) if (desc_el is not None and desc_el.text) else ""
+        raw_date = _first_child_text(
+            item,
+            (
+                "pubDate",
+                "{http://purl.org/dc/elements/1.1/}date",
+                "date",
+                "{http://www.w3.org/2005/Atom}updated",
+                "updated",
+            ),
+        )
+        pub_ts = _parse_feed_ts(raw_date, now=now)
 
         if title:
             events.append(RawEvent(
@@ -323,20 +392,25 @@ def parse_rss_atom(xml_text: Union[str, bytes], source_name: str, domain: str, t
                 domain=domain,
                 title=title,
                 url=link or source_name,
-                timestamp=now,
+                timestamp=pub_ts if pub_ts is not None else now,
                 raw_content=desc[:450],
                 tier=tier,
+                published_at=pub_ts,
             ))
 
     # Atom (<feed><entry>...</entry></feed>)
     # Handle namespace if present
     ns = {"atom": "http://www.w3.org/2005/Atom"}
-    entries = root.findall(".//atom:entry", ns) or root.findall(".//entry")
+    entries = root.findall(".//atom:entry", ns)
+    if not entries:
+        entries = root.findall(".//entry")
     for entry in entries:
         title_el = entry.find("atom:title", ns)
         if title_el is None:
             title_el = entry.find("title")
-        link_els = entry.findall("atom:link", ns) or entry.findall("link")
+        link_els = entry.findall("atom:link", ns)
+        if not link_els:
+            link_els = entry.findall("link")
         link_el = None
         for cand in link_els:
             rel = (cand.get("rel") or "").strip().lower()
@@ -349,7 +423,9 @@ def parse_rss_atom(xml_text: Union[str, bytes], source_name: str, domain: str, t
         if sum_el is None:
             sum_el = entry.find("atom:content", ns)
         if sum_el is None:
-            sum_el = entry.find("summary") or entry.find("content")
+            sum_el = entry.find("summary")
+        if sum_el is None:
+            sum_el = entry.find("content")
 
         title_raw = "".join(title_el.itertext()) if title_el is not None else ""
         desc_raw = "".join(sum_el.itertext()) if sum_el is not None else ""
@@ -358,6 +434,16 @@ def parse_rss_atom(xml_text: Union[str, bytes], source_name: str, domain: str, t
         link = ""
         if link_el is not None:
             link = (link_el.get("href") or link_el.text or "").strip()
+        raw_date = _first_child_text(
+            entry,
+            (
+                "{http://www.w3.org/2005/Atom}published",
+                "{http://www.w3.org/2005/Atom}updated",
+                "published",
+                "updated",
+            ),
+        )
+        pub_ts = _parse_feed_ts(raw_date, now=now)
 
         if title:
             events.append(RawEvent(
@@ -365,9 +451,10 @@ def parse_rss_atom(xml_text: Union[str, bytes], source_name: str, domain: str, t
                 domain=domain,
                 title=title,
                 url=link or source_name,
-                timestamp=now,
+                timestamp=pub_ts if pub_ts is not None else now,
                 raw_content=desc[:450],
                 tier=tier,
+                published_at=pub_ts,
             ))
 
     return events
@@ -549,17 +636,58 @@ def parse_stocktwits_stream(data: Any, symbol: str) -> List[RawEvent]:
         lines.append(f"{uname}{sent}: {body[:200]}")
     raw_content = "\n".join(lines)[:1200]
 
+    now_ts = time.time()
+    pub_ts = _parse_feed_ts(latest.get("created_at"), now=now_ts)
     events.append(RawEvent(
         source=f"StockTwits {symbol}",
         domain="forum",
         title=title,
         url=url,
-        timestamp=_parse_iso_ts(latest.get("created_at")),
+        timestamp=pub_ts if pub_ts is not None else now_ts,
         raw_content=raw_content,
         tier=2,
         thread_id=f"stocktwits:{symbol}",
+        published_at=pub_ts,
     ))
     return events
+
+
+def _rank_fresh_events(
+    events: List[RawEvent],
+    fetch_now: float,
+    page_size: int = 6,
+    max_per_source_per_page: int = 2,
+) -> List[RawEvent]:
+    """Order events newest-first while capping any single source per micro-batch page."""
+    if not events:
+        return []
+    ordered = sorted(
+        events,
+        key=lambda e: -(e.published_at if e.published_at is not None else fetch_now),
+    )
+    if page_size <= 0 or max_per_source_per_page <= 0:
+        return ordered
+
+    result: List[RawEvent] = []
+    remaining = ordered
+    while remaining:
+        page: List[RawEvent] = []
+        deferred: List[RawEvent] = []
+        counts: Dict[str, int] = {}
+        for ev in remaining:
+            src_cnt = counts.get(ev.source, 0)
+            if len(page) < page_size and src_cnt < max_per_source_per_page:
+                page.append(ev)
+                counts[ev.source] = src_cnt + 1
+            else:
+                deferred.append(ev)
+        if len(page) < page_size and deferred:
+            need = page_size - len(page)
+            page.extend(deferred[:need])
+            deferred = deferred[need:]
+        result.extend(page)
+        remaining = deferred
+    return result
 
 
 class InterruptDebouncer:
@@ -710,21 +838,27 @@ class IntelligenceHarvester:
 
     @staticmethod
     def _fetch_registry_entry(
-        entry: Dict[str, Any], max_per_source: int, timeout_sec: float
+        entry: Dict[str, Any],
+        max_per_source: int,
+        timeout_sec: float,
+        max_age_hours: Optional[float] = DEFAULT_MAX_ARTICLE_AGE_HOURS,
+        fetch_now: Optional[float] = None,
     ) -> List[RawEvent]:
         """Fetch + parse ONE registry entry (worker side, no shared state).
 
         Pure per-entry work: one requests.get plus the type-dispatched
         parser. Deliberately does NOT touch self.dedup -- dedup runs
         sequentially in the caller, in registry order, so parallel
-        fetching cannot change event order or dedup outcomes. Any
-        failure yields [] (never fatal: one dead source must not take
-        down the whole digest).
+        fetching cannot change event order or dedup outcomes. Stale
+        dated articles beyond max_age_hours are dropped, and remaining
+        per-source items are sorted newest-first before capping at
+        max_per_source. Any failure yields [] (never fatal).
         """
         import requests
 
         etype = str(entry.get("type", ""))
         ua = SEC_EDGAR_USER_AGENT if entry.get("id") == "sec_edgar_8k" else USER_AGENT
+        ref_now = time.time() if fetch_now is None else float(fetch_now)
         resp = None
         try:
             resp = requests.get(
@@ -741,6 +875,14 @@ class IntelligenceHarvester:
             else:
                 logger.debug("Unknown registry feed type %r for %s, skipped", etype, entry.get("id"))
                 return []
+
+            if max_age_hours is not None and max_age_hours > 0:
+                max_age_sec = float(max_age_hours) * 3600.0
+                parsed = [
+                    e for e in parsed
+                    if e.published_at is None or (ref_now - e.published_at) <= max_age_sec
+                ]
+            parsed.sort(key=lambda e: -(e.published_at if e.published_at is not None else ref_now))
             return parsed[:max_per_source]
         except Exception as ex:
             logger.debug("Registry feed fetch error for %s: %s", entry.get("id"), ex)
@@ -752,7 +894,12 @@ class IntelligenceHarvester:
                 except Exception:
                     pass
 
-    def fetch_from_registry(self, max_per_source: int = 5, timeout_sec: float = 3.0) -> List[RawEvent]:
+    def fetch_from_registry(
+        self,
+        max_per_source: int = 5,
+        timeout_sec: float = 3.5,
+        max_age_hours: Optional[float] = DEFAULT_MAX_ARTICLE_AGE_HOURS,
+    ) -> List[RawEvent]:
         """
         Registry-driven fetch (item 12B): every entry in FEED_REGISTRY is a
         no-login source (user rule 2026-11-13), dispatched by its `type`:
@@ -762,19 +909,27 @@ class IntelligenceHarvester:
         never scored twice per digest. Unknown types are skipped, never
         fatal: one dead source must not take down the whole digest.
 
-        Phase 2: the 16 fetchable entries are fetched concurrently
-        (ThreadPoolExecutor, 8 workers -- network-bound). Results are
-        interleaved round-robin across sources so a single high-volume feed
-        cannot crowd out other sources in the 6-event micro-batch.
+        Fetches all active registry entries concurrently (ThreadPoolExecutor,
+        up to 10 workers), filters out stale items older than max_age_hours,
+        dedups in registry round-robin order, and ranks newest-first with
+        per-batch source diversity so fresh breaking news lands in events[:6].
         """
         fetchable = [e for e in FEED_REGISTRY if str(e.get("type", "")) != "stocktwits"]
         if not fetchable:
             return []
-        workers = min(8, len(fetchable))
+        fetch_now = time.time()
+        max_age_sec = float(max_age_hours) * 3600.0 if (max_age_hours is not None and max_age_hours > 0) else None
+        workers = min(10, len(fetchable))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             per_entry = list(
                 pool.map(
-                    lambda entry: self._fetch_registry_entry(entry, max_per_source, timeout_sec),
+                    lambda entry: self._fetch_registry_entry(
+                        entry,
+                        max_per_source,
+                        timeout_sec,
+                        max_age_hours=max_age_hours,
+                        fetch_now=fetch_now,
+                    ),
                     fetchable,
                 )
             )
@@ -785,16 +940,28 @@ class IntelligenceHarvester:
             for parsed in per_entry:
                 if slot < len(parsed):
                     e = parsed[slot]
+                    if max_age_sec is not None and e.published_at is not None and (fetch_now - e.published_at) > max_age_sec:
+                        continue
                     if self.dedup.is_new(e.title, e.url):
                         fresh_events.append(e)
                     elif hasattr(self.client, "record_dedup_hit"):
                         self.client.record_dedup_hit()
-        return fresh_events
+        return _rank_fresh_events(
+            fresh_events,
+            fetch_now=fetch_now,
+            page_size=6,
+            max_per_source_per_page=2,
+        )
 
-    def fetch_live_feeds(self, max_per_source: int = 5, timeout_sec: float = 3.0) -> List[RawEvent]:
+    def fetch_live_feeds(
+        self,
+        max_per_source: int = 5,
+        timeout_sec: float = 3.5,
+        max_age_hours: Optional[float] = DEFAULT_MAX_ARTICLE_AGE_HOURS,
+    ) -> List[RawEvent]:
         """
         Fetches genuine live RSS news items from multi-domain feeds over HTTP.
-        Returns newly discovered, deduplicated RawEvents.
+        Returns newly discovered, deduplicated RawEvents ranked newest-first.
         """
         if os.environ.get("ARENA_FAST_TEST") == "1":
             # Test fixture only: clearly marked synthetic data for the test
@@ -812,7 +979,11 @@ class IntelligenceHarvester:
         # sources are registry entries now (Decrypt included); the single
         # source of truth is FEED_REGISTRY, which holds no-login sources
         # only (user rule 2026-11-13).
-        return self.fetch_from_registry(max_per_source=max_per_source, timeout_sec=timeout_sec)
+        return self.fetch_from_registry(
+            max_per_source=max_per_source,
+            timeout_sec=timeout_sec,
+            max_age_hours=max_age_hours,
+        )
 
     def push_raw_events(self, raw_events: List[RawEvent]) -> List[RawEvent]:
         """Filters incoming raw events through the deduplication buffer."""
