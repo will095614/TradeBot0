@@ -46,12 +46,17 @@ class IndicatorEngineMixin:
             return False
         return True
 
-    def _chop_gate_blocks(self) -> bool:
+    def get_chop_er_20(self) -> Optional[float]:
+        """Returns Efficiency Ratio over the trailing closed 15m bars, or None while warming up."""
         closed = self.candles_15m[:-1]
         if len(closed) <= CHOP_GATE_WINDOW_BARS:
-            return False
+            return None
         closes = [float(b["c"]) for b in closed[-CHOP_GATE_WINDOW_BARS - 1:]]
-        return efficiency_ratio(closes) < CHOP_GATE_ER_THRESHOLD
+        return float(efficiency_ratio(closes))
+
+    def _chop_gate_blocks(self) -> bool:
+        er = self.get_chop_er_20()
+        return er is not None and er < CHOP_GATE_ER_THRESHOLD
 
     def _seed_chop_gate_buckets(self, seed_bars: List[Dict[str, Any]], warmup_start_ts: float) -> int:
         if not seed_bars or not warmup_start_ts:

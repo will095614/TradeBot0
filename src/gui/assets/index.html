@@ -102,6 +102,11 @@
         </svg>
         <span>Check your network connection. This overlay clears automatically on reconnect.</span>
       </div>
+      <div class="ss-modal-actions">
+        <button type="button" class="modal-act-btn modal-act-ghost" id="btnOfflineExit" onclick="requestShutdown()">
+          <span>Exit App</span>
+        </button>
+      </div>
     </div>
   </div>
 
@@ -244,6 +249,12 @@
             <path d="M6 13.5H2.5V10"></path>
           </svg>
         </button>
+        <button class="btn btn-icon-only lg-btn" id="btnPrivateBalance" onclick="togglePrivateBalance()" title="Toggle Private Balance Mask (Shift+P)" aria-pressed="false">
+          <svg class="ss-svg-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"></path>
+            <circle cx="8" cy="8" r="2"></circle>
+          </svg>
+        </button>
         <button class="btn btn-icon-only lg-btn" id="btnOpenSettings" onclick="openSetupWizardModal()" title="AI Services">
           <svg class="ss-svg-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="3"></circle>
@@ -319,7 +330,7 @@
               <div class="lg-vessel-info">
                 <div class="hud-title">Gross Exposure</div>
                 <div class="hud-value num" id="hudExposureQty">0.0000 ETH</div>
-                <div class="hud-sub num" id="hudExposureVal">$0.00 · Cash 100%</div>
+                <div class="hud-sub num private-maskable" id="hudExposureVal">$0.00 · Cash 100%</div>
               </div>
             </div>
 
@@ -420,6 +431,11 @@
                 <span class="panel-subtitle num" id="chartScrubReadout">1m Candles</span>
               </div>
               <div class="panel-tools">
+                <div class="tf-switch-group lg-pill" id="chartTimeframeGroup" role="group" aria-label="Chart timeframe">
+                  <button type="button" class="tf-btn is-active" id="btnTf1m" onclick="setChartTimeframe('1m')" title="1-Minute Candles">1m</button>
+                  <button type="button" class="tf-btn" id="btnTf5m" onclick="setChartTimeframe('5m')" title="5-Minute Candles">5m</button>
+                  <button type="button" class="tf-btn" id="btnTf15m" onclick="setChartTimeframe('15m')" title="15-Minute Candles">15m</button>
+                </div>
                 <div class="seg-control ss-seg lg-seg" style="--n:2; --active-idx:0;" data-active-idx="0" id="scaleModeSeg">
                   <span class="ss-seg__thumb lg-seg__thumb" aria-hidden="true"></span>
                   <button class="seg-btn ss-seg__option active" id="btnScaleAuto" data-on onclick="setScaleMode('auto')" title="Focus on visible candle action (Press F)">Focus</button>
@@ -454,6 +470,12 @@
                 <span>Live Orderflow Tape</span>
               </div>
               <div class="panel-tools">
+                <button type="button" class="btn lg-btn export-journal-btn" id="btnExportJournal" onclick="exportTradeJournal('csv')" title="Export Trade Journal (CSV)">
+                  <svg class="ss-svg-icon" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 2.5v7.5M5 7l3 3 3-3M2.5 11.5v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1.5"></path>
+                  </svg>
+                  <span>Export</span>
+                </button>
                 <span id="fillCountLabel">0 Records</span>
               </div>
             </div>
@@ -516,29 +538,70 @@
             </div>
           </div>
 
-          <!-- Bottom Panel: Empty Outlined Box (Reserved for future features) -->
+          <!-- Bottom Panel: Live Modular Telemetry Bay (Risk Gauges, Activity Heatmap, Evolutions) -->
           <div class="panel ss-window-panel lg-glass lg-future-slot-tower" id="modularSlotPanel">
             <div class="panel-header lg-slab-header">
               <div class="panel-title">
                 <svg class="ss-svg-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <rect x="2" y="2" width="12" height="12" rx="2"></rect>
-                  <path d="M8 5v6M5 8h6"></path>
+                  <path d="M2.5 11.5a5.5 5.5 0 0 1 11 0"></path>
+                  <path d="M8 11.5L10.5 7"></path>
                 </svg>
-                <span class="slot-bay-title">Modular Extension Bay</span>
+                <span class="slot-bay-title">Telemetry Bay</span>
               </div>
-              <div class="panel-tools">
-                <span class="slot-status-pill">STANDBY</span>
+              <div class="panel-tools mod-bay-tools">
+                <div class="mod-bay-tabs" id="modBayTabBar" role="tablist" aria-label="Telemetry bay tabs">
+                  <button type="button" class="mod-tab-btn is-active" id="btnModTabGauges" onclick="setModBayTab('gauges')" role="tab" aria-selected="true">Gauges</button>
+                  <button type="button" class="mod-tab-btn" id="btnModTabHeatmap" onclick="setModBayTab('heatmap')" role="tab" aria-selected="false">Activity</button>
+                  <button type="button" class="mod-tab-btn" id="btnModTabEvolutions" onclick="setModBayTab('evolutions')" role="tab" aria-selected="false">Evo</button>
+                </div>
+                <span class="slot-status-pill is-live" id="modBayStatusPill">LIVE</span>
               </div>
             </div>
-            <div class="modular-slot-canvas">
-              <div class="modular-slot-frame">
-                <svg class="modular-slot-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M12 3L2 8l10 5 10-5-10-5z"></path>
-                  <path d="M2 13l10 5 10-5"></path>
-                  <path d="M2 18l10 5 10-5"></path>
-                </svg>
-                <div class="modular-slot-label">Modular Telemetry Bay</div>
-                <div class="modular-slot-hint">Reserved slot for future high-frequency orderbook, risk matrix or custom indicators</div>
+            <div class="modular-slot-canvas mod-bay-canvas">
+              <!-- Tab 1: Risk & Regime Gauges -->
+              <div class="mod-bay-pane is-active" id="modBayGauges">
+                <div class="mod-gauge-grid num">
+                  <div class="mod-gauge-card">
+                    <svg class="mod-gauge-svg" viewBox="0 0 100 58" aria-hidden="true">
+                      <path class="mod-gauge-track" d="M 12 50 A 38 38 0 0 1 88 50" />
+                      <path class="mod-gauge-arc" id="modGaugeErArc" d="M 12 50 A 38 38 0 0 1 88 50" />
+                      <line class="mod-gauge-thresh" x1="23.1" y1="23.1" x2="29.0" y2="29.0" />
+                    </svg>
+                    <div class="mod-gauge-val" id="modGaugeErVal">--</div>
+                    <div class="mod-gauge-lbl">15m Chop ER</div>
+                    <div class="mod-gauge-sub" id="modGaugeErMeta">Warming (0.25)</div>
+                  </div>
+                  <div class="mod-gauge-card">
+                    <svg class="mod-gauge-svg" viewBox="0 0 100 58" aria-hidden="true">
+                      <path class="mod-gauge-track" d="M 12 50 A 38 38 0 0 1 88 50" />
+                      <path class="mod-gauge-arc" id="modGaugeLevArc" d="M 12 50 A 38 38 0 0 1 88 50" />
+                    </svg>
+                    <div class="mod-gauge-val" id="modGaugeLevVal">0.00x</div>
+                    <div class="mod-gauge-lbl">Gross Lev</div>
+                    <div class="mod-gauge-sub" id="modGaugeLevMeta">$0 exp</div>
+                  </div>
+                  <div class="mod-gauge-card">
+                    <svg class="mod-gauge-svg" viewBox="0 0 100 58" aria-hidden="true">
+                      <path class="mod-gauge-track" d="M 12 50 A 38 38 0 0 1 88 50" />
+                      <path class="mod-gauge-arc" id="modGaugeRiskArc" d="M 12 50 A 38 38 0 0 1 88 50" />
+                    </svg>
+                    <div class="mod-gauge-val" id="modGaugeRiskVal">1.00x</div>
+                    <div class="mod-gauge-lbl">Macro Mult</div>
+                    <div class="mod-gauge-sub" id="modGaugeRiskMeta">BIDIR</div>
+                  </div>
+                </div>
+              </div>
+              <!-- Tab 2: Strategy x Time Activity Heatmap -->
+              <div class="mod-bay-pane" id="modBayHeatmap" style="display:none;">
+                <div class="mod-heatmap-head num">
+                  <span>Last 60m Fill Density (5m buckets)</span>
+                  <span id="modHeatmapSummary">0 fills</span>
+                </div>
+                <div class="mod-heatmap-grid num" id="modHeatmapGrid"></div>
+              </div>
+              <!-- Tab 3: Evolution History Timeline -->
+              <div class="mod-bay-pane scroll-area-faded" id="modBayEvolutions" style="display:none;">
+                <div class="mod-evo-list" id="modEvolutionsList"></div>
               </div>
             </div>
           </div>
@@ -584,7 +647,12 @@
         <div class="panel intel-panel ss-window-panel lg-glass">
           <div class="panel-header lg-slab-header">
             <div class="panel-title">
-              <span class="console-sigil num">&gt;_</span>
+              <svg class="ai-bot-avatar" id="aiBotAvatar" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="5" width="14" height="11" rx="3"></rect>
+                <path d="M10 2v3"></path>
+                <circle class="ai-bot-eye" cx="7.5" cy="10.5" r="1.2" fill="currentColor"></circle>
+                <circle class="ai-bot-eye" cx="12.5" cy="10.5" r="1.2" fill="currentColor"></circle>
+              </svg>
               <span>AI Services</span>
             </div>
             <div class="panel-tools">
@@ -688,7 +756,7 @@
                 <span class="intel-metric-sub">Counter-trend entries blocked</span>
               </div>
             </div>
-            <div class="intel-meta-subrow">
+            <div class="intel-meta-subrow" id="macroHubDirective">
               <span class="intel-headline-lbl">Active Directive</span>
               <span class="intel-headline-text" id="macroHubHeadline">Macro regime balanced. Multi-domain feeds synchronized.</span>
             </div>
@@ -730,6 +798,7 @@
         </div>
         <div class="intel-filter-bar">
           <div class="intel-domain-chips" id="intelDomainChips" role="group" aria-label="Filter by domain">
+            <span class="intel-chip-slider" id="intelChipSlider" aria-hidden="true"></span>
             <button type="button" class="intel-chip is-active" data-domain="all" onclick="setIntelDomainFilter('all')">All</button>
             <button type="button" class="intel-chip" data-domain="macro" onclick="setIntelDomainFilter('macro')">US Macro</button>
             <button type="button" class="intel-chip" data-domain="fed" onclick="setIntelDomainFilter('fed')">Fed</button>
@@ -741,6 +810,14 @@
         <div class="intel-events-scroll scroll-area-faded" id="intelEventsScroll">
           <div class="intel-events-list" id="intelEventsList">
             <!-- Dynamically populated by renderIntelHub(state) -->
+          </div>
+          <div class="intel-empty-state" id="intelEmptyState" style="display:none;">
+            <svg class="intel-empty-glyph" viewBox="0 0 36 36" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 10v16M9 13h4v8H9zM18 7v22M18 11h4v12h-4zM27 12v14"></path>
+            </svg>
+            <div class="intel-empty-title">No matching intelligence events</div>
+            <div class="intel-empty-sub">Adjust the domain filter or search query to inspect the live feed.</div>
+            <button type="button" class="btn lg-btn" onclick="resetIntelFilters()">Show All Events</button>
           </div>
         </div>
       </section>
@@ -771,25 +848,71 @@
       </div>
 
       <div class="setup-wizard-body">
+        <div class="setup-tab-bar" role="tablist" aria-label="Settings tabs">
+          <button type="button" class="setup-tab-btn is-active" id="btnSetupTabAi" onclick="switchSetupTab('ai')" role="tab" aria-selected="true">AI &amp; Model</button>
+          <button type="button" class="setup-tab-btn" id="btnSetupTabAppearance" onclick="switchSetupTab('appearance')" role="tab" aria-selected="false">Appearance</button>
+        </div>
+
         <div class="setup-wizard-column">
-          <div class="setup-keys-intro">One key is all you need.</div>
-          <!-- Google Gemini -->
-          <div class="setup-provider-card">
-            <div class="setup-provider-meta">
-              <span class="setup-provider-name">Google Gemini API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask Gemini to read the news and judge the market.</span></button></span>
-              <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://aistudio.google.com/apikey'); return false;">Get a key</a></span>
+          <div id="setupTabAi" class="setup-tab-pane is-active">
+            <div class="setup-keys-intro">One key is all you need.</div>
+            <!-- Google Gemini -->
+            <div class="setup-provider-card">
+              <div class="setup-provider-meta">
+                <span class="setup-provider-name">Google Gemini API Key<button type="button" class="setup-key-help" aria-label="What is this API key for?">?<span class="setup-key-help-popup">Lets TradeBot0 ask Gemini to read the news and judge the market.</span></button></span>
+                <span class="setup-provider-hint">News reading and market analysis. <a class="setup-key-link" href="#" onclick="openProviderKeyPage('https://aistudio.google.com/apikey'); return false;">Get a key</a></span>
+              </div>
+              <div class="setup-input-group">
+                <input type="password" id="keyGemini" class="setup-key-input num" placeholder="AIzaSy..." autocomplete="off" spellcheck="false" />
+                <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyGemini', this)" title="Show / Hide Key">
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
+                </button>
+                <button type="button" class="btn lg-btn setup-test-btn" id="btnTestGemini" onclick="testProviderKey('gemini')">
+                  <span>Test</span>
+                </button>
+              </div>
+              <div class="setup-provider-status" id="statusGemini">
+                <span class="setup-status-pill neutral">Not added</span>
+              </div>
             </div>
-            <div class="setup-input-group">
-              <input type="password" id="keyGemini" class="setup-key-input num" placeholder="AIzaSy..." autocomplete="off" spellcheck="false" />
-              <button type="button" class="setup-eye-btn" onclick="toggleKeyVisibility('keyGemini', this)" title="Show / Hide Key">
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5-6.5-5-6.5-5z"></path><circle cx="8" cy="8" r="2.5"></circle></svg>
-              </button>
-              <button type="button" class="btn lg-btn setup-test-btn" id="btnTestGemini" onclick="testProviderKey('gemini')">
-                <span>Test</span>
-              </button>
+
+            <div class="setup-pref-strip">
+              <div class="setup-pref-item">
+                <label class="setup-pref-label" for="setupGeminiModelSelect">Gemini Model</label>
+                <select id="setupGeminiModelSelect" class="setup-pref-select num" onchange="handleAiPrefsChanged()">
+                  <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Default)</option>
+                  <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Ultra-Fast)</option>
+                  <option value="gemini-2.5-flash">gemini-2.5-flash (Deep Reasoning)</option>
+                </select>
+              </div>
+              <div class="setup-pref-item setup-pref-item--toggle">
+                <label class="setup-pref-label" for="setupPreloadToggle">Background Article Preload</label>
+                <label class="setup-pref-toggle">
+                  <input type="checkbox" id="setupPreloadToggle" onchange="handleAiPrefsChanged()" checked />
+                  <span class="setup-pref-toggle-text">Preload articles while collapsed</span>
+                </label>
+              </div>
             </div>
-            <div class="setup-provider-status" id="statusGemini">
-              <span class="setup-status-pill neutral">Not added</span>
+          </div>
+
+          <div id="setupTabAppearance" class="setup-tab-pane" style="display:none;">
+            <div class="setup-keys-intro">Choose your arena visual backdrop mode.</div>
+            <div class="backdrop-radio-grid">
+              <button type="button" class="backdrop-radio-card is-selected" id="backdropCardShader" onclick="selectBackdropOption('shader')">
+                <span class="backdrop-swatch backdrop-swatch--shader" aria-hidden="true"></span>
+                <span class="backdrop-card-title">HorizonX Shader</span>
+                <span class="backdrop-card-desc">WebGL silver stream</span>
+              </button>
+              <button type="button" class="backdrop-radio-card" id="backdropCardGrainient" onclick="selectBackdropOption('grainient')">
+                <span class="backdrop-swatch backdrop-swatch--grainient" aria-hidden="true"></span>
+                <span class="backdrop-card-title">Grainient Obsidian</span>
+                <span class="backdrop-card-desc">Layered static mist</span>
+              </button>
+              <button type="button" class="backdrop-radio-card" id="backdropCardMinimal" onclick="selectBackdropOption('minimal')">
+                <span class="backdrop-swatch backdrop-swatch--minimal" aria-hidden="true"></span>
+                <span class="backdrop-card-title">Minimal Obsidian</span>
+                <span class="backdrop-card-desc">Zero GPU backdrop</span>
+              </button>
             </div>
           </div>
 
@@ -966,6 +1089,47 @@
         <button class="modal-act-btn modal-act-ghost" onclick="closeWizardCloseConfirm()">
           <span>Keep Editing</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Strategy Detail Inspection Modal -->
+  <div class="ss-modal-overlay strat-detail-overlay" id="strategyDetailModal" style="display:none;" onclick="handleStrategyDetailOverlayClick(event)">
+    <div class="ss-modal strat-detail-modal lg-glass lg-spot-card" role="dialog" aria-modal="true" aria-labelledby="stratDetailTitle">
+      <button type="button" class="ss-modal-close" onclick="closeStrategyDetailModal()" title="Close" aria-label="Close">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M3 3l10 10M13 3L3 13"></path>
+        </svg>
+      </button>
+      <div class="strat-detail-head">
+        <div class="strat-detail-ident">
+          <span class="rank-badge num" id="stratDetailRank">#1</span>
+          <h2 class="ss-modal-title" id="stratDetailTitle">Strategy Details</h2>
+          <span class="lev-pill lev-spot num" id="stratDetailLevBadge">Spot 1x</span>
+        </div>
+        <div class="strat-detail-sub num" id="stratDetailSubtitle">Gen #1 · Portfolio Telemetry</div>
+      </div>
+      <div class="strat-detail-kpis num">
+        <div class="strat-detail-kpi"><span class="strat-detail-kpi-lbl">Equity</span><span class="strat-detail-kpi-val" id="stratDetailEquity">$100,000</span></div>
+        <div class="strat-detail-kpi"><span class="strat-detail-kpi-lbl">ROI</span><span class="strat-detail-kpi-val" id="stratDetailRoi">+0.00%</span></div>
+        <div class="strat-detail-kpi"><span class="strat-detail-kpi-lbl">Win / Max DD</span><span class="strat-detail-kpi-val" id="stratDetailWrDd">0% / 0.0%</span></div>
+        <div class="strat-detail-kpi"><span class="strat-detail-kpi-lbl">Sharpe / Fitness</span><span class="strat-detail-kpi-val" id="stratDetailSharpe">0.0 / +0.0</span></div>
+      </div>
+      <div class="strat-detail-curve-panel">
+        <div class="strat-detail-section-head">
+          <span>Session Equity Curve</span>
+          <span class="num" id="stratDetailCurveHover">Hover curve to inspect</span>
+        </div>
+        <svg class="strat-detail-curve-svg" id="stratDetailCurveSvg" viewBox="0 0 460 110" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="strat-detail-section-head"><span>Active Genome Parameters</span></div>
+      <div class="strat-detail-genome-grid num" id="stratDetailGenomeGrid"></div>
+      <div class="strat-detail-section-head"><span>Recent Strategy Fills</span></div>
+      <div class="strat-detail-fills-scroll scroll-area-faded">
+        <table class="strat-detail-fills-table num">
+          <thead><tr><th>Time</th><th>Action</th><th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">PnL</th><th>Trigger</th></tr></thead>
+          <tbody id="stratDetailFillsBody"></tbody>
+        </table>
       </div>
     </div>
   </div>

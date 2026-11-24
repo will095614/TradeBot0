@@ -19,10 +19,19 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("tradebot0.config_manager")
 
+ALLOWED_GEMINI_MODELS = (
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+)
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+
 DEFAULT_SYSTEM_CONFIG: Dict[str, Any] = {
     "has_completed_onboarding": False,
     "skip_ai_mode": False,
     "gemini_api_key": "",
+    "gemini_model": DEFAULT_GEMINI_MODEL,
+    "preload_intel_articles": True,
     "last_setup_ts": 0.0,
     "legacy_omniroute_migrated": False,
     "legacy_runtime_cleaned": False,
@@ -283,3 +292,42 @@ class ConfigManager:
                 self._config_cache = None
 
         return {"imported_key": imported, "cleaned_runtime": cleaned_runtime}
+
+    @staticmethod
+    def sanitize_model_name(raw_model: Any) -> str:
+        candidate = str(raw_model or "").strip()
+        if candidate.lower().startswith("gemini/"):
+            candidate = candidate[len("gemini/"):].strip()
+        return candidate
+
+    def get_gemini_model(self) -> str:
+        """Returns the persisted Gemini model ID, falling back to DEFAULT_GEMINI_MODEL."""
+        cfg = self.load_config()
+        candidate = self.sanitize_model_name(cfg.get("gemini_model", DEFAULT_GEMINI_MODEL))
+        return candidate if candidate in ALLOWED_GEMINI_MODELS else DEFAULT_GEMINI_MODEL
+
+    def set_gemini_model(self, raw_model: Any) -> Dict[str, Any]:
+        """Validates and persists the selected Gemini model ID."""
+        candidate = self.sanitize_model_name(raw_model)
+        if candidate not in ALLOWED_GEMINI_MODELS:
+            return {
+                "ok": False,
+                "error": f"Unsupported Gemini model: {raw_model!r}",
+                "allowed_models": list(ALLOWED_GEMINI_MODELS),
+            }
+        if not self.save_config({"gemini_model": candidate}):
+            return {"ok": False, "error": "Failed to persist Gemini model preference."}
+        return {"ok": True, "gemini_model": candidate}
+
+    def get_preload_intel_articles(self) -> bool:
+        """Returns whether background article preloading is enabled."""
+        cfg = self.load_config()
+        val = cfg.get("preload_intel_articles", True)
+        return True if val is None else bool(val)
+
+    def set_preload_intel_articles(self, enabled: Any) -> Dict[str, Any]:
+        """Persists the background article preload preference."""
+        flag = bool(enabled)
+        if not self.save_config({"preload_intel_articles": flag}):
+            return {"ok": False, "error": "Failed to persist article preload preference."}
+        return {"ok": True, "preload_intel_articles": flag}

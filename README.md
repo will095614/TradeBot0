@@ -28,7 +28,7 @@ TradeBot0 是一套在本機運行的 ETH/USD 多策略模擬交易軟體。系�
 
 ### 1. 使用安裝程式（一般使用者）
 
-1. 下載 [TradeBot0Setup-V3.0.0.exe](https://github.com/will095614/TradeBot0/releases/download/v3.0.0/TradeBot0Setup-V3.0.0.exe) 並執行安裝。
+1. 下載 [TradeBot0Setup-V3.1.0.exe](https://github.com/will095614/TradeBot0/releases/download/v3.1.0/TradeBot0Setup-V3.1.0.exe) 並執行安裝。
 2. 因安裝檔未包含商業數位簽章，Windows SmartScreen 可能顯示提示視窗，點擊「其他資訊」並選擇「仍要執行」即可繼續。
 3. 首次啟動將顯示設定精靈：
    - 輸入您的 Google Gemini API Key 並點擊測試與啟動，即可開始使用。
@@ -129,4 +129,4 @@ TradeBot0 內建的 AI 會幫你閱讀市場新聞、判斷市場方向。
 
 ## 下載
 
-[TradeBot0Setup-V3.0.0.exe](https://github.com/will095614/TradeBot0/releases/download/v3.0.0/TradeBot0Setup-V3.0.0.exe)（GitHub Release 單一載點）。
+[TradeBot0Setup-V3.1.0.exe](https://github.com/will095614/TradeBot0/releases/download/v3.1.0/TradeBot0Setup-V3.1.0.exe)（GitHub Release 單一載點）。

@@ -34,6 +34,7 @@ V2.5.2 (2026-11-23): Fixed brand pod subtitle truncation, added styled password 
 V2.5.3 (2026-11-23): Added installer "Launch TradeBot0" post-install option (checked by default) and instant PyInstaller native startup splash screen auto-closing when the main window opens.
 V2.6.0 (2026-11-23): UI optimization overhaul (HorizonX Silver Stream backdrop, grainient fallback, compositor view/splash transitions, rolling counters, command palette, Toast/Intel polish), custom app icon & AppUserModelID, real-time news freshness, and full backend/gateway/frontend debug & optimization sweep.
 V3.0.0 (2026-11-25): Complete OmniRoute and Node.js gateway removal — direct Google Gemini REST API client (GeminiClient) with SSE progress and structured error handling, simplified single-key ConfigManager with one-time legacy cleanup, unified AI Hub telemetry, and splash-to-toast catch-up on session restore.
+V3.1.0 (2026-11-25): Modular Live Telemetry Bay (Gauges, 5x12 Activity Heatmap, Evolutions feed), Strategy Detail Inspection modal with hover equity curve & genome inspector, Intel Hub AI bot avatar & smooth grid accordion, multi-timeframe 1m/5m/15m chart switcher, Private Balance mode (Shift+P), 2-tab Setup Wizard (Gemini model & background preload controls + Appearance Backdrop cards), offline recovery Exit action, and CSV/JSON Trade Journal exports.
 Going forward each new batch bumps the matching number by 1 (new
 feature group -> Y, fix / optimization batch -> Z, breaking change
 -> X with Y and Z reset to 0). The comparison helper accepts an
@@ -41,4 +42,4 @@ optional ``v``/``V`` prefix and plain ``X.Y.Z`` too.
 """
 
 APP_NAME = "TradeBot0"
-APP_VERSION = "V3.0.0"
+APP_VERSION = "V3.1.0"

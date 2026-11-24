@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import base64
+import csv
+import json
 import logging
 import os
 import pathlib
 import sys
+import tempfile
 import threading
 import time
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
+from src.arena.order import OrderSide, PositionSide
 from src.data.live_engine import LiveArenaEngine
-from src.intelligence.config_manager import ConfigManager
+from src.gui.view_model import _safe_fmt_hms
+from src.intelligence.config_manager import ALLOWED_GEMINI_MODELS, ConfigManager
 from src.intelligence.gemini_client import DEFAULT_GEMINI_BASE_URL, probe_gemini_api_key
 from src.update_checker import check_for_updates as _run_update_check
 from src.update_checker import get_manifest_url
@@ -535,6 +540,9 @@ class _ArenaBridgeApi:
                 "skip_ai_mode": bool(cfg.get("skip_ai_mode", False)),
                 "gemini_key_configured": key_configured,
                 "ai_online": ai_online,
+                "gemini_model": self._dashboard.config_manager.get_gemini_model(),
+                "allowed_models": list(ALLOWED_GEMINI_MODELS),
+                "preload_intel_articles": self._dashboard.config_manager.get_preload_intel_articles(),
             }
         except Exception as e:
             logger.error("Error reading setup status: %s", e)
@@ -545,6 +553,9 @@ class _ArenaBridgeApi:
                 "skip_ai_mode": False,
                 "gemini_key_configured": False,
                 "ai_online": False,
+                "gemini_model": ALLOWED_GEMINI_MODELS[0],
+                "allowed_models": list(ALLOWED_GEMINI_MODELS),
+                "preload_intel_articles": True,
             }
 
     def test_api_key(self, provider: str = "gemini", key: Optional[str] = None) -> Dict[str, Any]:
@@ -578,9 +589,167 @@ class _ArenaBridgeApi:
             logger.debug("Save launch status read failed: %s", e)
             return {"status": "idle", "message": "", "progress": None, "phase": ""}
 
-    def save_and_launch(self, keys: Any = None) -> Dict[str, Any]:
-        """Persists the Gemini API key into system_config.json, hot-reloads the running
-        client, verifies reachability, and starts the live trading engine.
+    def update_ai_preferences(
+        self,
+        model: Optional[str] = None,
+        preload_articles: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Persists and hot-applies Gemini model and article preload preferences."""
+        try:
+            cm = self._dashboard.config_manager
+            if model is not None:
+                m_res = cm.set_gemini_model(model)
+                if not m_res.get("ok"):
+                    return {"ok": False, "error": str(m_res.get("error") or "Invalid model")}
+            if preload_articles is not None:
+                p_res = cm.set_preload_intel_articles(preload_articles)
+                if not p_res.get("ok"):
+                    return {"ok": False, "error": str(p_res.get("error") or "Failed to persist preload preference")}
+
+            active_model = cm.get_gemini_model()
+            active_preload = cm.get_preload_intel_articles()
+            engine = getattr(self._dashboard, "engine", None)
+            if engine is not None:
+                client = getattr(engine, "llm_client", None)
+                if client is not None and hasattr(client, "set_models"):
+                    client.set_models(active_model, active_model)
+                engine.preload_intel_articles = active_preload
+            return {
+                "ok": True,
+                "gemini_model": active_model,
+                "preload_intel_articles": active_preload,
+            }
+        except Exception as e:
+            logger.error("Error updating AI preferences: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def export_trade_journal(
+        self,
+        fmt: str = "csv",
+        output_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Exports the fill ledger as CSV or JSON for external review."""
+        fmt_norm = str(fmt or "csv").strip().lower()
+        if fmt_norm not in ("csv", "json"):
+            return {"ok": False, "error": "Format must be 'csv' or 'json'."}
+        try:
+            engine = self._dashboard.engine
+            with engine.lock:
+                fill_recs = list(getattr(engine, "fill_records", []) or [])
+                display_map = dict(getattr(engine, "STRATEGY_DISPLAY", {}) or {})
+                reason_map = dict(getattr(engine, "REASON_DISPLAY", {}) or {})
+
+            rows = []
+            for idx, rec in enumerate(fill_recs, start=1):
+                pid = str(getattr(rec, "portfolio_id", "") or "")
+                side_obj = getattr(rec, "side", None)
+                side_val = side_obj.value if hasattr(side_obj, "value") else str(side_obj or "")
+                pos_side_obj = getattr(rec, "position_side", PositionSide.LONG)
+                is_short = pos_side_obj == PositionSide.SHORT
+                if is_short:
+                    is_entry = side_obj == OrderSide.SELL
+                    action = "OPEN SHORT" if is_entry else "COVER SHORT"
+                else:
+                    is_entry = side_obj == OrderSide.BUY
+                    action = "OPEN LONG" if is_entry else "CLOSE LONG"
+                reason_obj = getattr(rec, "reason", None)
+                reason_raw = reason_obj.value if hasattr(reason_obj, "value") else str(reason_obj or "")
+                reason_label = reason_map.get(reason_raw, reason_raw)
+                ts_raw = float(getattr(rec, "timestamp", 0.0) or 0.0)
+                entry_p = getattr(rec, "entry_price", None)
+                rows.append({
+                    "seq": int(getattr(rec, "fill_seq", idx) or idx),
+                    "timestamp": ts_raw,
+                    "time": _safe_fmt_hms(ts_raw),
+                    "portfolio_id": pid,
+                    "strategy": display_map.get(pid, pid),
+                    "side": side_val,
+                    "action": action,
+                    "qty": float(getattr(rec, "qty", 0.0) or 0.0),
+                    "price": float(getattr(rec, "price", 0.0) or 0.0),
+                    "entry_price": float(entry_p) if entry_p is not None else None,
+                    "realized_pnl": float(getattr(rec, "realized_pnl", 0.0) or 0.0) if not is_entry else None,
+                    "reason": reason_label,
+                    "is_live": bool(getattr(rec, "is_live", False)),
+                })
+
+            default_name = f"tradebot0_journal_{time.strftime('%Y%m%d_%H%M%S')}.{fmt_norm}"
+            dest: Optional[pathlib.Path] = None
+            if output_path:
+                dest = pathlib.Path(output_path)
+            elif getattr(self._dashboard, "window", None) is not None and hasattr(self._dashboard.window, "create_file_dialog"):
+                try:
+                    import webview  # type: ignore[import-not-found]
+                    dlg_type = getattr(webview, "FileDialog", None)
+                    save_mode = getattr(dlg_type, "SAVE", None) if dlg_type is not None else getattr(webview, "SAVE_DIALOG", None)
+                    if save_mode is not None:
+                        file_types = ("CSV Files (*.csv)",) if fmt_norm == "csv" else ("JSON Files (*.json)",)
+                        picked = self._dashboard.window.create_file_dialog(
+                            save_mode,
+                            directory=str(self._dashboard.config_manager.data_dir),
+                            save_filename=default_name,
+                            file_types=file_types,
+                        )
+                        if not picked:
+                            return {"ok": False, "cancelled": True}
+                        chosen = picked[0] if isinstance(picked, (tuple, list)) else picked
+                        dest = pathlib.Path(str(chosen))
+                except Exception as dlg_err:
+                    logger.debug("File dialog fallback to data_dir: %s", dlg_err)
+
+            if dest is None:
+                export_dir = pathlib.Path(self._dashboard.config_manager.data_dir) / "exports"
+                export_dir.mkdir(parents=True, exist_ok=True)
+                dest = export_dir / default_name
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+
+            fd, tmp_name = tempfile.mkstemp(dir=str(dest.parent), prefix=".journal_", suffix=f".{fmt_norm}")
+            tmp_path = pathlib.Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                    if fmt_norm == "csv":
+                        fieldnames = [
+                            "seq", "timestamp", "time", "portfolio_id", "strategy",
+                            "side", "action", "qty", "price", "entry_price",
+                            "realized_pnl", "reason", "is_live",
+                        ]
+                        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    else:
+                        json.dump(
+                            {
+                                "version": APP_VERSION,
+                                "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                "count": len(rows),
+                                "trades": rows,
+                            },
+                            handle,
+                            indent=2,
+                            ensure_ascii=False,
+                        )
+                os.replace(tmp_path, dest)
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+
+            return {"ok": True, "path": str(dest), "count": len(rows), "format": fmt_norm}
+        except Exception as e:
+            logger.error("Failed to export trade journal (%s): %s", fmt_norm, e)
+            return {"ok": False, "error": str(e)}
+
+    def save_and_launch(
+        self,
+        keys: Any = None,
+        model: Optional[str] = None,
+        preload_articles: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Persists the Gemini API key and AI preferences into system_config.json,
+        hot-reloads the running client, verifies reachability, and starts the live trading engine.
         """
         with self._save_launch_exec_lock:
             try:
@@ -590,6 +759,10 @@ class _ArenaBridgeApi:
                 raw_key = ""
                 if isinstance(keys, dict):
                     raw_key = str(keys.get("gemini") or "")
+                    if model is None and keys.get("model") is not None:
+                        model = str(keys.get("model"))
+                    if preload_articles is None and "preload_articles" in keys:
+                        preload_articles = bool(keys.get("preload_articles"))
                 elif isinstance(keys, str):
                     raw_key = keys
                 cleaned_key = cm.sanitize_key(raw_key)
@@ -602,7 +775,18 @@ class _ArenaBridgeApi:
                         err_msg = str(key_res.get("error") or "Failed to save Gemini API key.")
                         self._set_save_launch_stage("failed", err_msg, 25, "keys")
                         return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
+                if model is not None:
+                    m_res = cm.set_gemini_model(model)
+                    if not m_res.get("ok"):
+                        err_msg = str(m_res.get("error") or "Unsupported Gemini model.")
+                        self._set_save_launch_stage("failed", err_msg, 25, "keys")
+                        return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
+                if preload_articles is not None:
+                    cm.set_preload_intel_articles(preload_articles)
+
                 active_key = cm.get_gemini_api_key()
+                active_model = cm.get_gemini_model()
+                active_preload = cm.get_preload_intel_articles()
 
                 # 2. Update system config
                 self._set_save_launch_stage("saving-config", "Saving setup...", 55, "config")
@@ -616,14 +800,22 @@ class _ArenaBridgeApi:
                     self._set_save_launch_stage("failed", err_msg, 55, "config")
                     return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
 
-                # 3. Hot-reload client key and perform lightweight probe
+                # 3. Hot-reload client key/model and perform lightweight probe
                 self._set_save_launch_stage("verifying-ai", "Connecting to Gemini AI...", 75, "ai")
                 ai_online = False
                 engine = getattr(self._dashboard, "engine", None)
-                if engine is not None and hasattr(engine, "update_gemini_api_key"):
-                    engine.update_gemini_api_key(active_key)
+                if engine is not None:
+                    if hasattr(engine, "update_gemini_api_key"):
+                        engine.update_gemini_api_key(active_key)
+                    client_ref = getattr(engine, "llm_client", None)
+                    if client_ref is not None and hasattr(client_ref, "set_models"):
+                        client_ref.set_models(active_model, active_model)
+                    engine.preload_intel_articles = active_preload
                 if active_key:
-                    probe = probe_gemini_api_key(active_key, timeout=3.0)
+                    if active_model != ALLOWED_GEMINI_MODELS[0]:
+                        probe = probe_gemini_api_key(active_key, model=active_model, timeout=3.0)
+                    else:
+                        probe = probe_gemini_api_key(active_key, timeout=3.0)
                     ai_online = bool(probe.get("ok"))
                     client = getattr(engine, "llm_client", None)
                     if client is not None:
@@ -642,6 +834,8 @@ class _ArenaBridgeApi:
                     "ok": True,
                     "ai_online": bool(ai_online),
                     "gemini_key_configured": bool(active_key),
+                    "gemini_model": active_model,
+                    "preload_intel_articles": active_preload,
                     "message": msg,
                 }
             except Exception as e:
@@ -685,12 +879,17 @@ class ArenaDashboard:
         except Exception:
             _auto_redeploy = True
         _api_key = self.config_manager.get_gemini_api_key()
+        _gemini_model = self.config_manager.get_gemini_model()
+        _preload_articles = self.config_manager.get_preload_intel_articles()
         self.engine = LiveArenaEngine(
             symbol="ETH/USD",
             initial_cash=initial_cash,
             auto_redeploy_when_flat=_auto_redeploy,
             llm_base_url=os.getenv("LLM_BASE_URL") or DEFAULT_GEMINI_BASE_URL,
             gemini_api_key=_api_key or None,
+            model_ingest=_gemini_model,
+            model_commander=_gemini_model,
+            preload_intel_articles=_preload_articles,
         )
         self.window = None
         self.allow_exit = False
@@ -775,12 +974,17 @@ class ArenaDashboard:
                 return
 
             _api_key = self.config_manager.get_gemini_api_key()
+            _gemini_model = self.config_manager.get_gemini_model()
+            _preload_articles = self.config_manager.get_preload_intel_articles()
             new_engine = LiveArenaEngine(
                 symbol="ETH/USD",
                 initial_cash=self.initial_cash,
                 auto_redeploy_when_flat=old_auto_redeploy,
                 llm_base_url=os.getenv("LLM_BASE_URL") or DEFAULT_GEMINI_BASE_URL,
                 gemini_api_key=_api_key or None,
+                model_ingest=_gemini_model,
+                model_commander=_gemini_model,
+                preload_intel_articles=_preload_articles,
             )
             new_engine.auto_evolve_interval_sec = old_interval
             new_engine.auto_evolve_enabled = old_enabled

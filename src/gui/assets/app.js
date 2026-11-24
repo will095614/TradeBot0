@@ -487,6 +487,9 @@ async function initAppBoot() {
       const res = await window.pywebview.api.get_setup_status();
       if (res && res.status === 'ok') {
         setupCheckedOk = true;
+        if (typeof res.preload_intel_articles === 'boolean') {
+          intelArticlePreloadEnabled = res.preload_intel_articles;
+        }
         if (!res.onboarding_completed && !res.skip_ai_mode) {
           needsOnboarding = true;
         } else {
@@ -1117,6 +1120,12 @@ async function pollBackend() {
         if (state.candles_unchanged && latestState && latestState.candles) {
           state.candles = latestState.candles;
         }
+        if (state.candles_5m_unchanged && latestState && latestState.candles_5m) {
+          state.candles_5m = latestState.candles_5m;
+        }
+        if (state.candles_15m_unchanged && latestState && latestState.candles_15m) {
+          state.candles_15m = latestState.candles_15m;
+        }
         if (state.fills_unchanged && latestState && latestState.fills) {
           state.fills = latestState.fills;
         }
@@ -1127,6 +1136,9 @@ async function pollBackend() {
         }
         if (state.intel_events_unchanged && state.intel_hub && latestState && latestState.intel_hub && latestState.intel_hub.events) {
           state.intel_hub.events = latestState.intel_hub.events;
+        }
+        if (state.ui_prefs && typeof state.ui_prefs.preload_intel_articles === 'boolean') {
+          intelArticlePreloadEnabled = state.ui_prefs.preload_intel_articles;
         }
         latestState = state;
         if (!splashCompleted && !isWizardOpen) {
@@ -1532,6 +1544,256 @@ function showTVConfigInfo() {
   );
 }
 
+let chartTimeframe = '1m';
+let modBayTab = 'gauges';
+let isPrivateBalance = false;
+let activeDetailStratId = null;
+
+function setChartTimeframe(tf) {
+  const valid = ['1m', '5m', '15m'];
+  chartTimeframe = valid.indexOf(tf) !== -1 ? tf : '1m';
+  const grp = document.getElementById('chartTimeframeGroup');
+  if (grp) {
+    grp.querySelectorAll('.tf-btn').forEach((btn) => btn.classList.remove('is-active'));
+  }
+  const activeBtn = document.getElementById('btnTf' + chartTimeframe);
+  if (activeBtn) activeBtn.classList.add('is-active');
+  const readout = document.getElementById('chartScrubReadout');
+  if (readout && !priceHoverPos) {
+    readout.textContent = `${chartTimeframe} Candles`;
+  }
+  lastNewestCandleTime = 0;
+  animCandles = [];
+  lastPausedCanvasSig = '';
+  if (latestState) drawPriceChart(latestState);
+}
+window.setChartTimeframe = setChartTimeframe;
+
+function setModBayTab(tab) {
+  const valid = ['gauges', 'heatmap', 'evolutions'];
+  modBayTab = valid.indexOf(tab) !== -1 ? tab : 'gauges';
+  const bar = document.getElementById('modBayTabBar');
+  if (bar) {
+    bar.querySelectorAll('.mod-tab-btn').forEach((b) => {
+      b.classList.remove('is-active');
+      b.setAttribute('aria-selected', 'false');
+    });
+  }
+  const btnMap = {
+    gauges: 'btnModTabGauges',
+    heatmap: 'btnModTabHeatmap',
+    evolutions: 'btnModTabEvolutions',
+  };
+  const activeBtn = document.getElementById(btnMap[modBayTab]);
+  if (activeBtn) {
+    activeBtn.classList.add('is-active');
+    activeBtn.setAttribute('aria-selected', 'true');
+  }
+  const panes = {
+    gauges: document.getElementById('modBayGauges'),
+    heatmap: document.getElementById('modBayHeatmap'),
+    evolutions: document.getElementById('modBayEvolutions'),
+  };
+  Object.keys(panes).forEach((k) => {
+    const pane = panes[k];
+    if (!pane) return;
+    const isAct = k === modBayTab;
+    pane.classList.toggle('is-active', isAct);
+    pane.style.display = isAct ? 'flex' : 'none';
+  });
+  if (latestState) renderModularTelemetryBay(latestState);
+}
+window.setModBayTab = setModBayTab;
+
+function applyPrivateBalanceUi() {
+  if (document.body) {
+    document.body.classList.toggle('private-balance', isPrivateBalance);
+  }
+  const btn = document.getElementById('btnPrivateBalance');
+  if (btn) {
+    btn.classList.toggle('btn-private-active', isPrivateBalance);
+    btn.setAttribute('aria-pressed', isPrivateBalance ? 'true' : 'false');
+  }
+}
+
+function togglePrivateBalance() {
+  isPrivateBalance = !isPrivateBalance;
+  try {
+    localStorage.setItem('tb0_private_balance', isPrivateBalance ? '1' : '0');
+  } catch (_) { }
+  applyPrivateBalanceUi();
+  if (typeof showChartToast === 'function') {
+    showChartToast({
+      action: 'VIEW',
+      triggerReason: isPrivateBalance ? 'Private Balance Enabled (Balances Masked)' : 'Private Balance Disabled',
+      timestamp: Date.now(),
+    });
+  }
+}
+window.togglePrivateBalance = togglePrivateBalance;
+
+async function exportTradeJournal(fmt = 'csv') {
+  const fmtNorm = (String(fmt || 'csv').toLowerCase() === 'json') ? 'json' : 'csv';
+  if (!(window.pywebview && window.pywebview.api && typeof window.pywebview.api.export_trade_journal === 'function')) {
+    return;
+  }
+  try {
+    const res = await window.pywebview.api.export_trade_journal(fmtNorm);
+    if (res && res.ok) {
+      if (typeof showChartToast === 'function') {
+        showChartToast({
+          action: 'EXPORT',
+          triggerReason: `Exported ${res.count || 0} trades (${fmtNorm.toUpperCase()})`,
+          timestamp: Date.now(),
+        });
+      }
+    } else if (res && !res.cancelled && typeof showChartToast === 'function') {
+      showChartToast({
+        action: 'ERROR',
+        triggerReason: res.error || 'Trade journal export failed',
+        timestamp: Date.now(),
+      });
+    }
+  } catch (e) {
+    console.debug('exportTradeJournal err:', e);
+  }
+}
+window.exportTradeJournal = exportTradeJournal;
+
+function setGaugeArcRatio(arcEl, ratio, strokeColor) {
+  if (!arcEl) return;
+  const maxLen = 119.38;
+  const clamped = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
+  const offset = (maxLen * (1 - clamped)).toFixed(2);
+  if (arcEl.style.strokeDashoffset !== offset) arcEl.style.strokeDashoffset = offset;
+  if (strokeColor && arcEl.style.stroke !== strokeColor) arcEl.style.stroke = strokeColor;
+}
+
+function renderModularTelemetryBay(state) {
+  if (!state) return;
+  const statusPill = document.getElementById('modBayStatusPill');
+  if (statusPill) {
+    const isPaused = Boolean(state.paused);
+    const nextTxt = isPaused ? 'PAUSED' : 'LIVE';
+    if (statusPill.textContent !== nextTxt) statusPill.textContent = nextTxt;
+    statusPill.classList.toggle('is-live', !isPaused);
+  }
+  const rt = state.risk_telemetry || {};
+  const macro = state.macro_commander || {};
+
+  // Always update visible active bay pane
+  if (modBayTab === 'gauges') {
+    const er = rt.chop_er_20;
+    const thresh = Number(rt.chop_threshold || 0.25);
+    const blockedCnt = Number(rt.chop_blocked_count || 0);
+    const erArc = document.getElementById('modGaugeErArc');
+    const erVal = document.getElementById('modGaugeErVal');
+    const erMeta = document.getElementById('modGaugeErMeta');
+    if (typeof er === 'number' && Number.isFinite(er)) {
+      const blocked = Boolean(rt.chop_blocked);
+      setGaugeArcRatio(erArc, er, blocked ? '#F87171' : '#34D399');
+      const nextEr = er.toFixed(2);
+      if (erVal && erVal.textContent !== nextEr) erVal.textContent = nextEr;
+      const nextMeta = `${blocked ? 'CHOP BLOCK' : 'PASS'} · ${blockedCnt} blk`;
+      if (erMeta && erMeta.textContent !== nextMeta) erMeta.textContent = nextMeta;
+    } else {
+      setGaugeArcRatio(erArc, 0, '#64748B');
+      if (erVal && erVal.textContent !== '--') erVal.textContent = '--';
+      const nextMeta = `Warming (${thresh.toFixed(2)})`;
+      if (erMeta && erMeta.textContent !== nextMeta) erMeta.textContent = nextMeta;
+    }
+
+    const lev = Number(rt.gross_leverage || 0);
+    const expUsd = Number(rt.gross_exposure_usd || 0);
+    const levArc = document.getElementById('modGaugeLevArc');
+    const levVal = document.getElementById('modGaugeLevVal');
+    const levMeta = document.getElementById('modGaugeLevMeta');
+    const levColor = lev >= 2.2 ? '#FBBF24' : '#38BDF8';
+    setGaugeArcRatio(levArc, lev / 3.0, levColor);
+    const nextLev = `${lev.toFixed(2)}x`;
+    if (levVal && levVal.textContent !== nextLev) levVal.textContent = nextLev;
+    if (levMeta) levMeta.classList.add('private-maskable');
+    const nextExp = `$${Math.round(expUsd).toLocaleString()} exp`;
+    if (levMeta && levMeta.textContent !== nextExp) levMeta.textContent = nextExp;
+
+    const rMult = Number(rt.macro_risk_mult != null ? rt.macro_risk_mult : (macro.risk_multiplier || 1.0));
+    const rArc = document.getElementById('modGaugeRiskArc');
+    const rVal = document.getElementById('modGaugeRiskVal');
+    const rMeta = document.getElementById('modGaugeRiskMeta');
+    const rRatio = (rMult - 0.5) / 1.0;
+    const rColor = rMult < 0.9 ? '#FBBF24' : (rMult > 1.1 ? '#34D399' : '#38BDF8');
+    setGaugeArcRatio(rArc, rRatio, rColor);
+    const nextMult = `${rMult.toFixed(2)}x`;
+    if (rVal && rVal.textContent !== nextMult) rVal.textContent = nextMult;
+    const rawBias = String(macro.directional_bias || 'BIDIRECTIONAL');
+    const shortBias = rawBias === 'BIDIRECTIONAL' ? 'BIDIR' : rawBias.replace('_ONLY', '').replace('_', ' ');
+    if (rMeta && rMeta.textContent !== shortBias) rMeta.textContent = shortBias;
+  } else if (modBayTab === 'heatmap') {
+    const hm = rt.activity_heatmap || {};
+    const labels = hm.labels || ['AGG', 'CONS', 'TRAIL', 'ORB', 'MEAN'];
+    const matrix = Array.isArray(hm.matrix) ? hm.matrix : [];
+    const bLabels = Array.isArray(hm.bucket_labels) ? hm.bucket_labels : [];
+    const maxCnt = Math.max(1, Number(hm.max_count || 0));
+    const totalFills = matrix.reduce((acc, row) => acc + (Array.isArray(row) ? row.reduce((a, b) => a + Number(b || 0), 0) : 0), 0);
+    const hmSig = JSON.stringify({ matrix, bLabels });
+    const gridEl = document.getElementById('modHeatmapGrid');
+    const sumEl = document.getElementById('modHeatmapSummary');
+    if (sumEl) {
+      const nextSum = `${totalFills} fills / 60m`;
+      if (sumEl.textContent !== nextSum) sumEl.textContent = nextSum;
+    }
+    if (gridEl && gridEl._hmSig !== hmSig) {
+      gridEl._hmSig = hmSig;
+      let html = '';
+      for (let r = 0; r < labels.length; r++) {
+        const row = Array.isArray(matrix[r]) ? matrix[r] : [];
+        html += `<div class="mod-hm-row"><span class="mod-hm-lbl">${escapeHtml(labels[r])}</span>`;
+        for (let c = 0; c < 12; c++) {
+          const val = Number(row[c] || 0);
+          const lv = val <= 0 ? 0 : (val >= maxCnt ? 3 : (val >= maxCnt * 0.5 ? 2 : 1));
+          const bLbl = bLabels[c] || '';
+          const tip = `${labels[r]} ${bLbl ? '@ ' + bLbl : ''}: ${val} fill${val === 1 ? '' : 's'}`;
+          html += `<span class="mod-hm-cell" data-lv="${lv}" title="${escapeHtml(tip)}"></span>`;
+        }
+        html += '</div>';
+      }
+      if (bLabels.length >= 12) {
+        html += '<div class="mod-hm-axis"><span></span>';
+        for (let c = 0; c < 12; c++) {
+          const lbl = (c === 0 || c === 6 || c === 11) ? bLabels[c] : '';
+          html += `<span>${escapeHtml(lbl)}</span>`;
+        }
+        html += '</div>';
+      }
+      gridEl.innerHTML = html;
+    }
+  } else if (modBayTab === 'evolutions') {
+    const evts = Array.isArray(state.evolution_events) ? state.evolution_events : [];
+    const listEl = document.getElementById('modEvolutionsList');
+    if (listEl) {
+      const evoSig = evts.map((e) => `${e.to_gen || e.generation || ''}:${e.ts || ''}:${e.leader_roi_pct || ''}`).join('|');
+      if (listEl._evoSig !== evoSig) {
+        listEl._evoSig = evoSig;
+        if (evts.length === 0) {
+          listEl.innerHTML = '<div class="mod-evo-empty">No evolution tournaments recorded in this session yet.</div>';
+        } else {
+          listEl.innerHTML = evts.slice().reverse().slice(0, 12).map((e) => {
+            const fromGen = e.from_gen;
+            const toGen = Number(e.to_gen || e.generation || 1);
+            const genLbl = fromGen != null ? `Gen #${fromGen} -> #${toGen}` : `Gen #${toGen}`;
+            const trig = escapeHtml(String(e.trigger || e.leader || e.champion || 'EVOLVE'));
+            const roi = Number(e.leader_roi_pct || 0);
+            const tStr = e.time || (e.ts ? new Date(e.ts * 1000).toTimeString().slice(0, 5) : '');
+            const roiTxt = `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`;
+            const note = escapeHtml(String(e.summary || e.note || 'Top 2 retained · bottom 3 mutated'));
+            return `<div class="mod-evo-item"><div class="mod-evo-top"><span>${genLbl} · ${trig}</span><span class="${roi >= 0 ? 'up' : 'down'} num">${roiTxt}</span></div><div class="mod-evo-sub num">${escapeHtml(tStr)} · ${note}</div></div>`;
+          }).join('');
+        }
+      }
+    }
+  }
+}
+
 function renderAll(state) {
   renderHeader(state);
   renderMacroRibbon(state);
@@ -1541,10 +1803,14 @@ function renderAll(state) {
     renderStrategies(state);
     renderLeaderboard(state);
     renderFills(state);
+    renderModularTelemetryBay(state);
     drawPriceChart(state);
   }
   if (!hasFirstTableRendered || inIntel) {
     renderIntelHub(state);
+  }
+  if (activeDetailStratId) {
+    refreshStrategyDetailModal(state);
   }
 
   // Verify right-side tables are mounted and populated with data
@@ -2020,7 +2286,7 @@ function createStrategyCardSkeleton(s) {
     <div class="strat-kpis num">
       <div class="kpi-cell">
         <span>Total Equity</span>
-        <span class="kpi-equity-val" data-role="equity">$0.00</span>
+        <span class="kpi-equity-val private-maskable" data-role="equity">$0.00</span>
       </div>
       <div class="kpi-cell">
         <span>ROI</span>
@@ -2062,6 +2328,7 @@ function createStrategyCardSkeleton(s) {
     spkDelta: card.querySelector('[data-role="spk-delta"]'),
     bracket: card.querySelector('[data-role="bracket"]'),
   };
+  card.addEventListener('click', () => openStrategyDetailModal(s.id));
   return card;
 }
 
@@ -2189,7 +2456,7 @@ function renderStrategies(state) {
 
     const pnlLabel = s.in_position ? 'Unrealized PnL' : 'Cash Balance';
     const pnlValText = s.in_position ? fmtSignedUsd(upnlNum) : fmtUsd(s.cash, 0);
-    const pnlValCls = s.in_position ? upnlClass : '';
+    const pnlValCls = 'private-maskable' + (s.in_position ? ' ' + upnlClass : '');
 
     let card = stratCardDomMap.get(s.id);
     if (!card) {
@@ -2556,7 +2823,7 @@ function renderLeaderboard(state) {
     const roiStr = fmtPct(roiNum);
     const roiFullCls = `text-right ${roiCls}`;
     const upnlStr = fmtSignedUsd(upnlNum);
-    const upnlFullCls = `text-right ${upnlCls}`;
+    const upnlFullCls = `text-right private-maskable ${upnlCls}`;
     const ddStr = `${ddNum.toFixed(1)}%`;
     const wrTitle = `${Number(s.closed_trades) || 0} trades`;
     const wrStr = `${wrNum.toFixed(0)}%`;
@@ -2584,7 +2851,7 @@ function renderLeaderboard(state) {
       tdStrat.appendChild(wrap);
 
       const tdEq = document.createElement('td');
-      tdEq.className = 'text-right';
+      tdEq.className = 'text-right private-maskable';
       tdEq.style.fontWeight = '700';
 
       const tdRoi = document.createElement('td');
@@ -2892,7 +3159,22 @@ function drawPriceChart(state) {
   if (!state) return;
   latestState = state;
 
-  const rawCandles = state.candles || [];
+  let rawCandles = state.candles || [];
+  let activeTfUsed = '1m';
+  if (chartTimeframe === '15m' && Array.isArray(state.candles_15m) && state.candles_15m.length >= 2) {
+    rawCandles = state.candles_15m;
+    activeTfUsed = '15m';
+  } else if (chartTimeframe === '5m' && Array.isArray(state.candles_5m) && state.candles_5m.length >= 2) {
+    rawCandles = state.candles_5m;
+    activeTfUsed = '5m';
+  }
+  const readoutEl = document.getElementById('chartScrubReadout');
+  if (readoutEl && !priceHoverPos) {
+    const nextRo = chartTimeframe === activeTfUsed
+      ? `${chartTimeframe} Candles`
+      : `${chartTimeframe} (Warming -> 1m)`;
+    if (readoutEl.textContent !== nextRo) readoutEl.textContent = nextRo;
+  }
   const rawPrices = state.price_history || [];
   const useCandles = rawCandles.length >= 2;
   const strategies = state.strategies || [];
@@ -3022,7 +3304,7 @@ function drawPriceChart(state) {
     const lastC = targetCandles.length > 0 ? targetCandles[targetCandles.length - 1] : null;
     const hKey = priceHoverPos ? `${Math.round(priceHoverPos.x)}:${Math.round(priceHoverPos.y)}` : '';
     const sKey = strategies.map(s => `${s.id}:${s.in_position ? 1 : 0}:${s.entry_price || 0}:${s.stop_loss || 0}:${s.take_profit || 0}`).join('|');
-    const pausedSig = `${targetSpot}:${targetCandles.length}:${lastC ? lastC.t + ':' + lastC.c : ''}:${scaleMode}:${canvasW}:${hKey}:${sKey}`;
+    const pausedSig = `${chartTimeframe}:${targetSpot}:${targetCandles.length}:${lastC ? lastC.t + ':' + lastC.c : ''}:${scaleMode}:${canvasW}:${hKey}:${sKey}`;
     if (pausedSig === lastPausedCanvasSig && hasFirstChartDrawn) {
       return;
     }
@@ -4052,7 +4334,7 @@ function blurActiveFocus() {
 
 function isAnyModalBlockingShortcuts() {
   if (isWizardOpen) return true;
-  const ids = ['shutdownModal', 'resetConfirmModal', 'wizardCloseConfirmModal', 'networkOfflineOverlay', 'commandPaletteModal'];
+  const ids = ['shutdownModal', 'resetConfirmModal', 'wizardCloseConfirmModal', 'strategyDetailModal', 'networkOfflineOverlay', 'commandPaletteModal'];
   for (let i = 0; i < ids.length; i++) {
     const el = document.getElementById(ids[i]);
     if (el && el.classList.contains('modal-visible')) return true;
@@ -4112,6 +4394,9 @@ window.addEventListener('keydown', function (e) {
     if (tag === 'BUTTON' || tag === 'A') return;
     e.preventDefault();
     togglePause();
+  } else if (e.shiftKey && (e.code === 'KeyP' || e.key === 'P' || e.key === 'p')) {
+    e.preventDefault();
+    togglePrivateBalance();
   } else if (e.code === 'Digit1' || e.key === '1') {
     switchMainView('arena');
   } else if (e.code === 'Digit2' || e.key === '2') {
@@ -4771,8 +5056,10 @@ function updateUiClockDisplay() {
   // Sequential article preload queue: prevents bursting Gemini rate limits.
   const intelArticlePreloadQueue = [];
   let intelArticlePreloadRunning = false;
+  let intelArticlePreloadEnabled = true;
 
   function preloadIntelArticles(eventIds) {
+    if (!intelArticlePreloadEnabled) return;
     eventIds.forEach(function (id) {
       if (intelArticleCache[id] || intelArticlePending[id]) return;
       if (intelArticlePreloadQueue.indexOf(id) === -1) intelArticlePreloadQueue.push(id);
@@ -4781,6 +5068,7 @@ function updateUiClockDisplay() {
   }
 
   function pumpIntelArticlePreload() {
+    if (!intelArticlePreloadEnabled) return;
     if (intelArticlePreloadRunning) return;
     if (currentMainView !== 'intel' || document.hidden) return;
     const aiStatus = latestState && latestState.intel_hub && latestState.intel_hub.ai && latestState.intel_hub.ai.status;
@@ -4924,6 +5212,13 @@ function updateUiClockDisplay() {
       intelExpandedIds.delete(eventId);
       card.classList.remove('is-open');
     } else {
+      intelExpandedIds.forEach(function (otherId) {
+        if (otherId !== eventId) {
+          const otherCard = intelEventNodes[otherId];
+          if (otherCard) otherCard.classList.remove('is-open');
+        }
+      });
+      intelExpandedIds.clear();
       intelExpandedIds.add(eventId);
       card.classList.add('is-open');
       requestIntelArticle(eventId);
@@ -4932,6 +5227,22 @@ function updateUiClockDisplay() {
 
   let intelDomainFilter = 'all';
   let intelSearchQuery = '';
+
+  function syncIntelChipSlider() {
+    const chipsWrap = document.getElementById('intelDomainChips');
+    const slider = document.getElementById('intelChipSlider');
+    if (!chipsWrap || !slider) return;
+    const activeChip = chipsWrap.querySelector('.intel-chip.is-active');
+    if (!activeChip || chipsWrap.offsetParent === null) {
+      slider.style.opacity = '0';
+      return;
+    }
+    const left = activeChip.offsetLeft || 0;
+    const width = activeChip.offsetWidth || 0;
+    slider.style.width = `${width}px`;
+    slider.style.transform = `translateX(${left}px)`;
+    slider.style.opacity = width > 0 ? '1' : '0';
+  }
 
   function setIntelDomainFilter(domain) {
     intelDomainFilter = domain || 'all';
@@ -4942,9 +5253,22 @@ function updateUiClockDisplay() {
         chip.classList.toggle('is-active', isMatched);
       });
     }
+    syncIntelChipSlider();
     if (latestState) renderIntelHub(latestState);
   }
   window.setIntelDomainFilter = setIntelDomainFilter;
+
+  function resetIntelFilters() {
+    const input = document.getElementById('intelSearchInput');
+    const wrap = document.getElementById('intelSearchWrap');
+    const clearBtn = document.getElementById('btnIntelSearchClear');
+    intelSearchQuery = '';
+    if (input) input.value = '';
+    if (wrap) wrap.classList.remove('has-query');
+    if (clearBtn) clearBtn.classList.remove('visible');
+    setIntelDomainFilter('all');
+  }
+  window.resetIntelFilters = resetIntelFilters;
 
   function toggleIntelSearch(force) {
     const wrap = document.getElementById('intelSearchWrap');
@@ -5034,6 +5358,24 @@ function updateUiClockDisplay() {
           diagLine._lastDiag = diag;
         }
         diagLine.classList.toggle('visible', diagText !== '');
+      }
+    }
+
+    const avatarEl = document.getElementById('aiBotAvatar');
+    if (avatarEl) {
+      const syncObj = intel.sync || {};
+      const syncStage = String(syncObj.stage || 'idle');
+      const diag = ai.diagnosis || 'ok';
+      let avatarStateCls = 'ai-bot-avatar is-standby';
+      if (diag === 'quota_exhausted' || diag === 'connection_problem' || syncStage === 'failed') {
+        avatarStateCls = 'ai-bot-avatar is-error';
+      } else if (syncStage === 'checking' || syncStage === 'fetching' || syncStage === 'processing' || syncStage === 'forum' || syncStage === 'synthesizing') {
+        avatarStateCls = 'ai-bot-avatar is-working';
+      } else if (ai.status === 'ONLINE') {
+        avatarStateCls = 'ai-bot-avatar is-online';
+      }
+      if (avatarEl.getAttribute('class') !== avatarStateCls) {
+        avatarEl.setAttribute('class', avatarStateCls);
       }
     }
 
@@ -5170,9 +5512,16 @@ function updateUiClockDisplay() {
     }
 
     const headEl = document.getElementById('macroHubHeadline');
+    const dirRow = document.getElementById('macroHubDirective');
     if (headEl) {
       const nextHead = macro.active_headline || 'Market in balanced equilibrium.';
-      if (headEl.textContent !== nextHead) headEl.textContent = nextHead;
+      if (headEl.textContent !== nextHead) {
+        headEl.textContent = nextHead;
+        if (dirRow && !isReducedMotionPreferred() && !(document.body && document.body.classList.contains('window-hidden'))) {
+          const words = String(nextHead).split(' ');
+          headEl.innerHTML = words.map((w, idx) => `<span class="directive-word" style="--dw-i:${Math.min(idx, 18)}">${escapeHtml(w)}</span>`).join(' ');
+        }
+      }
     }
 
     // 3. Curated Event Cards
@@ -5182,11 +5531,14 @@ function updateUiClockDisplay() {
       if (countLbl.textContent !== nextCount) countLbl.textContent = nextCount;
     }
 
+    const emptyStateEl = document.getElementById('intelEmptyState');
     const listContainer = document.getElementById('intelEventsList');
     if (listContainer) {
       if (currentMainView !== 'intel' && listContainer.children.length > 0) {
         // Hub panel is hidden; preserve existing DOM nodes to save rendering cycles
       } else if (events.length === 0) {
+        if (emptyStateEl) emptyStateEl.style.display = 'none';
+        listContainer.style.display = '';
         // Intel Hub layout (workstream 3): the empty stream is a
         // loading block centered in the stream section (label +
         // meter + percent), not a line pinned to the top of a void.
@@ -5283,17 +5635,18 @@ function updateUiClockDisplay() {
               intelExpandedIds.delete(key);
             }
           });
-          let emptyFilterEl = listContainer.querySelector('.intel-empty-filter');
-          if (visibleCount === 0) {
-            if (!emptyFilterEl) {
-              emptyFilterEl = document.createElement('div');
-              emptyFilterEl.className = 'intel-empty-filter';
-              emptyFilterEl.textContent = 'No events match the active domain chip or search filter.';
-              listContainer.appendChild(emptyFilterEl);
-            }
-          } else if (emptyFilterEl) {
+          const emptyFilterEl = listContainer.querySelector('.intel-empty-filter');
+          if (emptyFilterEl && emptyFilterEl.parentNode) {
             emptyFilterEl.parentNode.removeChild(emptyFilterEl);
           }
+          if (visibleCount === 0) {
+            listContainer.style.display = 'none';
+            if (emptyStateEl) emptyStateEl.style.display = 'flex';
+          } else {
+            listContainer.style.display = '';
+            if (emptyStateEl) emptyStateEl.style.display = 'none';
+          }
+          syncIntelChipSlider();
           if (countLbl) {
             const isFiltered = (intelDomainFilter !== 'all') || (intelSearchQuery.length > 0);
             const nextFilteredCount = isFiltered
@@ -5363,7 +5716,10 @@ function updateUiClockDisplay() {
     if (typeof syncAmbientShaderMotion === 'function') syncAmbientShaderMotion();
     if (!document.hidden) {
       if (!isPolling) pollBackend();
-      if (currentMainView === 'intel') pumpIntelArticlePreload();
+      if (currentMainView === 'intel') {
+        syncIntelChipSlider();
+        pumpIntelArticlePreload();
+      }
     }
   });
 
@@ -5498,6 +5854,8 @@ function updateUiClockDisplay() {
       });
     }
     setWizardBanner('');
+    switchSetupTab('ai');
+    syncBackdropCards(backdropMode);
     if (modal) {
       modal.style.display = 'flex';
       modal.classList.remove('wizard-closing');
@@ -5516,6 +5874,15 @@ function updateUiClockDisplay() {
             stEl.innerHTML = res.gemini_key_configured
               ? '<span class="setup-status-pill valid">Connected</span>'
               : '<span class="setup-status-pill neutral">Not added</span>';
+          }
+          const modelSel = document.getElementById('setupGeminiModelSelect');
+          if (modelSel && res.gemini_model) {
+            modelSel.value = res.gemini_model;
+          }
+          const preloadEl = document.getElementById('setupPreloadToggle');
+          if (typeof res.preload_intel_articles === 'boolean') {
+            intelArticlePreloadEnabled = res.preload_intel_articles;
+            if (preloadEl) preloadEl.checked = res.preload_intel_articles;
           }
         }
       }).catch((e) => console.debug('get_setup_status err:', e));
@@ -5741,8 +6108,14 @@ function updateUiClockDisplay() {
     if (isSavingSetup) return;
     const saveBtn = document.getElementById('btnSaveAndLaunch');
 
+    const modelSel = document.getElementById('setupGeminiModelSelect');
+    const preloadEl = document.getElementById('setupPreloadToggle');
+    const preloadVal = preloadEl ? Boolean(preloadEl.checked) : true;
+    intelArticlePreloadEnabled = preloadVal;
     const keys = {
       gemini: (document.getElementById('keyGemini')?.value || '').trim(),
+      model: modelSel ? String(modelSel.value || '').trim() : '',
+      preload_articles: preloadVal,
     };
 
     isSavingSetup = true;
@@ -5831,6 +6204,9 @@ function updateUiClockDisplay() {
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
       window.pywebview.api.get_setup_status().then((res) => {
         if (res && res.status === 'ok') {
+          if (typeof res.preload_intel_articles === 'boolean') {
+            intelArticlePreloadEnabled = res.preload_intel_articles;
+          }
           if (!res.onboarding_completed && !res.skip_ai_mode) {
             openSetupWizardModal(false);
           }
@@ -5864,6 +6240,11 @@ function updateUiClockDisplay() {
         if (closeBtn && closeBtn.style.display !== 'none') {
           requestCloseSetupWizardModal();
         }
+        return;
+      }
+      const stratDetailModal = document.getElementById('strategyDetailModal');
+      if (stratDetailModal && stratDetailModal.classList.contains('modal-visible')) {
+        closeStrategyDetailModal();
         return;
       }
       const resetModal = document.getElementById('resetConfirmModal');
@@ -6122,7 +6503,10 @@ function updateUiClockDisplay() {
       { id: 'scale', group: 'Chart', title: 'Toggle Chart Scale Mode (Focus / Full)', sub: 'Zoom on candle range or include distant brackets', kbd: 'F', run: () => setScaleMode(scaleMode === 'auto' ? 'full' : 'auto') },
       { id: 'refresh_intel', group: 'Intelligence', title: 'Refresh News Analysis', sub: 'Synthesize latest multi-domain macro digest', kbd: '', run: () => requestAiIntelDigest() },
       { id: 'backdrop', group: 'Appearance', title: `Cycle Backdrop Mode (${modeLabel})`, sub: 'Switch between HorizonX WebGL Shader, Grainient WebP, and Minimal Obsidian', kbd: '', run: () => cycleBackdropMode() },
-      { id: 'settings', group: 'System', title: 'Open AI Services Setup', sub: 'Configure Google Gemini API key', kbd: '', run: () => openSetupWizardModal(true) },
+      { id: 'privacy', group: 'Appearance', title: isPrivateBalance ? 'Show Account Balances' : 'Hide Account Balances (Private Mode)', sub: 'Mask dollar values across header, cards, leaderboard & chart', kbd: 'Shift+P', run: () => togglePrivateBalance() },
+      { id: 'export_csv', group: 'Journal', title: 'Export Trade Journal (CSV)', sub: 'Save live arena fills to a CSV spreadsheet', kbd: '', run: () => { exportTradeJournal('csv'); } },
+      { id: 'export_json', group: 'Journal', title: 'Export Trade Journal (JSON)', sub: 'Save live arena fills and telemetry to JSON', kbd: '', run: () => { exportTradeJournal('json'); } },
+      { id: 'settings', group: 'System', title: 'Open AI Services Setup', sub: 'Configure Google Gemini API key, model & appearance', kbd: '', run: () => openSetupWizardModal(true) },
       { id: 'fullscreen', group: 'System', title: 'Toggle Fullscreen', sub: 'Expand or restore desktop window', kbd: 'F11', run: () => toggleFullscreen() },
       { id: 'shortcuts', group: 'Help', title: 'View Keyboard Shortcuts Cheat Sheet', sub: 'Inspect all hotkeys and navigation keys', kbd: '?', run: () => { openCommandPalette('shortcuts'); return false; } },
       { id: 'reset', group: 'Danger', title: 'Reset Quant Arena Session', sub: 'Open confirmation dialog to reset $100k ledgers', kbd: '', run: () => requestResetArena() },
@@ -6153,6 +6537,7 @@ function updateUiClockDisplay() {
         { kbd: 'Space', desc: 'Pause or Resume Live Market Feed' },
         { kbd: 'E', desc: 'Trigger Genetic Evolution Tournament' },
         { kbd: 'F', desc: 'Toggle Price Chart Scale (Focus / Full)' },
+        { kbd: 'Shift+P', desc: 'Toggle Private Balance Masking' },
         { kbd: 'Ctrl+K', desc: 'Open Command Palette' },
         { kbd: '?', desc: 'Open Keyboard Shortcuts Cheat Sheet' },
         { kbd: 'F11', desc: 'Toggle Window Fullscreen' },
@@ -6335,6 +6720,7 @@ function updateUiClockDisplay() {
     const canvasEl = document.getElementById('lgAmbientShaderCanvas');
     if (grainEl) grainEl.setAttribute('data-mode', backdropMode);
     if (canvasEl) canvasEl.setAttribute('data-mode', backdropMode);
+    syncBackdropCards(backdropMode);
     syncAmbientShaderMotion();
     if (document.getElementById('commandPaletteModal')?.classList.contains('modal-visible')) {
       renderCommandPaletteContent();
@@ -6687,7 +7073,377 @@ void main() {
     }
   }
 
+  function switchSetupTab(tabName) {
+    const isAppearance = tabName === 'appearance';
+    const aiBtn = document.getElementById('btnSetupTabAi');
+    const appBtn = document.getElementById('btnSetupTabAppearance');
+    const aiPane = document.getElementById('setupTabAi');
+    const appPane = document.getElementById('setupTabAppearance');
+    if (aiBtn) {
+      aiBtn.classList.toggle('is-active', !isAppearance);
+      aiBtn.setAttribute('aria-selected', !isAppearance ? 'true' : 'false');
+    }
+    if (appBtn) {
+      appBtn.classList.toggle('is-active', isAppearance);
+      appBtn.setAttribute('aria-selected', isAppearance ? 'true' : 'false');
+    }
+    if (aiPane) {
+      aiPane.classList.toggle('is-active', !isAppearance);
+      aiPane.style.display = isAppearance ? 'none' : '';
+    }
+    if (appPane) {
+      appPane.classList.toggle('is-active', isAppearance);
+      appPane.style.display = isAppearance ? '' : 'none';
+    }
+    if (isAppearance) {
+      syncBackdropCards(backdropMode);
+    }
+  }
+
+  function syncBackdropCards(mode) {
+    const norm = mode === 'grainient' || mode === 'minimal' ? mode : 'shader';
+    const cardMap = {
+      shader: 'backdropCardShader',
+      grainient: 'backdropCardGrainient',
+      minimal: 'backdropCardMinimal',
+    };
+    Object.keys(cardMap).forEach((key) => {
+      const el = document.getElementById(cardMap[key]);
+      if (el) el.classList.toggle('is-selected', key === norm);
+    });
+  }
+
+  function selectBackdropOption(mode) {
+    applyBackdropMode(mode);
+    try {
+      localStorage.setItem('tb0_backdrop_mode', backdropMode);
+    } catch (_) {
+      // ignore storage failure
+    }
+    syncBackdropCards(backdropMode);
+  }
+
+  async function handleAiPrefsChanged() {
+    const modelSel = document.getElementById('setupGeminiModelSelect');
+    const preloadEl = document.getElementById('setupPreloadToggle');
+    const model = modelSel ? String(modelSel.value || '').trim() : null;
+    const preloadArticles = preloadEl ? Boolean(preloadEl.checked) : true;
+    intelArticlePreloadEnabled = preloadArticles;
+    if (!preloadArticles && Array.isArray(intelArticlePreloadQueue)) {
+      intelArticlePreloadQueue.length = 0;
+    }
+    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.update_ai_preferences === 'function') {
+      try {
+        const res = await window.pywebview.api.update_ai_preferences(model, preloadArticles);
+        if (res && (res.ok || res.status === 'ok')) {
+          if (modelSel && res.gemini_model) {
+            modelSel.value = res.gemini_model;
+          }
+          if (typeof res.preload_intel_articles === 'boolean') {
+            intelArticlePreloadEnabled = res.preload_intel_articles;
+            if (preloadEl) preloadEl.checked = res.preload_intel_articles;
+          }
+        }
+      } catch (err) {
+        console.debug('update_ai_preferences failed:', err);
+      }
+    }
+  }
+
+  const STRAT_GENE_LABELS = {
+    generation: 'Generation',
+    leverage: 'Leverage',
+    leverage_enabled: 'Margin Mode',
+    position_ratio_pct: 'Position Size',
+    stop_loss_pct: 'Stop Loss',
+    take_profit_pct: 'Take Profit',
+    risk_per_trade_pct: 'Risk / Trade',
+    news_sensitivity: 'News Sensitivity',
+    cooldown_bars: 'Cooldown',
+    trailing_activation_pct: 'Trail Trigger',
+    trailing_distance_pct: 'Trail Distance',
+  };
+
+  function formatStratGeneLabel(key) {
+    if (STRAT_GENE_LABELS[key]) return STRAT_GENE_LABELS[key];
+    return String(key || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function formatStratGeneValue(key, rawVal) {
+    if (key === 'leverage_enabled') {
+      return rawVal ? 'Margin' : 'Spot';
+    }
+    if (rawVal === null || rawVal === undefined) {
+      return key === 'take_profit_pct' ? 'Dynamic' : 'Off';
+    }
+    if (key === 'generation') {
+      return `#${Number(rawVal) || 1}`;
+    }
+    if (key === 'cooldown_bars') {
+      return `${Number(rawVal) || 0} bars`;
+    }
+    if (key === 'leverage' || key === 'news_sensitivity') {
+      return `${Number(rawVal).toFixed(2)}x`;
+    }
+    if (key.endsWith('_pct')) {
+      return `${Number(rawVal).toFixed(2)}%`;
+    }
+    if (typeof rawVal === 'number') {
+      return Number.isInteger(rawVal) ? String(rawVal) : rawVal.toFixed(2);
+    }
+    return String(rawVal);
+  }
+
+  function formatCurveTimeLabel(rawT) {
+    if (rawT === null || rawT === undefined || rawT === '') return '';
+    const numT = Number(rawT);
+    if (Number.isFinite(numT) && numT > 1e9) {
+      try {
+        return new Date(numT * 1000).toLocaleTimeString([], { hour12: false });
+      } catch (_) {
+        return '';
+      }
+    }
+    return String(rawT);
+  }
+
+  function renderStratDetailCurve(rawHistory, fallbackEquity) {
+    const svg = document.getElementById('stratDetailCurveSvg');
+    const hoverEl = document.getElementById('stratDetailCurveHover');
+    if (!svg) return;
+    const pts = [];
+    if (Array.isArray(rawHistory)) {
+      rawHistory.forEach((item) => {
+        if (item && typeof item === 'object') {
+          const val = Number(item.v ?? item.eq ?? item.equity ?? item.value);
+          if (Number.isFinite(val)) {
+            const rawTime = item.t ?? item.time ?? item.ts ?? '';
+            pts.push({ t: formatCurveTimeLabel(rawTime), eq: val });
+          }
+        } else {
+          const val = Number(item);
+          if (Number.isFinite(val)) pts.push({ t: '', eq: val });
+        }
+      });
+    }
+    if (pts.length === 1) {
+      pts.push({ t: pts[0].t, eq: pts[0].eq });
+    } else if (pts.length === 0) {
+      const base = Number.isFinite(Number(fallbackEquity)) ? Number(fallbackEquity) : 100000;
+      pts.push({ t: '', eq: 100000 }, { t: '', eq: base });
+    }
+
+    const W = 460;
+    const H = 110;
+    const padX = 8;
+    const padY = 10;
+    const eqVals = pts.map((p) => p.eq);
+    let minEq = Math.min(...eqVals);
+    let maxEq = Math.max(...eqVals);
+    if (maxEq - minEq < 1e-6) {
+      minEq -= 1;
+      maxEq += 1;
+    }
+    const coords = pts.map((p, idx) => {
+      const x = pts.length > 1 ? padX + (idx / (pts.length - 1)) * (W - padX * 2) : W / 2;
+      const y = H - padY - ((p.eq - minEq) / (maxEq - minEq)) * (H - padY * 2);
+      return { x, y, t: p.t, eq: p.eq };
+    });
+
+    const lineD = coords.map((c, i) => `${i === 0 ? 'M' : 'L'}${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+    const areaD = `${lineD} L${coords[coords.length - 1].x.toFixed(1)},${(H - padY).toFixed(1)} L${coords[0].x.toFixed(1)},${(H - padY).toFixed(1)} Z`;
+    const isUp = coords[coords.length - 1].eq >= coords[0].eq;
+    const stroke = isUp ? '#22C55E' : '#EF4444';
+    const gradTop = isUp ? 'rgba(34,197,94,0.28)' : 'rgba(239,68,68,0.28)';
+    const gradBot = isUp ? 'rgba(34,197,94,0.01)' : 'rgba(239,68,68,0.01)';
+
+    svg.innerHTML = `<defs><linearGradient id="stratCurveFillGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${gradTop}" /><stop offset="100%" stop-color="${gradBot}" /></linearGradient></defs>`
+      + `<path d="${areaD}" fill="url(#stratCurveFillGrad)" />`
+      + `<path d="${lineD}" fill="none" stroke="${stroke}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />`
+      + `<line data-role="strat-curve-crosshair-x" x1="0" y1="${padY}" x2="0" y2="${H - padY}" stroke="rgba(148,163,184,0.45)" stroke-width="1" stroke-dasharray="3 3" style="display:none;" />`
+      + `<circle data-role="strat-curve-crosshair-dot" cx="0" cy="0" r="3.5" fill="${stroke}" stroke="#0F172A" stroke-width="1.5" style="display:none;" />`;
+
+    svg.onmousemove = (ev) => {
+      const rect = svg.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      const relX = ((ev.clientX - rect.left) / rect.width) * W;
+      let best = coords[0];
+      let bestDist = Infinity;
+      for (let i = 0; i < coords.length; i++) {
+        const d = Math.abs(coords[i].x - relX);
+        if (d < bestDist) {
+          bestDist = d;
+          best = coords[i];
+        }
+      }
+      const lineEl = svg.querySelector('[data-role="strat-curve-crosshair-x"]');
+      const dotEl = svg.querySelector('[data-role="strat-curve-crosshair-dot"]');
+      if (lineEl) {
+        lineEl.setAttribute('x1', best.x.toFixed(1));
+        lineEl.setAttribute('x2', best.x.toFixed(1));
+        lineEl.style.display = 'block';
+      }
+      if (dotEl) {
+        dotEl.setAttribute('cx', best.x.toFixed(1));
+        dotEl.setAttribute('cy', best.y.toFixed(1));
+        dotEl.style.display = 'block';
+      }
+      if (hoverEl) {
+        const eqStr = isPrivateBalance ? '$••••••' : fmtUsd(best.eq, 2);
+        hoverEl.textContent = best.t ? `${best.t} · ${eqStr}` : eqStr;
+      }
+    };
+    svg.onmouseleave = () => {
+      const lineEl = svg.querySelector('[data-role="strat-curve-crosshair-x"]');
+      const dotEl = svg.querySelector('[data-role="strat-curve-crosshair-dot"]');
+      if (lineEl) lineEl.style.display = 'none';
+      if (dotEl) dotEl.style.display = 'none';
+      if (hoverEl) hoverEl.textContent = 'Hover curve to inspect';
+    };
+  }
+
+  function fillMatchesStrategy(f, s) {
+    if (!f || !s) return false;
+    if (f.portfolio_id && f.portfolio_id === s.id) return true;
+    if (f.strategy_id && f.strategy_id === s.id) return true;
+    const fStrat = String(f.strategy || '').toLowerCase().trim();
+    if (!fStrat) return false;
+    const sName = String(s.name || '').toLowerCase().trim();
+    const sIdRaw = String(s.id || '').toLowerCase().replace(/^comp_/, '').trim();
+    const sIdSpaced = sIdRaw.replace(/_/g, ' ');
+    return fStrat === sName
+      || (sIdRaw && fStrat.includes(sIdRaw))
+      || (sIdSpaced && fStrat.includes(sIdSpaced))
+      || (sName && sName.includes(fStrat));
+  }
+
+  function refreshStrategyDetailModal(state) {
+    if (!activeDetailStratId || !state) return;
+    const strategies = Array.isArray(state.strategies) ? state.strategies : [];
+    const s = strategies.find((item) => item && item.id === activeDetailStratId);
+    if (!s) return;
+
+    const rankEl = document.getElementById('stratDetailRank');
+    const titleEl = document.getElementById('stratDetailTitle');
+    const levEl = document.getElementById('stratDetailLevBadge');
+    const subEl = document.getElementById('stratDetailSubtitle');
+    const eqEl = document.getElementById('stratDetailEquity');
+    const roiEl = document.getElementById('stratDetailRoi');
+    const wrDdEl = document.getElementById('stratDetailWrDd');
+    const sharpeEl = document.getElementById('stratDetailSharpe');
+    const gridEl = document.getElementById('stratDetailGenomeGrid');
+    const fillsEl = document.getElementById('stratDetailFillsBody');
+
+    const rankNum = Number(s.rank) || 1;
+    if (rankEl) {
+      rankEl.textContent = `#${rankNum}`;
+      rankEl.className = 'rank-badge num';
+    }
+    if (titleEl) titleEl.textContent = s.name || s.id;
+    if (levEl) {
+      const levMult = Number(s.leverage) || 2;
+      levEl.textContent = s.leverage_enabled ? `Margin ${levMult.toFixed(0)}x` : 'Spot 1x';
+      levEl.className = `lev-pill ${s.leverage_enabled ? 'lev-active' : 'lev-spot'} num`;
+    }
+    if (subEl) subEl.textContent = `Gen #${s.generation || 1} · ${s.genome || 'Adaptive Genome'}`;
+    if (eqEl) {
+      eqEl.classList.add('private-maskable');
+      eqEl.textContent = fmtUsd(s.equity, 2);
+    }
+    if (roiEl) {
+      const roiNum = Number(s.roi_pct) || 0;
+      roiEl.textContent = fmtPct(roiNum);
+      roiEl.style.color = roiNum >= 0 ? 'var(--ss-pos)' : 'var(--ss-neg)';
+    }
+    if (wrDdEl) {
+      wrDdEl.textContent = `${(Number(s.win_rate_pct) || 0).toFixed(1)}% / ${(Number(s.max_dd_pct) || 0).toFixed(1)}%`;
+    }
+    if (sharpeEl) {
+      const fit = Number(s.fitness) || 0;
+      sharpeEl.textContent = `${(Number(s.sharpe) || 0).toFixed(2)} / ${fit >= 0 ? '+' : ''}${fit.toFixed(1)}`;
+    }
+
+    renderStratDetailCurve(s.equity_history, s.equity);
+
+    if (gridEl) {
+      const gp = (s.genome_params && typeof s.genome_params === 'object') ? s.genome_params : {};
+      const entries = Object.entries(gp);
+      if (entries.length === 0) {
+        gridEl.innerHTML = '<div class="strat-gene-pill"><span class="strat-gene-key">Parameters</span><span class="strat-gene-val">Unavailable</span></div>';
+      } else {
+        gridEl.innerHTML = entries.map(([k, v]) => {
+          const valStr = formatStratGeneValue(k, v);
+          return `<div class="strat-gene-pill"><span class="strat-gene-key">${escapeHtml(formatStratGeneLabel(k))}</span><span class="strat-gene-val">${escapeHtml(valStr)}</span></div>`;
+        }).join('');
+      }
+    }
+
+    if (fillsEl) {
+      const allFills = Array.isArray(state.fills) ? state.fills : [];
+      const matching = allFills.filter((f) => fillMatchesStrategy(f, s)).slice(0, 25);
+      if (matching.length === 0) {
+        fillsEl.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--ss-ink-4);padding:12px;">No fills recorded for this strategy yet.</td></tr>';
+      } else {
+        fillsEl.innerHTML = matching.map((f) => {
+          const actionText = f.action_label || f.side || 'FILL';
+          const pnlVal = (f.pnl !== null && f.pnl !== undefined) ? Number(f.pnl) : null;
+          const pnlCls = pnlVal === null ? '' : (pnlVal >= 0 ? 'var(--ss-pos)' : 'var(--ss-neg)');
+          const pnlStr = pnlVal === null ? '—' : `<span class="private-maskable" style="color:${pnlCls};">${escapeHtml(fmtSignedUsd(pnlVal))}</span>`;
+          return `<tr>`
+            + `<td>${escapeHtml(f.time || '')}</td>`
+            + `<td>${escapeHtml(actionText)}</td>`
+            + `<td class="text-right">${(Number(f.qty) || 0).toFixed(2)}</td>`
+            + `<td class="text-right">${escapeHtml(fmtUsd(f.price, 2))}</td>`
+            + `<td class="text-right">${pnlStr}</td>`
+            + `<td>${escapeHtml(f.trigger || f.reason || '—')}</td>`
+            + `</tr>`;
+        }).join('');
+      }
+    }
+  }
+
+  function openStrategyDetailModal(stratId) {
+    if (!stratId) return;
+    activeDetailStratId = stratId;
+    const modal = document.getElementById('strategyDetailModal');
+    if (!modal) return;
+    if (latestState) refreshStrategyDetailModal(latestState);
+    modal.style.display = 'flex';
+    modal.classList.remove('modal-closing');
+    void modal.offsetWidth;
+    modal.classList.add('modal-visible');
+    syncAppShellInert();
+  }
+
+  function closeStrategyDetailModal() {
+    activeDetailStratId = null;
+    const modal = document.getElementById('strategyDetailModal');
+    if (!modal) return;
+    modal.classList.add('modal-closing');
+    modal.classList.remove('modal-visible');
+    syncAppShellInert();
+    setTimeout(() => {
+      if (!activeDetailStratId) {
+        modal.style.display = 'none';
+        modal.classList.remove('modal-closing');
+      }
+    }, 200);
+  }
+
+  function handleStrategyDetailOverlayClick(e) {
+    if (e && e.target && e.target.id === 'strategyDetailModal') {
+      closeStrategyDetailModal();
+    }
+  }
+
   function initAmbientBackdrop() {
+    try {
+      isPrivateBalance = localStorage.getItem('tb0_private_balance') === '1';
+    } catch (_) {
+      isPrivateBalance = false;
+    }
+    applyPrivateBalanceUi();
+
     let savedMode = 'shader';
     try {
       savedMode = localStorage.getItem('tb0_backdrop_mode') || 'shader';
@@ -6700,6 +7456,17 @@ void main() {
       savedMode = 'grainient';
     }
     applyBackdropMode(savedMode);
+    syncBackdropCards(backdropMode);
+    window.addEventListener('resize', () => {
+      if (currentMainView === 'intel') syncIntelChipSlider();
+    }, { passive: true });
   }
+
+  window.switchSetupTab = switchSetupTab;
+  window.selectBackdropOption = selectBackdropOption;
+  window.handleAiPrefsChanged = handleAiPrefsChanged;
+  window.openStrategyDetailModal = openStrategyDetailModal;
+  window.closeStrategyDetailModal = closeStrategyDetailModal;
+  window.handleStrategyDetailOverlayClick = handleStrategyDetailOverlayClick;
 
 

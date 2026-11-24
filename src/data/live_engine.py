@@ -98,6 +98,9 @@ class LiveArenaEngine(
         gateway_base_url: Optional[str] = None,
         llm_base_url: Optional[str] = None,
         gemini_api_key: Optional[str] = None,
+        model_ingest: Optional[str] = None,
+        model_commander: Optional[str] = None,
+        preload_intel_articles: bool = True,
     ):
         self.symbol = symbol
         self.initial_cash = initial_cash
@@ -224,7 +227,10 @@ class LiveArenaEngine(
         self.llm_client = GeminiClient(
             base_url=resolved_base_url,
             api_key=gemini_api_key,
+            model_ingest=model_ingest,
+            model_commander=model_commander,
         )
+        self.preload_intel_articles: bool = bool(preload_intel_articles)
         self.gemini_client = self.llm_client
         self.macro_commander = MacroCommander(self.llm_client)
         self.intel_refresh_interval_sec: float = 300.0

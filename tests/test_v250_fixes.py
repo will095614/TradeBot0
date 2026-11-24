@@ -474,7 +474,7 @@ def test_ingestion_clean_html_strips_script_style_and_dedup_forget():
 
 
 def test_update_checker_semver_prerelease_and_non_string_version():
-    assert APP_VERSION == "V3.0.0"
+    assert APP_VERSION == "V3.1.0"
     assert compare_versions("V2.5.0-rc.1", "V2.5.0") == -1
     assert compare_versions("V2.5.0", "V2.5.0-rc.1") == 1
     assert compare_versions("V2.5.0-alpha.1", "V2.5.0-beta.1") == -1

@@ -31,8 +31,10 @@ def test_grainient_webp_asset_and_inline_injection():
 def test_modular_slot_panel_preserved_option_b():
     html = (ASSETS / "index.html").read_text(encoding="utf-8")
     assert 'id="modularSlotPanel"' in html
-    assert "Modular Extension Bay" in html
-    assert "STANDBY" in html
+    assert 'id="modBayStatusPill"' in html
+    assert 'id="modBayGauges"' in html
+    assert 'id="modBayHeatmap"' in html
+    assert 'id="modBayEvolutions"' in html
 
 
 def test_phase0_to_4_ui_hooks_present():
