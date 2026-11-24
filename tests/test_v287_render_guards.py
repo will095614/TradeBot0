@@ -66,7 +66,7 @@ def test_hub_header_writes_guarded():
     # on every 1s tick.
     body = _fn_body(_js(), "renderIntelHub")
     for guard in (
-        "if (epEl.textContent !== nextEp)",
+        "if (modelEl.textContent !== nextModel)",
         "if (tokensEl.textContent !== nextTokens)",
         "if (tokensSub.textContent !== nextSub)",
         "if (reqEl.textContent !== nextReq)",

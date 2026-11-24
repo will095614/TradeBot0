@@ -1,9 +1,6 @@
 """Item 6 tests: intelligence veto open/close split, keyword word boundaries,
 numeric parsing safety, shutdown ownership, honest counters."""
 import asyncio
-import socket
-import subprocess
-import sys
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -11,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 from src.arena.order import OrderSide, PositionSide
 from src.data.live_engine import LiveArenaEngine
-from src.intelligence.gateway_supervisor import GatewaySupervisor
 from src.intelligence.ingestion import (
     IntelligenceHarvester,
     RawEvent,
@@ -20,7 +16,7 @@ from src.intelligence.ingestion import (
     parse_reddit_posts,
 )
 from src.intelligence.macro_commander import MacroCommander
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import GeminiClient
 
 
 def _mock_commander(**overrides):
@@ -137,96 +133,35 @@ def test_feed_numeric_parsing_never_raises():
     assert parse_reddit_posts({"data": {"children": [{"data": {"title": "Some post", "score": "many", "permalink": "/x"}}]}}, "CryptoCurrency", "crypto") == []
 
 
-def _free_port():
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
-def _wait_port_open(port, timeout=10.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                return True
-        except OSError:
-            time.sleep(0.1)
-    return False
-
-
-def test_shutdown_does_not_kill_foreign_process():
-    port = _free_port()
-    server = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(port)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    try:
-        assert _wait_port_open(port), "test HTTP server did not start"
-        supervisor = GatewaySupervisor(port=port)
-        assert supervisor.child_process is None
-        supervisor.shutdown()
-        assert server.poll() is None, "shutdown() killed a process it did not spawn"
-        assert _wait_port_open(port), "foreign listener died after shutdown()"
-        # The fail-safe helper alone must also leave foreign processes alone.
-        supervisor._kill_port_owner(port)
-        assert server.poll() is None
-    finally:
-        server.terminate()
-        try:
-            server.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            server.kill()
-
-
-def test_shutdown_kills_own_child():
-    sleeper = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(120)"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    try:
-        supervisor = GatewaySupervisor(port=_free_port())
-        supervisor.child_process = sleeper
-        supervisor.is_self_spawned = True
-        supervisor.shutdown()
-        assert sleeper.poll() is not None, "shutdown() did not terminate its own child"
-        assert supervisor.child_process is None
-        assert supervisor.is_self_spawned is False
-    finally:
-        if sleeper.poll() is None:
-            sleeper.kill()
-
-
 def test_success_counted_only_after_parseable_json():
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
+        client = GeminiClient(api_key="test-key")
 
-        # 200 with unparseable content: not a success, but not a failure either.
+        # 200 with unparseable content (plus failed repair): not a success, counted as failure.
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.headers = {}
-        mock_resp.json = AsyncMock(return_value={"choices": [{"message": {"content": "not json at all"}}]})
+        mock_resp.json = AsyncMock(return_value={"candidates": [{"content": {"parts": [{"text": "not json at all"}]}}]})
         mock_session = MagicMock()
         mock_session.closed = False
         mock_session.post.return_value.__aenter__.return_value = mock_resp
         client._session = mock_session
         client._owns_session = False
-        result = await client.chat_json("auto", "system", "user")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user")
         assert result is None
         assert client.successful_requests == 0
-        assert client.failed_requests == 0
+        assert client.failed_requests == 1
 
         # 200 with non-numeric usage + parseable content: parses fine, counts once.
         mock_resp2 = AsyncMock()
         mock_resp2.status = 200
         mock_resp2.headers = {}
         mock_resp2.json = AsyncMock(return_value={
-            "usage": {"total_tokens": "many"},
-            "choices": [{"message": {"content": '{"regime": "NORMAL"}'}}],
+            "usageMetadata": {"totalTokenCount": "many"},
+            "candidates": [{"content": {"parts": [{"text": '{"regime": "NORMAL"}'}]}}],
         })
         mock_session.post.return_value.__aenter__.return_value = mock_resp2
-        result = await client.chat_json("auto", "system", "user")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user")
         assert result == {"regime": "NORMAL"}
         assert client.successful_requests == 1
         assert client.total_tokens_used == 0
@@ -242,12 +177,12 @@ def test_no_fabricated_seed_events_and_honest_quota():
     assert commander.curated_events == []  # no fake event created to attach to
 
     tel = commander.get_intel_hub_telemetry()
-    assert tel["omniroute"]["quota_pct"] is None  # unknown, not fabricated 100.0
+    assert tel["ai"]["quota_pct"] is None  # unknown, not fabricated 100.0
 
-    real_client = OmniRouteClient()
+    real_client = GeminiClient()
     real_commander = MacroCommander(real_client)
     tel2 = real_commander.get_intel_hub_telemetry()
-    assert tel2["omniroute"]["quota_pct"] is None  # F4: no DAILY_TOKEN_QUOTA set, so no real denominator -- unknown, not 100.0
+    assert tel2["ai"]["quota_pct"] is None  # no DAILY_TOKEN_QUOTA set, so no real denominator -- unknown, not 100.0
 
 
 def test_fallback_thresholds_do_not_veto_on_single_word():

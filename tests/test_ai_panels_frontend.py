@@ -66,33 +66,33 @@ def test_wizard_key_status_pills_plain_wording():
     assert "Check failed" in js
 
 
-def test_wizard_password_card_named_like_login_page():
-    html = _html()
+def test_wizard_password_card_removed():
+    html, js = _html(), _js()
     assert "Gateway Admin Password" not in html
-    assert '<span class="setup-provider-name">Password</span>' in html
-    assert "Password for signing in to the OmniRoute dashboard (min 8 characters)" in html
-    assert "Protects the local OmniRoute console" not in html
+    assert "OmniRoute" not in html
+    assert "keyAdminPassword" not in html and "keyAdminPassword" not in js
+    assert "keyAdminPasswordConfirm" not in html and "keyAdminPasswordConfirm" not in js
+    assert "INITIAL_PASSWORD" not in html and "INITIAL_PASSWORD" not in js
 
 
 def test_save_toasts_and_stage_labels_plain_wording():
     js, dash = _js(), _dashboard()
-    assert "AI services connected" in js
-    assert "Console password saved" in js
+    assert "Gemini AI connected" in js
+    assert "Settings saved" in js
     assert "API Credentials & Gateway Synchronized" not in js
     assert "Admin password is stored in ~/.omniroute/.env" not in js
     for label in (
-        "Saving password...",
-        "Connecting AI services...",
-        "Starting AI services...",
-        "Restarting AI services...",
-        "Connecting to AI services...",
+        "Saving Gemini API key...",
+        "Saving setup...",
+        "Connecting to Gemini AI...",
+        "Starting live engine...",
     ):
         assert label in dash
     assert "Saving admin password..." not in dash
     assert "Synchronizing API keys with local gateway..." not in dash
     assert "Starting OmniRoute gateway..." not in dash
     assert "Connecting to active OmniRoute gateway..." not in dash
-    assert '"AI services connected."' in dash
+    assert '"Gemini AI connected."' in dash
 
 
 def test_dock_gear_tooltip_is_ai_services():
@@ -121,12 +121,12 @@ def test_intel_advanced_cards_always_shown():
     assert 'id="btnIntelAdvanced"' not in html
     assert "toggleIntelAdvanced" not in js
     body = html.split('intel-advanced-section')[1].split('id="btnRefreshDigest"')[0]
-    for label in ("OmniRoute Controller", "Token Utilization", "Async Concurrency"):
+    for label in ("Gemini Model", "Token Utilization", "Async Concurrency"):
         assert label in body
-    assert 'id="btnOpenOmniConsole"' in html
-    assert 'id="omniConsolePwd"' in html
-    assert 'id="omniTokensVal"' in html
-    assert 'id="omniReqCounters"' in html
+    assert 'id="btnOpenOmniConsole"' not in html
+    assert 'id="omniConsolePwd"' not in html
+    assert 'id="aiTokensVal"' in html
+    assert 'id="aiReqCounters"' in html
     assert 'id="macroThrottleLine"' in html
     assert "News updates slowed for now" in html
 

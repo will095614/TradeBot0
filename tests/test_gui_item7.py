@@ -18,7 +18,6 @@ from src.data.live_engine import LiveArenaEngine
 from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
 from src.gui.view_model import build_engine_view_model
 from src.intelligence.config_manager import ConfigManager
-from src.intelligence.gateway_supervisor import GatewaySupervisor
 
 
 def _rankings(engine):
@@ -33,30 +32,27 @@ def _rankings(engine):
     ]
 
 
-# ------------------------------------------------------------------ password
-def test_setup_status_never_returns_password(tmp_path):
+# ------------------------------------------------------------------ setup status
+def test_setup_status_never_returns_gemini_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     dash = ArenaDashboard()
-    dash.config_manager = ConfigManager(
-        data_dir=tmp_path / "data",
-        omni_env_path=tmp_path / ".omniroute" / ".env",
-    )
-    dash.gateway_supervisor = GatewaySupervisor()
+    dash.config_manager = ConfigManager(data_dir=tmp_path / "data")
     bridge = _ArenaBridgeApi(dash)
+    try:
+        st = bridge.get_setup_status()
+        assert st["status"] == "ok"
+        assert "gemini_api_key" not in st
+        assert st["gemini_key_configured"] is False
+        assert "OmniAdmin2026!ChangeMe" not in json.dumps(st)
 
-    st = bridge.get_setup_status()
-    assert st["status"] == "ok"
-    assert "omniroute_password" not in st
-    assert st["omniroute_password_configured"] is False
-    assert "OmniAdmin2026!ChangeMe" not in json.dumps(st)
-
-    # A configured custom password is still never returned, only flagged.
-    env_dir = tmp_path / ".omniroute"
-    env_dir.mkdir(parents=True, exist_ok=True)
-    (env_dir / ".env").write_text("INITIAL_PASSWORD=MySecret123\n", encoding="utf-8")
-    st2 = bridge.get_setup_status()
-    assert st2["omniroute_password_configured"] is True
-    assert "omniroute_password" not in st2
-    assert "MySecret123" not in json.dumps(st2)
+        # A configured key is never returned verbatim, only flagged.
+        dash.config_manager.set_gemini_api_key("AIzaSySecretKey123456")
+        st2 = bridge.get_setup_status()
+        assert st2["gemini_key_configured"] is True
+        assert "gemini_api_key" not in st2
+        assert "AIzaSySecretKey123456" not in json.dumps(st2)
+    finally:
+        dash.engine.stop()
 
 
 def test_frontend_assets_contain_no_default_password():

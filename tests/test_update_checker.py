@@ -58,7 +58,7 @@ def test_compare_versions(a, b, expected):
 
 def test_version_single_source():
     assert APP_NAME == "TradeBot0"
-    assert APP_VERSION == "V2.6.0"
+    assert APP_VERSION == "V3.0.0"
 
 
 def test_iss_version_matches_version_py():
@@ -96,7 +96,7 @@ def test_not_configured_makes_no_request(monkeypatch):
 def test_update_available_with_manifest(monkeypatch):
     monkeypatch.delenv("TRADEBOT0_UPDATE_URL", raising=False)
     payload = {
-        "version": "V2.9.0",
+        "version": "V9.9.0",
         "download_url": "https://example.invalid/TradeBot0Setup.exe",
         "notes": "Bug fixes.",
     }
@@ -104,7 +104,7 @@ def test_update_available_with_manifest(monkeypatch):
         result = check_for_updates(manifest_url="https://example.invalid/manifest.json")
     mock_get.assert_called_once_with("https://example.invalid/manifest.json", timeout=5.0)
     assert result["status"] == "update_available"
-    assert result["latest_version"] == "V2.9.0"
+    assert result["latest_version"] == "V9.9.0"
     assert result["download_url"] == "https://example.invalid/TradeBot0Setup.exe"
     assert result["notes"] == "Bug fixes."
     assert result["current_version"] == APP_VERSION

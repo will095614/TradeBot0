@@ -12,7 +12,7 @@ from src.gui.view_model import ViewModelPublisher
 from src.intelligence.config_manager import ConfigManager
 from src.intelligence.ingestion import StructuredEvent
 from src.intelligence.macro_commander import MacroCommander
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import GeminiClient
 from src.version import APP_VERSION
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,41 +31,6 @@ def test_brand_subtitle_never_squeezed_to_ellipsis():
     assert "text-overflow: ellipsis" not in sub_block
     # Media queries must not crush .title-group/.title-sub down to 140px
     assert "140px" not in css
-
-
-def test_password_eye_button_and_reveal_bridge(tmp_path):
-    html = (ASSETS / "index.html").read_text(encoding="utf-8")
-    js = (ASSETS / "app.js").read_text(encoding="utf-8")
-    css = (ASSETS / "app.css").read_text(encoding="utf-8")
-
-    # Eye button placed immediately to the right of #omniConsolePwd copy badge
-    idx_pwd = html.index('id="omniConsolePwd"')
-    idx_eye = html.index('id="btnToggleOmniPwd"')
-    assert idx_pwd < idx_eye
-    assert 'onclick="toggleOmniPasswordVisibility()"' in html
-    assert "window.toggleOmniPasswordVisibility = toggleOmniPasswordVisibility;" in js
-    assert "window.copyOmniPassword = copyOmniPassword;" in js
-    assert ".pwd-eye-btn" in css
-    assert ".pwd-badge.pwd-revealed" in css
-
-    # Bridge method returns password on explicit reveal, error when unset
-    dash = ArenaDashboard()
-    dash.config_manager = ConfigManager(
-        data_dir=tmp_path / "data",
-        omni_env_path=tmp_path / ".omniroute" / ".env",
-    )
-    env_dir = tmp_path / ".omniroute"
-    env_dir.mkdir(parents=True, exist_ok=True)
-    bridge = _ArenaBridgeApi(dash)
-
-    (env_dir / ".env").write_text("GEMINI_API_KEY=sk-test\n", encoding="utf-8")
-    missing = bridge.reveal_omniroute_password()
-    assert missing["status"] == "error"
-
-    (env_dir / ".env").write_text("INITIAL_PASSWORD=MyV252Secret!\n", encoding="utf-8")
-    shown = bridge.reveal_omniroute_password()
-    assert shown == {"status": "ok", "password": "MyV252Secret!"}
-    dash.engine.stop()
 
 
 def test_intel_sort_collapses_expanded_cards_and_uses_flip_animation():
@@ -92,7 +57,7 @@ def test_intel_event_time_hides_seconds():
 
 
 def test_article_real_streamed_progress_and_viewmodel_delta():
-    # 1. Verify SSE streaming in OmniRouteClient.chat_json drives monotonic real progress callbacks
+    # 1. Verify SSE streaming in GeminiClient.chat_json drives monotonic real progress callbacks
     article_body = (
         "事件經過：以太坊機構資金連續五日淨流入，帶動市場交投熱絡。"
         "背景脈絡：宏觀流動性預期轉暖，市場風險偏好顯著回升。"
@@ -108,7 +73,7 @@ def test_article_real_streamed_progress_and_viewmodel_delta():
     for i in range(0, len(payload_json), step):
         chunk = payload_json[i : i + step]
         sse_lines.append(
-            f"data: {json.dumps({'choices': [{'delta': {'content': chunk}}]}, ensure_ascii=False)}\n".encode("utf-8")
+            f"data: {json.dumps({'candidates': [{'content': {'parts': [{'text': chunk}]}}]}, ensure_ascii=False)}\n".encode("utf-8")
         )
     sse_lines.append(b"data: [DONE]\n")
 
@@ -138,12 +103,12 @@ def test_article_real_streamed_progress_and_viewmodel_delta():
         closed = False
 
         def post(self, *args, **kwargs):
-            assert kwargs["json"].get("stream") is True
+            assert args[0].endswith(":streamGenerateContent?alt=sse")
             return _FakeResp()
 
-    client = OmniRouteClient(base_url="http://127.0.0.1:20128/v1")
+    client = GeminiClient(api_key="AIzaTestKey")
     client.is_gateway_online = True
-    client.model_ingest = "test-model"
+    client.model_ingest = "gemini-3.1-flash-lite"
 
     async def _get_sess():
         return _FakeSession()
@@ -213,4 +178,4 @@ def test_article_real_streamed_progress_and_viewmodel_delta():
     d2 = pub.compute_delta_from_snapshot(snap2)
     assert d2["intel_events_unchanged"] is False
     assert d2["intel_hub"]["events"][0]["article_progress"] == 58
-    assert APP_VERSION.startswith("V2.")
+    assert APP_VERSION.startswith("V3.")

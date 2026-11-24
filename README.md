@@ -28,11 +28,10 @@ TradeBot0 是一套在本機運行的 ETH/USD 多策略模擬交易軟體。系�
 
 ### 1. 使用安裝程式（一般使用者）
 
-1. 下載 [TradeBot0Setup-V2.6.0.exe](https://github.com/will095614/TradeBot0/releases/download/v2.6.0/TradeBot0Setup-V2.6.0.exe) 並執行安裝。
+1. 下載 [TradeBot0Setup-V3.0.0.exe](https://github.com/will095614/TradeBot0/releases/download/v3.0.0/TradeBot0Setup-V3.0.0.exe) 並執行安裝。
 2. 因安裝檔未包含商業數位簽章，Windows SmartScreen 可能顯示提示視窗，點擊「其他資訊」並選擇「仍要執行」即可繼續。
 3. 首次啟動將顯示設定精靈：
-   - 設定本機管理密碼。
-   - 輸入 Google Gemini 的 API Key。精靈會自動安裝並啟動所需的 AI 服務。
+   - 輸入您的 Google Gemini API Key 並點擊測試與啟動，即可開始使用。
 
 ### 2. 原始碼執行（開發者）
 
@@ -114,7 +113,7 @@ TradeBot0 內建的 AI 會幫你閱讀市場新聞、判斷市場方向。
 - `src/arena/`：模擬撮合核心，包含虛擬券商 `BrokerSim`、資產記帳 `Portfolio`、風控模組 `RiskGuard`、排行榜 `Leaderboard` 與遺傳演算法 `GeneticEvolver`。
 - `src/competitors/`：5 個量化策略實作與策略參數結構 `CompetitorGenome`。
 - `src/data/`：行情與資料處理模組，包含主調度引擎 `live_engine.py`、報價來源 `quote_feeds.py`、技術指標運算 `indicator_engine.py`、策略執行器 `live_strategy_runner.py`、會話存檔 `session_codec.py`、WebSocket 行情串流 `ws_feed.py` 與歷史回測 `timemachine.py`。
-- `src/intelligence/`：外部資訊整合模組，包含 OmniRoute 本機客戶端 `OmniRouteClient`、新聞採集 `IntelligenceHarvester`、宏觀方向決策 `MacroCommander` 與背景行程監控 `GatewaySupervisor`。
+- `src/intelligence/`：外部資訊整合模組，包含 Google Gemini 直連客戶端 `GeminiClient`、新聞採集 `IntelligenceHarvester`、宏觀方向決策 `MacroCommander` 與設定管理 `ConfigManager`。
 - `src/gui/`：使用者介面，包含桌面視窗控制器 `dashboard.py`、視圖資料 `view_model.py` 及前端頁面 `assets/`（`index.html`、`app.css`、`app.js`）。
 - `tests/`：單元測試、回歸測試、合約測試與效能驗證套件。
 
@@ -124,10 +123,10 @@ TradeBot0 內建的 AI 會幫你閱讀市場新聞、判斷市場方向。
 
 - **作業系統**：Windows 10 / Windows 11（64 位元）。
 - **Python 環境**（原始碼執行）：Python 3.10+，相關相依套件請參閱 `requirements.txt`。
-- **AI 服務元件**：首次啟動時，設定精靈會自動安裝所需的 AI 服務元件，無須手動設定。
+- **Google Gemini 直連整合**：程式透過 HTTPS 直接連線 Google Gemini API 執行新聞分類與宏觀判決，無須額外安裝本機 AI 閘道或 Node.js 執行環境。
 
 ---
 
 ## 下載
 
-[TradeBot0Setup-V2.6.0.exe](https://github.com/will095614/TradeBot0/releases/download/v2.6.0/TradeBot0Setup-V2.6.0.exe)（GitHub Release 單一載點）。
+[TradeBot0Setup-V3.0.0.exe](https://github.com/will095614/TradeBot0/releases/download/v3.0.0/TradeBot0Setup-V3.0.0.exe)（GitHub Release 單一載點）。

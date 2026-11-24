@@ -1,11 +1,12 @@
 import asyncio
 import json
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from src.intelligence.omniroute_client import (
-    OmniRouteClient,
-    extract_json,
+from unittest.mock import AsyncMock, MagicMock
+
+from src.intelligence.gemini_client import (
+    GeminiClient,
+    classify_llm_error,
     compute_backoff,
+    extract_json,
 )
 
 
@@ -50,7 +51,6 @@ def test_extract_json_with_unclosed_think_block():
     Truncated reasoning that never closed properly
     {"directional_bias": "SHORT_ONLY"}
     """
-    # If the think block is unclosed and encapsulates the text, extract_json strips it and returns None
     res = extract_json(raw)
     assert res is None
 
@@ -59,36 +59,33 @@ def test_extract_json_invalid_or_non_dict():
     assert extract_json(None) is None
     assert extract_json("") is None
     assert extract_json("plain text without brackets") is None
-    assert extract_json("[1, 2, 3]") is None  # Array is not a dict
+    assert extract_json("[1, 2, 3]") is None
     assert extract_json('{"malformed": }') is None
 
 
 def test_compute_backoff():
-    # Test retry after header
     b1 = compute_backoff(0, retry_after="12.5")
     assert b1 == 12.5
 
-    # Test invalid retry after
     b2 = compute_backoff(0, retry_after="invalid")
     assert 0.1 <= b2 <= 2.0
 
-    # Test exponential scaling
     b_att1 = compute_backoff(1)
     b_att3 = compute_backoff(3)
     assert b_att3 >= b_att1
 
 
-def test_omniroute_client_200_ok():
+def test_gemini_client_200_ok():
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key")
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.headers = {}
         mock_resp.json = AsyncMock(return_value={
-            "choices": [{
-                "message": {
-                    "content": '```json\n{"directional_bias": "LONG_ONLY", "confidence": 0.92}\n```'
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": '```json\n{"directional_bias": "LONG_ONLY", "confidence": 0.92}\n```'}]
                 }
             }]
         })
@@ -100,32 +97,28 @@ def test_omniroute_client_200_ok():
         client._session = mock_session
         client._owns_session = False
 
-        result = await client.chat_json("auto", "system instruction", "user prompt")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system instruction", "user prompt")
         assert result == {"directional_bias": "LONG_ONLY", "confidence": 0.92}
         assert client.is_gateway_online is True
         assert client.successful_requests == 1
     asyncio.run(_run())
 
 
-def test_omniroute_client_429_then_200():
+def test_gemini_client_429_then_200():
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", max_retries=2)
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key", max_retries=2)
 
-        # First attempt: 429 Rate Limit
         mock_resp_429 = AsyncMock()
         mock_resp_429.status = 429
         mock_resp_429.headers = {"Retry-After": "0.01"}
+        mock_resp_429.json = AsyncMock(return_value={"error": {"message": "rate limit"}})
+        mock_resp_429.text = AsyncMock(return_value='{"error":{"message":"rate limit"}}')
 
-        # Second attempt: 200 OK
         mock_resp_200 = AsyncMock()
         mock_resp_200.status = 200
         mock_resp_200.headers = {}
         mock_resp_200.json = AsyncMock(return_value={
-            "choices": [{
-                "message": {
-                    "content": '{"regime": "NORMAL"}'
-                }
-            }]
+            "candidates": [{"content": {"parts": [{"text": '{"regime": "NORMAL"}'}]}}]
         })
 
         mock_session = MagicMock()
@@ -135,16 +128,16 @@ def test_omniroute_client_429_then_200():
         client._session = mock_session
         client._owns_session = False
 
-        result = await client.chat_json("auto", "system", "user")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user")
         assert result == {"regime": "NORMAL"}
         assert client.retried_requests == 1
         assert client.successful_requests == 1
     asyncio.run(_run())
 
 
-def test_omniroute_client_unreachable_safe_mode():
+def test_gemini_client_unreachable_safe_mode():
     async def _run():
-        client = OmniRouteClient(base_url="http://invalid-host-offline:20128/v1", max_retries=1)
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key", max_retries=1)
 
         mock_session = MagicMock()
         mock_session.closed = False
@@ -153,8 +146,7 @@ def test_omniroute_client_unreachable_safe_mode():
         client._session = mock_session
         client._owns_session = False
 
-        # Must return None safely without raising an unhandled exception
-        result = await client.chat_json("auto", "system", "user")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user")
         assert result is None
         assert client.failed_requests == 1
         assert client.is_gateway_online is False
@@ -175,21 +167,25 @@ def _mock_resp(status, headers=None, json_body=None):
     resp.headers = headers or {}
     if json_body is not None:
         resp.json = AsyncMock(return_value=json_body)
+        resp.text = AsyncMock(return_value=json.dumps(json_body))
+    else:
+        resp.json = AsyncMock(return_value={})
+        resp.text = AsyncMock(return_value="")
     return resp
 
 
 def test_chat_json_retries_then_succeeds():
-    """第一次 429（帶 Retry-After）、第二次 200＋可解析 JSON：retried==1、successful==1。"""
+    """First 429 (with Retry-After), second 200+valid JSON -> retried==1, successful==1."""
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key", max_retries=2)
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key", max_retries=2)
         mock_session = _mock_429_session([
             _mock_resp(429, {"Retry-After": "0.01"}),
-            _mock_resp(200, {}, {"choices": [{"message": {"content": '{"regime": "NORMAL"}'}}]}),
+            _mock_resp(200, {}, {"candidates": [{"content": {"parts": [{"text": '{"regime": "NORMAL"}'}]}}]}),
         ])
         client._session = mock_session
         client._owns_session = False
 
-        result = await client.chat_json("auto", "system", "user")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user")
         assert result == {"regime": "NORMAL"}
         assert client.total_requests == 1
         assert client.retried_requests == 1
@@ -200,9 +196,9 @@ def test_chat_json_retries_then_succeeds():
 
 
 def test_chat_json_all_retries_429_returns_none():
-    """三次皆 429（max_retries=2）：回 None、retried==2、failed==1、successful==0。"""
+    """Three 429 responses (max_retries=2) -> returns None, retried==2, failed==1, successful==0."""
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key", max_retries=2)
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key", max_retries=2)
         mock_session = _mock_429_session([
             _mock_resp(429, {"Retry-After": "0.01"}),
             _mock_resp(429, {"Retry-After": "0.01"}),
@@ -211,7 +207,7 @@ def test_chat_json_all_retries_429_returns_none():
         client._session = mock_session
         client._owns_session = False
 
-        result = await client.chat_json("auto", "system", "user")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user")
         assert result is None
         assert client.total_requests == 1
         assert client.retried_requests == 2
@@ -221,14 +217,12 @@ def test_chat_json_all_retries_429_returns_none():
     asyncio.run(_run())
 
 
-def test_chat_json_sends_response_format_json_object():
-    """chat_json forces JSON mode: the payload carries
-    response_format {"type": "json_object"} (2026-11-15: the routed
-    model kept answering in prose, wasting every digest/article call)."""
+def test_chat_json_sends_response_mime_type_json():
+    """chat_json sends Gemini generationConfig.responseMimeType='application/json'."""
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key")
         mock_session = _mock_429_session([
-            _mock_resp(200, {}, {"choices": [{"message": {"content": '{"regime": "NORMAL"}'}}]}),
+            _mock_resp(200, {}, {"candidates": [{"content": {"parts": [{"text": '{"regime": "NORMAL"}'}]}}]}),
         ])
         client._session = mock_session
         client._owns_session = False
@@ -236,29 +230,23 @@ def test_chat_json_sends_response_format_json_object():
         result = await client.chat_json("auto", "system", "user")
         assert result == {"regime": "NORMAL"}
         sent = mock_session.post.call_args.kwargs["json"]
-        assert sent["response_format"] == {"type": "json_object"}
-        assert sent["model"] == "auto"
+        assert sent["generationConfig"]["responseMimeType"] == "application/json"
+        assert mock_session.post.call_args[0][0].endswith("/models/gemini-3.1-flash-lite:generateContent")
     asyncio.run(_run())
 
 
-def test_chat_json_400_response_format_rejection_is_not_quota():
-    """A provider that rejects response_format answers 400: chat_json
-    returns None (terminal, same fallback as an unparseable 200) and
-    the failure must NOT be recorded as quota -- classify_llm_error
-    maps 400 to kind "unknown"."""
-    from src.intelligence.omniroute_client import classify_llm_error
-
+def test_chat_json_400_format_rejection_is_not_quota():
+    """HTTP 400 rejecting JSON mode retries cleanly without quota misattribution."""
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
-        body = {"error": {"message": "response_format is not supported by this model",
-                          "type": "invalid_request_error"}}
-        resp = _mock_resp(400, {}, body)
-        resp.text = AsyncMock(return_value=json.dumps(body))
-        mock_session = _mock_429_session([resp])
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key")
+        body = {"error": {"message": "responseMimeType is not supported by this model", "status": "INVALID_ARGUMENT"}}
+        resp1 = _mock_resp(400, {}, body)
+        resp2 = _mock_resp(400, {}, {"error": {"message": "generic 400"}})
+        mock_session = _mock_429_session([resp1, resp2])
         client._session = mock_session
         client._owns_session = False
 
-        result = await client.chat_json("auto", "system", "user")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user")
         assert result is None
         assert client.failed_requests == 1
         assert client._quota_failures == {}
@@ -268,40 +256,37 @@ def test_chat_json_400_response_format_rejection_is_not_quota():
 
 
 def test_chat_json_repair_retry_turns_prose_into_json():
-    """A 200 with prose gets exactly ONE repair attempt (original
-    messages + a JSON-only reminder); if the repair returns JSON, the
-    call succeeds and the second post carries the reminder."""
+    """200 with prose triggers one bounded repair POST and succeeds if repair yields JSON."""
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
-        prose = _mock_resp(200, {}, {"choices": [{"message": {"content": "**Analysis Summary:** prose, no braces"}}]})
-        fixed = _mock_resp(200, {}, {"choices": [{"message": {"content": '{"regime": "NORMAL"}'}}]})
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key")
+        prose = _mock_resp(200, {}, {"candidates": [{"content": {"parts": [{"text": "**Analysis Summary:** prose, no braces"}]}}]})
+        fixed = _mock_resp(200, {}, {"candidates": [{"content": {"parts": [{"text": '{"regime": "NORMAL"}'}]}}]})
         mock_session = _mock_429_session([prose, fixed])
         client._session = mock_session
         client._owns_session = False
 
-        result = await client.chat_json("auto", "system", "user")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user")
         assert result == {"regime": "NORMAL"}
         assert mock_session.post.call_count == 2
         assert client.successful_requests == 1
         assert client.retried_requests == 1
         repair_payload = mock_session.post.call_args_list[1].kwargs["json"]
-        assert repair_payload["messages"][-1]["content"].startswith("Your previous reply was not a JSON object")
-        assert repair_payload["messages"][0]["content"] == "system"
-        assert repair_payload["response_format"] == {"type": "json_object"}
+        assert repair_payload["contents"][-1]["parts"][0]["text"].startswith("Your previous reply was not a JSON object")
+        assert repair_payload["systemInstruction"] == {"parts": [{"text": "system"}]}
+        assert repair_payload["generationConfig"]["responseMimeType"] == "application/json"
     asyncio.run(_run())
 
 
 def test_chat_json_repair_retry_gives_up_after_one_failure():
-    """Both the first 200 and the repair 200 are prose: result None,
-    exactly two posts, no infinite repair loop."""
+    """Both initial 200 and repair 200 return prose -> returns None after 2 POSTs."""
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
-        prose = lambda: _mock_resp(200, {}, {"choices": [{"message": {"content": "plain prose, no braces"}}]})
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key")
+        prose = lambda: _mock_resp(200, {}, {"candidates": [{"content": {"parts": [{"text": "plain prose, no braces"}]}}]})
         mock_session = _mock_429_session([prose(), prose()])
         client._session = mock_session
         client._owns_session = False
 
-        result = await client.chat_json("auto", "system", "user")
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user")
         assert result is None
         assert mock_session.post.call_count == 2
         assert client.successful_requests == 0
@@ -311,14 +296,14 @@ def test_chat_json_repair_retry_gives_up_after_one_failure():
 def test_chat_json_per_call_timeout_override():
     """timeout_sec=150 reaches the post call as ClientTimeout(total=150)."""
     async def _run():
-        client = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", api_key="test-key")
+        client = GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key")
         mock_session = _mock_429_session([
-            _mock_resp(200, {}, {"choices": [{"message": {"content": '{"regime": "NORMAL"}'}}]}),
+            _mock_resp(200, {}, {"candidates": [{"content": {"parts": [{"text": '{"regime": "NORMAL"}'}]}}]}),
         ])
         client._session = mock_session
         client._owns_session = False
 
-        result = await client.chat_json("auto", "system", "user", timeout_sec=150.0)
+        result = await client.chat_json("gemini-3.1-flash-lite", "system", "user", timeout_sec=150.0)
         assert result == {"regime": "NORMAL"}
         sent_timeout = mock_session.post.call_args.kwargs["timeout"]
         assert sent_timeout.total == 150.0

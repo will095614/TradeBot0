@@ -10,12 +10,12 @@ demand through get_event_article.
 import json
 
 from src.intelligence.macro_commander import MacroCommander
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import GeminiClient
 
 
 def _commander_with_expanded_events(count=25):
     commander = MacroCommander(
-        OmniRouteClient(base_url="http://127.0.0.1:1/v1", api_key="test-key")
+        GeminiClient(base_url="http://127.0.0.1:1/v1beta", api_key="test-key")
     )
     commander.curated_events.clear()
     bodies = {}

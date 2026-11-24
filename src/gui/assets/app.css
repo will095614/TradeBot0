@@ -3335,7 +3335,7 @@ tbody td {
 }
 
 /* ==========================================================================
-   MACRO INTELLIGENCE HUB & OMNIROUTE MONITOR VIEW (.intel-hub-grid)
+   MACRO INTELLIGENCE HUB & GEMINI AI MONITOR VIEW (.intel-hub-grid)
    ========================================================================== */
 .intel-hub-grid {
   display: grid;
@@ -3426,50 +3426,6 @@ tbody td {
 .intel-metric:active {
   transform: scale(0.985);
   transition: transform 0.08s ease;
-}
-
-.omni-console-card {
-  /* Deck port: Password moved out of this box, so space-between would
-     push the button to the bottom; top-left like the sim instead. */
-  justify-content: flex-start;
-}
-
-.lg-btn--console {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  height: 29px;
-  margin-top: 2px;
-  margin-bottom: 2px;
-  padding: 0 14px;
-  border-radius: var(--r-pill);
-  font-size: 11px;
-  font-weight: 750;
-  color: #FFFFFF;
-  background: linear-gradient(135deg, rgba(0, 242, 254, 0.24) 0%, rgba(16, 245, 160, 0.18) 100%);
-  border: 1px solid rgba(0, 242, 254, 0.48);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.45),
-    0 2px 10px rgba(0, 242, 254, 0.20);
-  cursor: pointer;
-  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.lg-btn--console:hover {
-  background: linear-gradient(135deg, rgba(0, 242, 254, 0.42) 0%, rgba(16, 245, 160, 0.30) 100%);
-  border-color: rgba(0, 242, 254, 0.85);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.65),
-    0 4px 18px rgba(0, 242, 254, 0.45);
-  transform: translateY(-1.5px) scale(1.02);
-  color: #FFFFFF;
-}
-
-.lg-btn--console:active {
-  transform: scale(0.96) translateY(1px) !important;
-  box-shadow: 0 1px 4px rgba(0, 242, 254, 0.25);
-  transition: transform 0.08s ease !important;
 }
 
 .intel-metric-lbl {
@@ -3678,10 +3634,8 @@ tbody td {
   visibility: visible;
   opacity: 1;
 }
-/* Gateway diagnosis workstream: the diagnosis line is filled with
-   the plain-language state ('quota exhausted' / 'connection problem' /
-   'restarting'). It must never wrap: a wrap would grow the deck.
-   Long text is ellipsised instead. */
+/* AI diagnosis workstream: filled with plain-language state
+   ('quota_exhausted' / 'connection_problem'). Must never wrap. */
 .intel-diagnosis-line {
   color: var(--ss-text-muted);
   white-space: nowrap;
@@ -3689,10 +3643,7 @@ tbody td {
   text-overflow: ellipsis;
 }
 
-/* AI panels (I2/I3/I4): the three engineering cards (Controller,
-   Token Utilization, Async Concurrency) are always shown -- the
-   Advanced toggle was removed at the user's request (2026-11-15),
-   so there is no collapsed state and no toggle styling. */
+/* Three engineering cards (Gemini Model, Token Utilization, Async Concurrency). */
 .intel-advanced-section {
   display: flex;
   flex-direction: column;
@@ -3750,7 +3701,7 @@ tbody td {
 }
 .digest-refresh-progress-fill.indeterminate {
   width: 40%;
-  animation: setup-install-progress-slide 1.6s ease-in-out infinite;
+  animation: digest-progress-slide 1.6s ease-in-out infinite;
 }
 
 .intel-events-section {
@@ -5197,7 +5148,7 @@ body:not(.arena-ready) .lg-glass {
 }
 
 /* ==========================================================================
-   GATEWAY SETUP WIZARD & CREDENTIALS MODAL (.setup-wizard-modal)
+   GEMINI AI SETUP WIZARD & CREDENTIALS MODAL (.setup-wizard-modal)
    ========================================================================== */
 .setup-wizard-overlay {
   z-index: 10001;
@@ -5249,13 +5200,8 @@ body:not(.arena-ready) .lg-glass {
    windows use the compact mode at the end of this section (tighter
    spacing, animated) instead of re-enabling overflow. */
 
-/* Cancel-install confirmation sits above the wizard overlay (10001). */
-.install-cancel-confirm-overlay {
-  z-index: 10002;
-}
-
-/* Wizard-close confirmation sits above the wizard overlay (10001) and the
-   cancel-install confirmation (10002), below the shutdown prompt (10005). */
+/* Wizard-close confirmation sits above the wizard overlay (10001),
+   below the shutdown prompt (10005). */
 .wizard-close-confirm-overlay {
   z-index: 10003;
 }
@@ -5326,8 +5272,7 @@ body:not(.arena-ready) .lg-glass {
   min-height: 0;
 }
 
-.setup-wizard-column > .setup-provider-card,
-.setup-wizard-column > .setup-gateway-options {
+.setup-wizard-column > .setup-provider-card {
   margin-top: 8px;
   transition: margin-top 0.3s var(--lg-spring), border-color 0.22s ease,
               background 0.22s ease, padding 0.3s var(--lg-spring);
@@ -5376,12 +5321,6 @@ body:not(.arena-ready) .lg-glass {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-/* The admin-password card stacks two input rows; without this they touch
-   (measured 0px gap before this fix). */
-.setup-input-group + .setup-input-group {
-  margin-top: 8px;
 }
 
 .setup-key-input {
@@ -5554,55 +5493,6 @@ body:not(.arena-ready) .lg-glass {
   opacity: 1;
 }
 
-.setup-gateway-options {
-  padding: 10px 14px;
-  border-radius: 10px;
-  background: rgba(0, 242, 254, 0.04);
-  border: 1px solid rgba(0, 242, 254, 0.24);
-  text-align: center;
-  transition: padding 0.3s var(--lg-spring);
-}
-
-/* Environment detection status strip (Node.js & OmniRoute) */
-.setup-env-row {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 14px;
-  padding-bottom: 8px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.setup-env-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.setup-env-label {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 700;
-  color: #E2E8F0;
-}
-
-.setup-gateway-note {
-  margin-top: 4px;
-  font-size: 10px;
-  color: var(--ss-text-muted);
-  line-height: 1.45;
-}
-
-.setup-gateway-note code {
-  color: var(--ss-accent);
-  background: rgba(0, 0, 0, 0.45);
-  padding: 1px 4px;
-  border-radius: 4px;
-  font-family: var(--font-mono);
-}
-
 /* Content-sized collapsible container: collapses cleanly to 0px height and
    0px margin when inactive, and animates to exact natural content height
    when .is-open is added so sibling boxes resize and shift smoothly. */
@@ -5638,24 +5528,6 @@ body:not(.arena-ready) .lg-glass {
   min-height: 0;
 }
 
-.setup-gateway-action-stack {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 0;
-}
-
-#gatewayUnavailableNote {
-  margin-top: 0;
-  color: #CBD5E1;
-  line-height: 1.45;
-}
-
-#btnInstallGatewayRuntime {
-  margin-top: 0;
-}
-
 .setup-wizard-banner {
   padding: 9px 14px;
   border-radius: 8px;
@@ -5686,36 +5558,12 @@ body:not(.arena-ready) .lg-glass {
   border: 1px solid rgba(255, 51, 75, 0.28);
 }
 
-/* One-click install progress: sits inside #setupInstallProgressWrap
-   (.setup-collapsible) so it takes 0px when idle and glides open cleanly. */
-.setup-install-progress {
-  margin-top: 0;
-  min-height: 0;
-}
-.setup-install-progress-track {
-  height: 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.10);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-}
-.setup-install-progress-fill {
-  height: 100%;
-  width: 0%;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #00F2FE 0%, #10F5A0 100%);
-  transition: width 0.4s ease;
-}
-.setup-install-progress-fill.indeterminate {
-  width: 40%;
-  animation: setup-install-progress-slide 1.6s ease-in-out infinite;
-}
-@keyframes setup-install-progress-slide {
+@keyframes digest-progress-slide {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(250%); }
 }
 
-/* Save & Launch progress: same collapsible content-sized bar. */
+/* Save & Launch progress: collapsible content-sized bar. */
 .setup-save-progress {
   margin-top: 0;
   min-height: 0;
@@ -5751,115 +5599,12 @@ body:not(.arena-ready) .lg-glass {
   .setup-wizard-modal { padding: 12px 20px 10px; }
   .setup-wizard-header { margin-bottom: 6px; }
   .setup-wizard-body { margin-bottom: 8px; }
-  .setup-wizard-column > .setup-provider-card,
-  .setup-wizard-column > .setup-gateway-options { margin-top: 6px; }
+  .setup-wizard-column > .setup-provider-card { margin-top: 6px; }
   .setup-collapsible.is-open { margin-top: 6px; }
   .setup-provider-card { padding: 6px 10px; }
   .setup-key-input, .setup-eye-btn, .setup-test-btn { height: 30px; }
-  .setup-gateway-options { padding: 8px 10px; }
-  .setup-env-row { padding-bottom: 6px; margin-bottom: 4px; }
   .setup-wizard-banner { padding: 7px 12px; }
   .setup-keys-intro { line-height: 1.3; }
-}
-
-.pwd-row-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.pwd-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 22px;
-  box-sizing: border-box;
-  padding: 0 8px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 700;
-  color: #38BDF8;
-  background: rgba(56, 189, 248, 0.14);
-  border: 1px solid rgba(56, 189, 248, 0.36);
-  border-radius: 5px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
-  cursor: pointer;
-  user-select: none;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  vertical-align: middle;
-}
-
-.pwd-copy-svg {
-  flex: 0 0 auto;
-  opacity: 0.9;
-}
-
-.pwd-badge.pwd-revealed {
-  color: #E0F2FE;
-  background: rgba(56, 189, 248, 0.20);
-  border-color: rgba(56, 189, 248, 0.56);
-  letter-spacing: 0.02em;
-}
-
-.pwd-badge:hover {
-  background: rgba(56, 189, 248, 0.26);
-  border-color: #38BDF8;
-  color: #FFFFFF;
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.28);
-  transform: translateY(-0.5px);
-}
-
-.pwd-badge:active {
-  transform: scale(0.96);
-}
-
-.pwd-badge.pwd-copied {
-  background: rgba(16, 245, 160, 0.22) !important;
-  border-color: #10F5A0 !important;
-  color: #10F5A0 !important;
-  box-shadow: 0 0 14px rgba(16, 245, 160, 0.45) !important;
-}
-
-.pwd-eye-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 22px;
-  padding: 0;
-  box-sizing: border-box;
-  border-radius: 5px;
-  color: #7DD3FC;
-  background: rgba(56, 189, 248, 0.10);
-  border: 1px solid rgba(56, 189, 248, 0.32);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  vertical-align: middle;
-}
-
-.pwd-eye-btn:hover {
-  background: rgba(56, 189, 248, 0.24);
-  border-color: #38BDF8;
-  color: #FFFFFF;
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.28);
-  transform: translateY(-0.5px);
-}
-
-.pwd-eye-btn:active {
-  transform: scale(0.94);
-}
-
-.pwd-eye-btn.is-revealed {
-  color: #67E8F9;
-  background: rgba(0, 242, 254, 0.22);
-  border-color: rgba(0, 242, 254, 0.65);
-  box-shadow: 0 0 12px rgba(0, 242, 254, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.30);
-}
-
-.pwd-eye-open,
-.pwd-eye-off {
-  pointer-events: none;
 }
 
 /* ==========================================================================
@@ -6021,7 +5766,7 @@ body:not(.arena-ready) .lg-glass {
   border-color: rgba(239, 68, 68, 0.45);
 }
 
-/* Intel status pill modifiers: "standby" = gateway offline / PANIC-CHOP
+/* Intel status pill modifiers: "standby" = AI offline / PANIC-CHOP
    regime (amber, the warn tone); "surge" = SURGE regime (violet,
    matching the vessel-card violet accent). */
 .intel-status-pill.standby {
@@ -6525,53 +6270,20 @@ body:not(.arena-ready) .lg-glass {
   transform: scale(0.6) rotate(-18deg);
 }
 
-.is-morphed .icon-morph-a,
-.pwd-badge.pwd-copied .icon-morph-a {
+.is-morphed .icon-morph-a {
   opacity: 0;
   transform: scale(0.6) rotate(18deg);
 }
 
-.is-morphed .icon-morph-b,
-.pwd-badge.pwd-copied .icon-morph-b {
+.is-morphed .icon-morph-b {
   opacity: 1;
   transform: scale(1) rotate(0deg);
-}
-
-.pwd-check-svg {
-  color: #10F5A0;
 }
 
 .action-swap-label {
   display: inline-block;
   white-space: nowrap;
   transition: opacity var(--arc-dur-fast) var(--arc-ease-out);
-}
-
-.pwd-eye-morph {
-  position: relative;
-}
-
-.pwd-eye-morph .pwd-eye-open,
-.pwd-eye-morph .pwd-eye-off {
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  transition: opacity var(--arc-dur-base) var(--arc-ease-spring), transform var(--arc-dur-base) var(--arc-ease-spring);
-}
-
-.pwd-eye-morph .pwd-eye-off {
-  opacity: 0;
-  transform: scale(0.65) rotate(16deg);
-}
-
-.pwd-eye-morph.is-revealed .pwd-eye-open {
-  opacity: 0;
-  transform: scale(0.65) rotate(-16deg);
-}
-
-.pwd-eye-morph.is-revealed .pwd-eye-off {
-  opacity: 1;
-  transform: scale(1) rotate(0deg);
 }
 
 /* Text Morph (uiarc.dev text-morph) */
@@ -6766,53 +6478,6 @@ body:not(.arena-ready) .lg-glass {
 
 .scroll-area-faded.has-scroll-bottom {
   --fade-bottom: 14px;
-}
-
-/* Setup Wizard Password Strength Meter (uiarc.dev password-strength) */
-.pwd-strength-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 5px;
-}
-
-.pwd-strength-bars {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
-  flex: 1 1 auto;
-}
-
-.pwd-strength-seg {
-  height: 3px;
-  border-radius: var(--r-pill);
-  background: rgba(255, 255, 255, 0.12);
-  transition: background-color var(--arc-dur-base) ease;
-}
-
-.pwd-strength-text {
-  font-size: 9px;
-  font-weight: 700;
-  color: var(--ss-ink-3);
-  min-width: 58px;
-  text-align: right;
-  white-space: nowrap;
-}
-
-.pwd-strength-wrap[data-level="1"] .pwd-strength-seg:nth-child(1) { background: #FF4D79; }
-.pwd-strength-wrap[data-level="1"] .pwd-strength-text { color: #FDA4AF; }
-
-.pwd-strength-wrap[data-level="2"] .pwd-strength-seg:nth-child(-n+2) { background: #FBBF24; }
-.pwd-strength-wrap[data-level="2"] .pwd-strength-text { color: #FDE68A; }
-
-.pwd-strength-wrap[data-level="3"] .pwd-strength-seg:nth-child(-n+3) { background: #38BDF8; }
-.pwd-strength-wrap[data-level="3"] .pwd-strength-text { color: #7DD3FC; }
-
-.pwd-strength-wrap[data-level="4"] .pwd-strength-seg:nth-child(-n+4) { background: #10F5A0; }
-.pwd-strength-wrap[data-level="4"] .pwd-strength-text { color: #6EE7B7; }
-
-@media (max-height: 720px) {
-  .pwd-strength-wrap { margin-top: 3px; }
 }
 
 /* Slide-to-Confirm Reset Control (bencho.dev slide-confirm) */

@@ -13,7 +13,6 @@ from pathlib import Path
 
 from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
 from src.intelligence.config_manager import ConfigManager
-from src.intelligence.gateway_supervisor import GatewaySupervisor
 
 
 def _assets_root() -> Path:
@@ -41,13 +40,7 @@ def test_skip_bridge_deleted_but_mode_readers_kept(tmp_path):
     uncalled bridge method). The skip_ai_mode status field and the live
     launch paths that read it are kept."""
     dash = ArenaDashboard()
-    dash.config_manager = ConfigManager(
-        data_dir=tmp_path / "data",
-        omni_env_path=tmp_path / ".omniroute" / ".env",
-    )
-    dash.gateway_supervisor = GatewaySupervisor(
-        daemon_log_path=tmp_path / "logs" / "omniroute_daemon.log"
-    )
+    dash.config_manager = ConfigManager(data_dir=tmp_path / "data")
     bridge = _ArenaBridgeApi(dash)
     try:
         assert not hasattr(bridge, "skip_to_pure_math")

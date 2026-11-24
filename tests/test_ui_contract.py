@@ -459,16 +459,14 @@ DOCUMENTED_DECORATIVE_IDS = {
     # carry aria-labelledby="<id>").
     "networkOfflineTitle": "aria-labelledby target of #networkOfflineOverlay",
     "resetModalTitle": "aria-labelledby target of #resetConfirmModal",
-    "installCancelModalTitle": "aria-labelledby target of #installCancelConfirmModal",
     "wizardCloseModalTitle": "aria-labelledby target of #wizardCloseConfirmModal",
     "setupWizardTitle": "aria-labelledby target of #setupWizardModal",
     "shutdownModalTitle": "aria-labelledby target of #shutdownModal",
     # SVG gradient referenced by fill="url(#splashZapGrad)" in the
     # splash lightning polygon.
     "splashZapGrad": "SVG gradient referenced by fill=url(#splashZapGrad)",
-    # Static display text, never updated by JS: the concurrency cell
-    # always reads "25 Semaphores" (fixed gateway config).
-    "omniConcurrencyVal": "static text '25 Semaphores'; never updated by JS",
+    # Static display text, never updated by JS:
+    "aiModelSub": "static subtitle 'Direct HTTPS API' under #aiModelNameVal",
     # Decorative containers / static chrome: JS updates their children
     # (or nothing at all); the element itself is only styled.
     "fullLedgerPanel": "panel shell; JS fills #leaderboardBody inside it",
@@ -481,8 +479,7 @@ DOCUMENTED_DECORATIVE_IDS = {
     "macroCatalystCard": "card shell; JS updates its #macroCatalyst* children",
     "macroDot": "static dot (styled by .ss-badge__dot); never updated by id",
     "modularSlotPanel": "'Modular Extension Bay' placeholder panel (reserved)",
-    "omniConsoleSubtext": "label wrapper; the #omniConsolePwd child has the onclick",
-    # Reserved slot for the gateway-diagnosis workstream (AI panels,
+    # Reserved slot for the AI-diagnosis workstream (AI panels,
     # NEW item): the diagnosis line under the Intel Hub pill. It is
     # filled by that workstream; until then it stays empty and hidden.
     "intelDiagnosisLine": "reserved diagnosis line; filled by the gateway-diagnosis workstream",
@@ -570,7 +567,6 @@ def test_wizard_gemini_only_contract_and_url_allowlist(tmp_path):
 
     from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
     from src.intelligence.config_manager import ConfigManager
-    from src.intelligence.gateway_supervisor import GatewaySupervisor
 
     html = _read(_ASSETS / "index.html")
     wizard_start = html.index('id="setupWizardModal"')
@@ -592,18 +588,11 @@ def test_wizard_gemini_only_contract_and_url_allowlist(tmp_path):
         "statusOpenRouter",
     ):
         assert removed_id not in wizard_html
-    assert wizard_html.count('class="setup-provider-card"') == 2
+    assert wizard_html.count('class="setup-provider-card"') == 1
     assert wizard_html.count("setup-test-btn") == 1
 
     dash = ArenaDashboard()
-    dash.config_manager = ConfigManager(
-        data_dir=tmp_path / "data",
-        omni_env_path=tmp_path / ".omniroute" / ".env",
-    )
-    dash.gateway_supervisor = GatewaySupervisor(
-        daemon_log_path=tmp_path / "logs" / "omniroute_daemon.log",
-        install_log_path=tmp_path / "logs" / "omniroute_install.log",
-    )
+    dash.config_manager = ConfigManager(data_dir=tmp_path / "data")
     bridge = _ArenaBridgeApi(dash)
     try:
         with patch.object(webbrowser, "open") as mock_open:

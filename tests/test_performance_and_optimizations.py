@@ -10,7 +10,7 @@ from src.data.eth_feed import ETHFeed
 from src.data.live_engine import LiveArenaEngine
 from src.gui.dashboard import ArenaDashboard
 from src.intelligence.macro_commander import MacroCommander
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import GeminiClient
 
 
 def test_zero_cjk_in_frontend_assets():
@@ -525,14 +525,11 @@ def test_session_state_save_and_restore_and_shutdown_bridge():
     assert res_shut["saved"] is True
     assert dash.allow_exit is True
 
-    # Test open_omniroute_console bridge method. webbrowser must be
-    # mocked: the unmocked call opened a real Edge tab on every pytest
-    # run (2026-11-13: dozens of connection-refused tabs piled up
-    # while the gateway was down).
+    # Test open_external_url bridge method (webbrowser mocked).
     with patch("webbrowser.open", return_value=True) as mock_open:
-        res_console = bridge.open_omniroute_console()
-    assert res_console["status"] == "ok"
-    assert "20128" in res_console["url"]
+        res_url = bridge.open_external_url("https://aistudio.google.com/apikey")
+    assert res_url["status"] == "ok"
+    assert "aistudio.google.com" in res_url["url"]
     mock_open.assert_called_once()
 
     # Test automated intel refresh cadence configuration

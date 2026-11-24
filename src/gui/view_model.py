@@ -625,6 +625,7 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
 
     return {
         "paused": engine.paused,
+        "session_restored": bool(getattr(engine, "_has_restored_session", False)),
         "auto_evolve_enabled": engine.auto_evolve_enabled,
         "auto_evolve_interval_sec": engine.auto_evolve_interval_sec,
         "next_evolve_sec": int(next_evolve_sec),
@@ -689,6 +690,7 @@ def _empty_view_model(error: str) -> Dict[str, Any]:
         "error": error,
         "engine_available": False,
         "paused": False,
+        "session_restored": False,
         "auto_evolve_enabled": False,
         "auto_evolve_interval_sec": 21600,
         "next_evolve_sec": 0,

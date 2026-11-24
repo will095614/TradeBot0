@@ -9,9 +9,9 @@ from src.intelligence.macro_commander import MacroCommander
 
 def test_intel_hub_telemetry_structure():
     mock_client = MagicMock()
-    mock_client.base_url = "http://localhost:20128/v1"
-    mock_client.model_ingest = "auto"
-    mock_client.model_commander = "auto"
+    mock_client.base_url = "https://generativelanguage.googleapis.com/v1beta"
+    mock_client.model_ingest = "gemini-3.1-flash-lite"
+    mock_client.model_commander = "gemini-3.1-flash-lite"
     mock_client.is_gateway_online = True
     mock_client.total_requests = 10
     mock_client.successful_requests = 10
@@ -22,11 +22,11 @@ def test_intel_hub_telemetry_structure():
     commander = MacroCommander(mock_client)
     tel = commander.get_intel_hub_telemetry()
 
-    assert "omniroute" in tel
-    assert tel["omniroute"]["status"] == "ONLINE"
-    assert tel["omniroute"]["endpoint"] == "http://localhost:20128/v1"
-    assert tel["omniroute"]["quota_pct"] is None  # mock client reports no usable quota: unknown, not fabricated 100.0 (item 6)
-    assert tel["omniroute"]["concurrency_limit"] == 25
+    assert "ai" in tel
+    assert tel["ai"]["status"] == "ONLINE"
+    assert tel["ai"]["endpoint"] == "https://generativelanguage.googleapis.com/v1beta"
+    assert tel["ai"]["quota_pct"] is None  # mock client reports no usable quota: unknown, not fabricated 100.0 (item 6)
+    assert tel["ai"]["concurrency_limit"] == 25
     assert "macro_state" in tel
     assert "events" in tel
     assert tel["events"] == []  # no fabricated seed events at construction (item 6)
@@ -79,7 +79,7 @@ def test_live_engine_refresh_intel_digest():
 
     # Call refresh_intel_digest
     res = engine.refresh_intel_digest()
-    assert "omniroute" in res
+    assert "ai" in res
     assert "events" in res
     assert len(res["events"]) > 0
 

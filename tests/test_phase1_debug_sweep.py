@@ -2,14 +2,12 @@
 
 Each test pins one Phase 1 fix: concurrent intel refresh, cooldown
 bypass in forced entries, garbage-ticket restore abort, double live
-loop, unclosed quote session, stale slice ticks, broker-rejection
-retry storm, gateway double-spawn, and atexit retention.
+loop, unclosed quote session, stale slice ticks, and broker-rejection
+retry storm.
 """
 import asyncio
-import gc
 import threading
 import time
-import weakref
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
@@ -18,7 +16,6 @@ from src.arena.broker_sim import BrokerSim
 from src.arena.order import OrderSide, OrderTicket, OrderType
 from src.data.live_engine import LiveArenaEngine, LiveQuote
 from src.data.persistence import ArenaStorage
-from src.intelligence.gateway_supervisor import GatewaySupervisor
 
 
 def _quote(price: str) -> LiveQuote:
@@ -243,57 +240,3 @@ def test_rejected_entry_sets_cooldown_and_rejection_audit_capped():
             timestamp=ts,
         ))
     assert len(broker.rejection_audit) == 500
-
-
-# ---------------------------------------------------------------- F5
-def test_start_daemon_concurrent_calls_spawn_once(tmp_path):
-    """Two threads calling start_daemon at once must spawn exactly one
-    daemon; the second waits on the health probe instead."""
-    log_path = tmp_path / "logs" / "omniroute_daemon.log"
-    gs = GatewaySupervisor(daemon_log_path=log_path)
-    up = threading.Event()
-    fake_proc = MagicMock()
-    fake_proc.pid = 12345
-    results = []
-
-    def fake_popen(*args, **kwargs):
-        up.set()
-        return fake_proc
-
-    def fake_port_open(timeout=0.35):
-        return up.is_set()
-
-    def fake_probe(timeout=1.0):
-        return (up.is_set(), {"status": "ok"})
-
-    try:
-        with patch.object(GatewaySupervisor, "_get_daemon_command", return_value=["fake-cmd"]), \
-             patch("subprocess.Popen", side_effect=fake_popen) as mock_popen, \
-             patch.object(gs, "is_port_open", side_effect=fake_port_open), \
-             patch.object(gs, "probe_health", side_effect=fake_probe):
-            threads = [
-                threading.Thread(target=lambda: results.append(gs.start_daemon(max_wait_sec=10.0)), daemon=True)
-                for _ in range(2)
-            ]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(timeout=30)
-        assert len(results) == 2
-        assert all(ok is True for ok, _ in results)
-        assert mock_popen.call_count == 1
-    finally:
-        gs.shutdown()
-
-
-def test_gateway_supervisor_atexit_does_not_retain_instances(tmp_path):
-    """Supervisors must drop out of the atexit registry when garbage
-    collected (the old per-instance atexit.register retained them all)."""
-    log_path = tmp_path / "logs" / "omniroute_daemon.log"
-    gs = GatewaySupervisor(daemon_log_path=log_path)
-    assert GatewaySupervisor._atexit_registered is True
-    assert gs in GatewaySupervisor._live_supervisors
-    weak = weakref.ref(gs)
-    del gs
-    gc.collect()
-    assert weak() is None

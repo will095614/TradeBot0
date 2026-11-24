@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import weakref
 
 from src.arena.order import OrderSide
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import DEFAULT_GEMINI_BASE_URL, DEFAULT_GEMINI_MODEL, GeminiClient
 from src.intelligence.forum_collector import ForumCollector
 from src.intelligence.ingestion import IntelligenceHarvester, StructuredEvent
 
@@ -209,7 +209,7 @@ class MacroRegimeState:
 
 class MacroCommander:
     """
-    Stage 2 Macro Commander: Synthesizes cross-market intelligence from OmniRoute
+    Stage 2 Macro Commander: Synthesizes cross-market intelligence via GeminiClient
     and enforces Strict Veto (Option A) across all 5 arena competitors.
     """
 
@@ -221,7 +221,7 @@ class MacroCommander:
         "comp_vwap": "Strategy 5 (Mean)",
     }
 
-    def __init__(self, client: OmniRouteClient, harvester: Optional[IntelligenceHarvester] = None) -> None:
+    def __init__(self, client: GeminiClient, harvester: Optional[IntelligenceHarvester] = None) -> None:
         self.client = client
         self.harvester = harvester or IntelligenceHarvester(client=client)
         self.forum_collector = ForumCollector(client=client)
@@ -359,7 +359,7 @@ class MacroCommander:
     async def refresh_digest_async(self, stop_event: Optional[threading.Event] = None) -> MacroRegimeState:
         """
         Triggers an AI-driven refresh of macro intelligence, fetching genuine live RSS feeds
-        over HTTP and synthesizing through OmniRoute or local deterministic NLP.
+        over HTTP and synthesizing through Google Gemini or local deterministic NLP.
         Records the real pipeline stage in self.sync_status so the Intel
         Hub stream loading bar can show honest milestone progress.
         """
@@ -372,28 +372,16 @@ class MacroCommander:
         if _shutting_down():
             return self.current_state
         fetch_error: Optional[str] = None
-        # Audit 3.12: check_health catches every Exception and returns a
-        # bool, so a dead gateway never raised here -- the "failed" stage
-        # was unreachable and gateway death surfaced as waiting/done.
-        # Record the boolean result and use it at the end of the refresh.
-        gateway_healthy = True
+        # check_health catches exceptions and returns a bool, so record the
+        # boolean result and report connection status if unreachable.
+        ai_healthy = True
         # NOTE (2026-11-15): no per-refresh session close here any
-        # more. The old finally block closed the shared client
-        # session after every refresh, while a concurrent lazy
-        # article generation (get_event_article, bridge thread) was
-        # still using it -- the in-flight chat_json died with
-        # "Session is closed" (app log 16:52:53/54/59, 16:56:16).
-        # The session now lives with the commander: get_session()
-        # rebuilds it on demand when closed or when the calling
-        # loop differs. No shutdown path closes the LLM client
-        # (dashboard/engine stop don't touch it); __del__ still
-        # runs close_sync() at GC time. Do NOT re-add a per-refresh
-        # close to "prevent leaks" -- that was the race.
-        self._set_sync_stage("checking", "Checking AI gateway")
+        # more. The session lives per event loop via get_session().
+        self._set_sync_stage("checking", "Checking Gemini AI")
         try:
-            gateway_healthy = await self.client.check_health()
+            ai_healthy = await self.client.check_health()
         except Exception as ex:
-            self._set_sync_stage("failed", f"Gateway unreachable: {str(ex)[:60]}")
+            self._set_sync_stage("failed", f"AI unreachable: {str(ex)[:60]}")
             raise
         if _shutting_down():
             return self.current_state
@@ -448,12 +436,10 @@ class MacroCommander:
                 self._expire_fallback_if_stale(time.time())
             self._set_sync_stage("failed", f"Sync failed: {fetch_error}")
             return self.current_state
-        if not gateway_healthy:
-            # Audit 3.12: the gateway is dead and the refresh produced
-            # nothing to synthesize -- say so instead of "waiting".
+        if not ai_healthy:
             with self._events_lock:
                 self._expire_fallback_if_stale(time.time())
-            self._set_sync_stage("failed", "Gateway unreachable")
+            self._set_sync_stage("failed", "AI unreachable")
             return self.current_state
 
         recent = self.harvester.get_latest_events(10)
@@ -560,11 +546,11 @@ class MacroCommander:
             interval_sec = self.digest_interval_sec()
 
         return {
-            "omniroute": {
+            "ai": {
                 "status": status_text,
-                "endpoint": str(getattr(self.client, "base_url", "http://127.0.0.1:20128/v1")),
-                "model_ingest": str(getattr(self.client, "model_ingest", "auto")),
-                "model_commander": str(getattr(self.client, "model_commander", "auto")),
+                "endpoint": str(getattr(self.client, "base_url", DEFAULT_GEMINI_BASE_URL)),
+                "model_ingest": str(getattr(self.client, "model_ingest", DEFAULT_GEMINI_MODEL)),
+                "model_commander": str(getattr(self.client, "model_commander", DEFAULT_GEMINI_MODEL)),
                 "quota_pct": quota_pct,
                 "tokens_used": tokens_used,
                 "tokens_saved": tokens_saved,
@@ -713,8 +699,8 @@ class MacroCommander:
         and caches it on the event; a second call returns the cache
         without any LLM call. A failed generation leaves the event in
         state "failed" with the reason in "article_error", and a later
-        explicit call retries (the gateway may have recovered since).
-        Gateway offline or LLM failure returns {"ok": False, ...}
+        explicit call retries (Gemini may have recovered since).
+        AI offline or LLM failure returns {"ok": False, ...}
         honestly -- never a fabricated article, and never the one-line
         summary passed off as the article. Never raises.
         """
@@ -775,7 +761,7 @@ class MacroCommander:
     ) -> Tuple[Optional[str], Optional[str]]:
         """One LLM call for one article. Returns (article_text, error).
 
-        The error half is a short human-readable reason (gateway
+        The error half is a short human-readable reason (AI
         offline / no usable JSON / no article text / too short); the
         caller stores it as "article_error" and reports ok False.
         """
@@ -788,7 +774,7 @@ class MacroCommander:
                 pass
 
         if getattr(self.client, "is_gateway_online", False) is not True:
-            return None, "gateway offline"
+            return None, "AI offline"
         _emit("preparing", 14, "Building market context")
         system_prompt, user_prompt = build_event_article_prompts(evt)
         chat_kwargs: Dict[str, Any] = {
@@ -972,7 +958,7 @@ class MacroCommander:
 
         Once the daily quota is reached -- a user-set DAILY_TOKEN_QUOTA
         budget, or a 429 observed within its cooldown (F4) -- the digest
-        slows from the base cadence to at least 900s so the gateway is not
+        slows from the base cadence to at least 900s so the API is not
         hammered while over budget. Never shortens a longer
         user-configured interval.
         """

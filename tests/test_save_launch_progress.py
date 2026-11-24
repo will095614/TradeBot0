@@ -1,6 +1,6 @@
 """Save & Launch stage reporting and honest splash progress.
 
-Problem 1: the wizard showed no progress while save_and_launch_gateway ran
+Problem 1: the wizard showed no progress while save_and_launch ran
 (a single synchronous bridge call). The backend now records the current
 stage; these tests prove the stage advances, stays below 100% mid-call,
 and reaches 100% only when the call actually returns -- and that a failed
@@ -19,20 +19,13 @@ from unittest.mock import patch
 
 from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
 from src.intelligence.config_manager import ConfigManager
-from src.intelligence.gateway_supervisor import GatewaySupervisor
 
 _ASSETS = Path(__file__).resolve().parents[1] / "src" / "gui" / "assets"
 
 
 def _make_bridge(tmp_path):
     dash = ArenaDashboard()
-    dash.config_manager = ConfigManager(
-        data_dir=tmp_path / "data",
-        omni_env_path=tmp_path / ".omniroute" / ".env",
-    )
-    dash.gateway_supervisor = GatewaySupervisor(
-        daemon_log_path=tmp_path / "logs" / "omniroute_daemon.log"
-    )
+    dash.config_manager = ConfigManager(data_dir=tmp_path / "data")
     return dash, _ArenaBridgeApi(dash)
 
 
@@ -46,43 +39,35 @@ def _read_app_js():
 
 
 def test_save_launch_stage_advances_and_done_only_on_return(tmp_path):
-    """Mid-call the stage is 'starting-gateway' at 70; 100 only on return."""
+    """Mid-call the stage is 'verifying-ai' at 75; 100 only on return."""
     dash, bridge = _make_bridge(tmp_path)
     seen = {}
 
-    def fake_start_daemon(max_wait_sec=30.0):
-        # Capture the stage exactly while the gateway is still starting.
+    def fake_probe(raw_key, timeout=3.0):
         seen.update(bridge.get_save_launch_status())
-        return (True, "ok")
+        return {"ok": True, "message": "Verified (42ms)", "latency_ms": 42}
 
     try:
-        # start_watchdog is mocked: a real watchdog thread must never start
-        # in tests — a delayed first tick could outlive these mocks and spawn
-        # a real gateway on the machine.
-        with patch.object(dash.gateway_supervisor, "is_port_open", return_value=False), \
-             patch.object(dash.gateway_supervisor, "start_daemon", side_effect=fake_start_daemon), \
-             patch.object(dash.gateway_supervisor, "start_watchdog", return_value=True):
-            res = bridge.save_and_launch_gateway(
-                {"deepseek": "sk-test-key"}, admin_password="test-password-1"
-            )
+        with patch("src.gui.dashboard.probe_gemini_api_key", side_effect=fake_probe):
+            res = bridge.save_and_launch({"gemini": "AIzaSy-test-key-12345"})
         assert res["status"] == "ok"
-        assert seen["status"] == "starting-gateway"
-        assert seen["progress"] == 70
+        assert res["ok"] is True
+        assert seen["status"] == "verifying-ai"
+        assert seen["progress"] == 75
         assert seen["progress"] < 100
         final = bridge.get_save_launch_status()
         assert final["status"] == "done"
         assert final["progress"] == 100
     finally:
-        dash.gateway_supervisor.stop_watchdog()
         dash.engine.stop()
 
 
 def test_save_launch_failed_stage_never_reports_100(tmp_path):
-    """A run that fails validation reports 'failed', never 100%."""
+    """A run that fails config persistence reports 'failed', never 100%."""
     dash, bridge = _make_bridge(tmp_path)
     try:
-        # No password configured and none supplied: the call fails fast.
-        res = bridge.save_and_launch_gateway({"deepseek": "sk-test-key"})
+        with patch.object(dash.config_manager, "set_gemini_api_key", return_value={"ok": False, "error": "disk error"}):
+            res = bridge.save_and_launch({"gemini": "AIzaSy-test-key-12345"})
         assert res["ok"] is False
         stage = bridge.get_save_launch_status()
         assert stage["status"] == "failed"
@@ -95,24 +80,15 @@ def test_save_launch_stage_resets_between_runs(tmp_path):
     """A second, failing run must not show the first run's stale 'done'."""
     dash, bridge = _make_bridge(tmp_path)
     try:
-        # start_watchdog is mocked: a real watchdog thread must never start
-        # in tests — a delayed first tick could outlive these mocks and spawn
-        # a real gateway on the machine.
-        with patch.object(dash.gateway_supervisor, "is_port_open", return_value=True), \
-             patch.object(dash.gateway_supervisor, "probe_health", return_value=(True, "ok")), \
-             patch.object(dash.gateway_supervisor, "start_watchdog", return_value=True):
-            res = bridge.save_and_launch_gateway(
-                {"deepseek": "sk-test-key"}, admin_password="test-password-1"
-            )
+        with patch("src.gui.dashboard.probe_gemini_api_key", return_value={"ok": True, "message": "Verified", "latency_ms": 15}):
+            res = bridge.save_and_launch({"gemini": "AIzaSy-test-key-12345"})
         assert res["ok"] is True
         assert bridge.get_save_launch_status()["status"] == "done"
-        res2 = bridge.save_and_launch_gateway(
-            {"deepseek": "sk-test-key"}, admin_password="short"
-        )
+        with patch.object(dash.config_manager, "save_config", return_value=False):
+            res2 = bridge.save_and_launch({"gemini": "AIzaSy-test-key-12345"})
         assert res2["ok"] is False
         assert bridge.get_save_launch_status()["status"] == "failed"
     finally:
-        dash.gateway_supervisor.stop_watchdog()
         dash.engine.stop()
 
 

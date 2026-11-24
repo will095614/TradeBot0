@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 from src.data.live_engine import LiveArenaEngine
 from src.intelligence.config_manager import ConfigManager
-from src.intelligence.gateway_supervisor import GatewaySupervisor
+from src.intelligence.gemini_client import DEFAULT_GEMINI_BASE_URL, probe_gemini_api_key
 from src.update_checker import check_for_updates as _run_update_check
 from src.update_checker import get_manifest_url
 from src.version import APP_VERSION
@@ -315,10 +315,9 @@ class _ArenaBridgeApi:
     def __init__(self, dashboard: "ArenaDashboard") -> None:
         self._dashboard = dashboard
         # Save & Launch stage reporting: the wizard polls this while the
-        # synchronous save_and_launch_gateway call runs, so the user sees
-        # which step is running instead of a frozen button. Percentages
-        # are stage milestones, never measured time; 100% is set only
-        # when the call is about to return ok.
+        # synchronous save_and_launch call runs, so the user sees which step
+        # is running instead of a frozen button. Percentages are stage
+        # milestones, never measured time; 100% is set only when ok.
         self._save_launch_lock = threading.Lock()
         self._save_launch_exec_lock = threading.Lock()
         self._shutdown_lock = threading.Lock()
@@ -332,31 +331,27 @@ class _ArenaBridgeApi:
 
     def get_state(self) -> Dict[str, Any]:
         state = self._dashboard.engine.get_ui_state()
-        self._inject_gateway_diagnosis(state)
+        self._inject_ai_diagnosis(state)
         return state
 
     def get_state_delta(self, force_full: bool = False) -> Dict[str, Any]:
         state = self._dashboard.engine.get_ui_state_delta(force_full=force_full)
-        self._inject_gateway_diagnosis(state)
+        self._inject_ai_diagnosis(state)
         return state
 
-    def _inject_gateway_diagnosis(self, state: Dict[str, Any]) -> None:
-        """Adds the gateway diagnosis to the Intel Hub payload of a state
-        dict the frontend polls (get_state / get_state_delta, every 1 s).
-        Never raises; a state without an intel_hub payload is left alone.
-        The delta publisher only ever omits candles/fills, so intel_hub
-        is present on every poll."""
+    def _inject_ai_diagnosis(self, state: Dict[str, Any]) -> None:
+        """Adds Gemini AI status diagnosis into state['intel_hub']['ai']['diagnosis']."""
         try:
-            diagnosis = self._dashboard.get_gateway_diagnosis()
+            diagnosis = self._dashboard.get_ai_diagnosis()
             intel = state.get("intel_hub")
             if not isinstance(intel, dict):
                 return
-            omni = intel.get("omniroute")
-            if not isinstance(omni, dict):
+            ai_info = intel.get("ai")
+            if not isinstance(ai_info, dict):
                 return
-            omni["diagnosis"] = diagnosis
+            ai_info["diagnosis"] = diagnosis
         except Exception as e:
-            logger.debug("Gateway diagnosis injection failed: %s", e)
+            logger.debug("AI diagnosis injection failed: %s", e)
 
     def evolve_now(self) -> Dict[str, Any]:
         """Runs a manual evolution on a background thread so the UI never blocks.
@@ -425,7 +420,7 @@ class _ArenaBridgeApi:
 
         First expand generates it via the ingest model and caches it on
         the event; later calls return the cache without another LLM call.
-        Gateway or LLM failure returns {"ok": False, "reason": ...} --
+        AI or LLM failure returns {"ok": False, "reason": ...} --
         never a fabricated article. Never raises.
         """
         try:
@@ -482,28 +477,11 @@ class _ArenaBridgeApi:
                 self._dashboard.close_window()
         return {"status": "shutting_down", "saved": save_progress}
 
-    def open_omniroute_console(self) -> Dict[str, Any]:
-        """Launches the OmniRoute local web console dashboard in default system browser."""
-        import webbrowser
-        # Console URL follows the configured gateway port (item 10 A2).
-        url = (
-            f"http://{self._dashboard.gateway_supervisor.host}"
-            f":{self._dashboard.gateway_supervisor.port}"
-        )
-        try:
-            webbrowser.open(url)
-            logger.info("Launched OmniRoute console in system browser: %s", url)
-            return {"status": "ok", "url": url}
-        except Exception as e:
-            logger.error("Failed to open OmniRoute console: %s", e)
-            return {"status": "error", "message": str(e)}
-
     def open_external_url(self, url: str) -> Dict[str, Any]:
         """Opens an approved provider key page in the system browser.
 
-        AI panels (W2): the setup wizard's "Get a key" link. Only the
-        Google Gemini API key page is allowed; anything else is refused
-        and never opened. Never raises.
+        The setup wizard's "Get a key" link allows only the Google Gemini
+        API key page; anything else is refused and never opened. Never raises.
         """
         import webbrowser
 
@@ -519,47 +497,6 @@ class _ArenaBridgeApi:
         except Exception as e:
             logger.error("Failed to open provider key page: %s", e)
             return {"status": "error", "message": str(e)}
-
-    def copy_omniroute_password(self) -> Dict[str, Any]:
-        """Copies the OmniRoute admin password to the OS clipboard.
-
-        The password value never enters the frontend (item 7): it is read
-        from INITIAL_PASSWORD in ~/.omniroute/.env server-side, copied
-        via the OS clipboard, and only the success status is returned
-        so the frontend can show "copied!". The value is never logged.
-        """
-        try:
-            env_map = self._dashboard.config_manager.read_omniroute_env()
-        except Exception as e:
-            logger.error("Failed to read omniroute env for password copy: %s", e)
-            return {"status": "error", "message": "could not read password store"}
-        password = (env_map.get("INITIAL_PASSWORD") or "").strip()
-        if not password:
-            return {"status": "error", "message": "password not configured"}
-        try:
-            ok = _copy_text_to_clipboard_windows(password)
-        except Exception as e:
-            logger.error("Failed to copy OmniRoute password to clipboard: %s", e)
-            return {"status": "error", "message": str(e)}
-        if not ok:
-            return {"status": "error", "message": "clipboard unavailable"}
-        return {"status": "ok"}
-
-    def reveal_omniroute_password(self) -> Dict[str, Any]:
-        """Returns the configured OmniRoute admin password ONLY on explicit eye-toggle click.
-
-        Separated from copy_omniroute_password and get_setup_status so passive polling
-        and clipboard copies never expose the password; never logged.
-        """
-        try:
-            env_map = self._dashboard.config_manager.read_omniroute_env()
-        except Exception as e:
-            logger.error("Failed to read omniroute env for password reveal: %s", e)
-            return {"status": "error", "message": "could not read password store"}
-        password = (env_map.get("INITIAL_PASSWORD") or "").strip()
-        if not password:
-            return {"status": "error", "message": "password not configured"}
-        return {"status": "ok", "password": password}
 
     def check_for_updates(self) -> Dict[str, Any]:
         """Checks whether a newer TradeBot0 release is available.
@@ -584,52 +521,20 @@ class _ArenaBridgeApi:
 
     def get_setup_status(self) -> Dict[str, Any]:
         """
-        Returns initialization and credential setup status for the UI wizard.
+        Returns initialization and Gemini key setup status for the UI wizard.
         Fail-safe: never raises an unhandled exception.
         """
         try:
             cfg = self._dashboard.config_manager.load_config()
-            configured = self._dashboard.config_manager.get_configured_providers()
-            sup = self._dashboard.gateway_supervisor
-            is_open = sup.is_port_open(timeout=0.3)
-            healthy = False
-            if is_open:
-                healthy, _ = sup.probe_health(timeout=0.6)
-
-            node_ok = bool(sup.node_available())
-            omni_ok = bool(sup.omniroute_installed())
-            cli_avail = bool(sup.is_cli_available())
-            if not node_ok:
-                gw_reason = "Node.js is not installed. The OmniRoute gateway needs Node.js 22 or later."
-            elif not omni_ok:
-                gw_reason = "OmniRoute is not installed. Install it with one click below (about 3-5 min, ~2.6 GB)."
-            elif not cli_avail:
-                gw_reason = "OmniRoute CLI is not installed or not found in system PATH."
-            else:
-                gw_reason = None
-
-            # Never send any password value to the frontend: the old code
-            # returned the admin password (default or configured) in plain
-            # text to JavaScript. The UI only needs to know whether a custom
-            # password has been configured in ~/.omniroute/.env (item 7).
-            env_map = self._dashboard.config_manager.read_omniroute_env()
-            pw_configured = bool(env_map.get("INITIAL_PASSWORD"))
-
+            key_configured = bool(self._dashboard.config_manager.has_gemini_api_key())
+            client = getattr(getattr(self._dashboard, "engine", None), "llm_client", None)
+            ai_online = bool(getattr(client, "is_gateway_online", False))
             return {
                 "status": "ok",
                 "onboarding_completed": bool(cfg.get("has_completed_onboarding", False)),
                 "skip_ai_mode": bool(cfg.get("skip_ai_mode", False)),
-                "gateway_online": bool(healthy),
-                "port_open": bool(is_open),
-                "configured_providers": configured,
-                "cli_available": cli_avail,
-                "gateway_port": int(cfg.get("gateway_port", 20128)),
-                "omniroute_password_configured": pw_configured,
-                "admin_password_required": bool((not cfg.get("skip_ai_mode", False)) and not pw_configured),
-                "node_available": node_ok,
-                "omniroute_installed": omni_ok,
-                "gateway_unavailable_reason": gw_reason,
-                "runtime_install_status": sup.install_runtime_status(),
+                "gemini_key_configured": key_configured,
+                "ai_online": ai_online,
             }
         except Exception as e:
             logger.error("Error reading setup status: %s", e)
@@ -638,44 +543,24 @@ class _ArenaBridgeApi:
                 "error": str(e),
                 "onboarding_completed": False,
                 "skip_ai_mode": False,
-                "gateway_online": False,
-                "port_open": False,
-                "configured_providers": [],
-                "cli_available": False,
-                "gateway_port": 20128,
-                "omniroute_password_configured": False,
-                "admin_password_required": False,
-                "node_available": False,
-                "omniroute_installed": False,
-                "gateway_unavailable_reason": None,
-                "runtime_install_status": {"status": "idle", "message": "", "progress": None, "phase": ""},
+                "gemini_key_configured": False,
+                "ai_online": False,
             }
 
-    def test_api_key(self, provider: str, key: str) -> Dict[str, Any]:
-        """
-        Live-probes an individual API key with defensive 3.5s timeout.
-        Returns ok status, latency, and sanitized descriptive message.
-        """
+    def test_api_key(self, provider: str = "gemini", key: Optional[str] = None) -> Dict[str, Any]:
+        """Live-probes a Google Gemini API key via GET /v1beta/models/{model}."""
         try:
-            return self._dashboard.gateway_supervisor.test_single_key(provider, key)
+            actual_key = key if key is not None else ("" if str(provider or "").lower().strip() == "gemini" else str(provider))
+            return probe_gemini_api_key(actual_key)
         except Exception as e:
-            logger.error("Error testing API key (%s): %s", provider, e)
+            logger.error("Error testing API key: %s", e)
             return {"ok": False, "message": f"Verification failed: {e}", "latency_ms": 0}
 
     def _set_save_launch_stage(
         self, status: str, message: str,
         progress: Optional[int] = None, phase: str = "",
     ) -> None:
-        """Records the current Save & Launch step for the wizard poll loop.
-
-        Mirrors GatewaySupervisor._set_install_status: the stage dict is
-        the single source of truth the frontend polls while the
-        synchronous save_and_launch_gateway call runs (pywebview runs
-        each JS bridge call on its own thread, so the poll is served
-        concurrently). Progress values are stage milestones, never a
-        measured percent; 100 is set only when the call is about to
-        return ok.
-        """
+        """Records the current Save & Launch step for the wizard poll loop."""
         with self._save_launch_lock:
             self._save_launch_stage = {
                 "status": status,
@@ -684,20 +569,8 @@ class _ArenaBridgeApi:
                 "phase": phase,
             }
 
-    def get_runtime_install_status(self) -> Dict[str, Any]:
-        """Zero-I/O lock-only read of the current runtime install state."""
-        try:
-            return self._dashboard.gateway_supervisor.install_runtime_status()
-        except Exception as e:
-            logger.debug("Runtime install status read failed: %s", e)
-            return {"status": "idle", "message": "", "progress": None, "phase": ""}
-
     def get_save_launch_status(self) -> Dict[str, Any]:
-        """Current Save & Launch stage for the wizard poll loop.
-
-        Fail-safe: never raises. Returns a copy so the caller cannot
-        mutate the stored stage.
-        """
+        """Current Save & Launch stage for the wizard poll loop. Never raises."""
         try:
             with self._save_launch_lock:
                 return dict(self._save_launch_stage)
@@ -705,203 +578,76 @@ class _ArenaBridgeApi:
             logger.debug("Save launch status read failed: %s", e)
             return {"status": "idle", "message": "", "progress": None, "phase": ""}
 
-    def save_and_launch_gateway(
-        self, keys: Dict[str, str], admin_password: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Persists API keys into ~/.omniroute/.env and always launches the
-        gateway: auto-launch is mandatory (offline mode was removed, so
-        OmniRoute is required to use the app at all). Marks onboarding as
-        completed in system_config.json.
-        admin_password (item 10 A1): a user-chosen gateway admin password. It is
-        required on first run and for installs that still rely on OmniRoute's
-        built-in default password; the value is never logged or returned.
+    def save_and_launch(self, keys: Any = None) -> Dict[str, Any]:
+        """Persists the Gemini API key into system_config.json, hot-reloads the running
+        client, verifies reachability, and starts the live trading engine.
         """
         with self._save_launch_exec_lock:
             try:
-                # Fresh stage for this run: a previous save's "done" must never
-                # leak into the new run's progress bar.
                 self._set_save_launch_stage("idle", "", None, "")
+                cm = self._dashboard.config_manager
 
-                # 0. Validate admin password (item 10 A1) without mutating .env yet,
-                # so a failed SQLite password sync cannot leave .env and storage.sqlite
-                # out of sync.
-                _cm = self._dashboard.config_manager
-                if admin_password is not None:
-                    self._set_save_launch_stage("saving-password", "Saving password...", 10, "password")
-                    _pw_ok, _pw_val_or_err = _cm.validate_admin_password(admin_password)
-                    if not _pw_ok:
-                        self._set_save_launch_stage("failed", _pw_val_or_err, 10, "password")
-                        return {"status": "error", "ok": False, "message": _pw_val_or_err, "gateway_online": False}
-                elif not _cm.is_admin_password_configured():
-                    self._set_save_launch_stage("failed", "Please set an admin password for the local gateway console before launching the arena.", None, "password")
-                    return {"status": "error", "ok": False, "message": "Please set an admin password for the local gateway console before launching the arena.", "gateway_online": False}
+                raw_key = ""
+                if isinstance(keys, dict):
+                    raw_key = str(keys.get("gemini") or "")
+                elif isinstance(keys, str):
+                    raw_key = keys
+                cleaned_key = cm.sanitize_key(raw_key)
 
-                # 1. Sync keys into ~/.omniroute/.env
-                self._set_save_launch_stage("syncing-keys", "Connecting AI services...", 25, "keys")
-                sync_res = self._dashboard.config_manager.sync_omniroute_keys(keys or {})
-                if isinstance(sync_res, dict) and sync_res.get("ok") is False:
-                    err_msg = str(sync_res.get("error") or "Failed to save API keys.")
-                    self._set_save_launch_stage("failed", err_msg, 25, "keys")
-                    return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
+                # 1. Persist Gemini key when user typed one (blank preserves existing key)
+                self._set_save_launch_stage("syncing-keys", "Saving Gemini API key...", 25, "keys")
+                if cleaned_key:
+                    key_res = cm.set_gemini_api_key(cleaned_key)
+                    if isinstance(key_res, dict) and key_res.get("ok") is False:
+                        err_msg = str(key_res.get("error") or "Failed to save Gemini API key.")
+                        self._set_save_launch_stage("failed", err_msg, 25, "keys")
+                        return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
+                active_key = cm.get_gemini_api_key()
 
-                # 2. If a password was supplied OR API keys changed, stop the watchdog & any
-                # self-spawned gateway first (to avoid SQLite lock/cache staleness, stale
-                # process.env keys, or a watchdog respawn mid-update), apply the password
-                # when provided, and let step 3 respawn cleanly.
-                _stopped_for_update = False
-                _had_own_daemon = False
-                _had_watchdog = False
-                _keys_updated = isinstance(sync_res, dict) and int(sync_res.get("updated_count", 0) or 0) > 0
-                if admin_password is not None or _keys_updated:
-                    _sup = self._dashboard.gateway_supervisor
-                    with _sup._watchdog_lock:
-                        _had_watchdog = bool(_sup._watchdog_thread is not None and _sup._watchdog_thread.is_alive())
-                    with _sup._daemon_lock:
-                        _needs_restart = bool(
-                            (_sup.is_self_spawned and _sup.child_process is not None)
-                            or _sup._daemon_starting
-                        )
-                    _had_own_daemon = _needs_restart
-                    if admin_password is not None or _needs_restart:
-                        try:
-                            _sup.stop_watchdog()
-                        except Exception as e:
-                            logger.debug("Watchdog pause before gateway update failed: %s", e)
-                    if _needs_restart:
-                        self._set_save_launch_stage("restarting-gateway", "Restarting AI services...", 40, "gateway")
-                        try:
-                            _sup.shutdown()
-                            _stopped_for_update = True
-                        except Exception as e:
-                            logger.debug("Gateway restart after setup update failed: %s", e)
-
-                if admin_password is not None:
-                    def _recover_gateway_after_pw_error() -> None:
-                        if _stopped_for_update and _had_own_daemon:
-                            try:
-                                _sup.start_daemon(max_wait_sec=15.0)
-                            except Exception as rec_err:
-                                logger.debug("Gateway recovery spawn failed: %s", rec_err)
-                        if _had_watchdog:
-                            try:
-                                _sup.start_watchdog(armed=bool(_sup._probe_gateway_healthy()))
-                            except Exception as rec_err:
-                                logger.debug("Watchdog recovery start failed: %s", rec_err)
-
-                    _pw_sync = _sup.sync_admin_password(
-                        admin_password,
-                        data_dir=_cm.omni_env_file.parent,
-                    )
-                    if isinstance(_pw_sync, dict) and _pw_sync.get("ok") is False:
-                        _recover_gateway_after_pw_error()
-                        err_msg = str(_pw_sync.get("error") or "Failed to apply admin password to OmniRoute.")
-                        self._set_save_launch_stage("failed", err_msg, 40, "password")
-                        return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
-                    _pw_res = _cm.set_admin_password(admin_password)
-                    if not _pw_res.get("ok"):
-                        _recover_gateway_after_pw_error()
-                        err_msg = _pw_res.get("error", "Could not write the admin password.")
-                        self._set_save_launch_stage("failed", err_msg, 45, "password")
-                        return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
-
-                # 2b. Update system config
+                # 2. Update system config
                 self._set_save_launch_stage("saving-config", "Saving setup...", 55, "config")
-                configured = self._dashboard.config_manager.get_configured_providers()
-                cfg_saved = self._dashboard.config_manager.save_config({
+                cfg_saved = cm.save_config({
                     "has_completed_onboarding": True,
                     "skip_ai_mode": False,
-                    "configured_providers": configured,
                     "last_setup_ts": time.time(),
                 })
                 if cfg_saved is False:
-                    if (admin_password is not None or _keys_updated) and (_stopped_for_update or _had_watchdog):
-                        try:
-                            if _stopped_for_update and _had_own_daemon:
-                                self._dashboard.gateway_supervisor.start_daemon(max_wait_sec=15.0)
-                            if _had_watchdog:
-                                self._dashboard.gateway_supervisor.start_watchdog(
-                                    armed=bool(self._dashboard.gateway_supervisor._probe_gateway_healthy())
-                                )
-                        except Exception as rec_err:
-                            logger.debug("Gateway recovery after config save failure failed: %s", rec_err)
                     err_msg = "Failed to save system configuration."
                     self._set_save_launch_stage("failed", err_msg, 55, "config")
-                    return {"status": "error", "ok": False, "message": err_msg, "gateway_online": False}
+                    return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
 
-                # 3. Check gateway and spawn if requested
-                is_open = self._dashboard.gateway_supervisor.is_port_open(timeout=0.3)
-                healthy = False
-                msg = "Credentials saved successfully."
-
-                if is_open:
-                    self._set_save_launch_stage("connecting-gateway", "Connecting to AI services...", 70, "gateway")
-                    healthy, _ = self._dashboard.gateway_supervisor.probe_health(timeout=0.6)
-                    if healthy:
-                        msg = "AI services connected."
-                if not healthy:
-                    # Auto-launch is mandatory (offline mode removed): the gateway
-                    # is always started (or recycled if hung) when not healthy.
-                    self._set_save_launch_stage("starting-gateway", "Starting AI services...", 70, "gateway")
-                    spawn_ok, spawn_msg = self._dashboard.gateway_supervisor.start_daemon(max_wait_sec=30.0)
-                    healthy = spawn_ok
-                    # AI panels (W5): the success message is the plain
-                    # "AI services connected."; the detailed spawn message
-                    # is kept only for the failure path, where it explains
-                    # what went wrong.
-                    msg = "AI services connected." if spawn_ok else spawn_msg
+                # 3. Hot-reload client key and perform lightweight probe
+                self._set_save_launch_stage("verifying-ai", "Connecting to Gemini AI...", 75, "ai")
+                ai_online = False
+                engine = getattr(self._dashboard, "engine", None)
+                if engine is not None and hasattr(engine, "update_gemini_api_key"):
+                    engine.update_gemini_api_key(active_key)
+                if active_key:
+                    probe = probe_gemini_api_key(active_key, timeout=3.0)
+                    ai_online = bool(probe.get("ok"))
+                    client = getattr(engine, "llm_client", None)
+                    if client is not None:
+                        client.is_gateway_online = ai_online
+                    msg = "Gemini AI connected." if ai_online else f"Saved. {probe.get('message', 'Gemini standby')}"
+                else:
+                    msg = "Setup saved (Pure Math standby mode)."
 
                 # 4. Start engine live loop if held in onboarding standby
-                self._set_save_launch_stage("starting-engine", "Starting live engine...", 85, "engine")
+                self._set_save_launch_stage("starting-engine", "Starting live engine...", 90, "engine")
                 self._dashboard.start_engine_if_needed()
 
-                # Gateway diagnosis workstream: the gateway is expected to be
-                # running from here on; watch it and restart it if it dies.
-                # armed=True when the gateway is healthy now (spawned or
-                # already running); a failed spawn leaves the watchdog
-                # unarmed, so it never restarts a gateway that never started.
-                try:
-                    self._dashboard.gateway_supervisor.start_watchdog(armed=bool(healthy))
-                except Exception as e:
-                    logger.debug("Gateway watchdog start failed: %s", e)
-
-                # 100% only here: the procedure has actually finished. The
-                # message carries the outcome (gateway healthy or not).
                 self._set_save_launch_stage("done", msg, 100, "")
                 return {
                     "status": "ok",
                     "ok": True,
-                    "gateway_online": bool(healthy),
-                    "configured_providers": configured,
+                    "ai_online": bool(ai_online),
+                    "gemini_key_configured": bool(active_key),
                     "message": msg,
                 }
             except Exception as e:
-                logger.error("Error saving credentials & launching gateway: %s", e)
+                logger.error("Error saving Gemini credentials & launching arena: %s", e)
                 self._set_save_launch_stage("failed", str(e), None, "")
-                return {"status": "error", "ok": False, "message": str(e), "gateway_online": False}
-
-    def install_gateway_runtime(self) -> Dict[str, Any]:
-        """
-        Starts the one-click Node.js + OmniRoute install in the background
-        (item 10 B3). The wizard polls get_setup_status for progress.
-        """
-        try:
-            return self._dashboard.gateway_supervisor.start_runtime_install()
-        except Exception as e:
-            logger.error("Error starting gateway runtime install: %s", e)
-            return {"ok": False, "message": str(e)}
-
-    def cancel_gateway_runtime_install(self) -> Dict[str, Any]:
-        """
-        Cancels a running one-click Node.js + OmniRoute install (wizard
-        close warning). The supervisor stops the background worker and
-        removes partial artifacts; a later install attempt starts clean.
-        """
-        try:
-            return self._dashboard.gateway_supervisor.cancel_runtime_install()
-        except Exception as e:
-            logger.error("Error cancelling gateway runtime install: %s", e)
-            return {"ok": False, "message": str(e)}
+                return {"status": "error", "ok": False, "message": str(e), "ai_online": False}
 
 def close_native_splash() -> bool:
     """Closes the PyInstaller native bootloader splash screen if active.
@@ -929,22 +675,23 @@ class ArenaDashboard:
     def __init__(self, initial_cash: Decimal = Decimal("100000.00")) -> None:
         self.initial_cash = initial_cash
         self.config_manager = ConfigManager()
-        # Gateway host/port come from the user's own config (item 10 A2):
-        # the console button and the supervisor must follow gateway_port
-        # instead of the hardcoded 20128.
         try:
-            _gw_cfg = self.config_manager.load_config()
-            _gw_port = int(_gw_cfg.get("gateway_port", 20128) or 20128)
-            _gw_host = str(_gw_cfg.get("gateway_host", "127.0.0.1") or "127.0.0.1")
-            # Audit 3.21: auto-redeploy when all five are flat is an
-            # explicit switch (default ON); load_config merges the
-            # default for installs whose config predates the key.
-            _auto_redeploy = bool(_gw_cfg.get("auto_redeploy_when_flat", True))
+            self.config_manager.migrate_legacy_omniroute_once()
+        except Exception as e:
+            logger.debug("Legacy config migration check failed: %s", e)
+        try:
+            _cfg = self.config_manager.load_config()
+            _auto_redeploy = bool(_cfg.get("auto_redeploy_when_flat", True))
         except Exception:
-            _gw_host, _gw_port, _auto_redeploy = "127.0.0.1", 20128, True
-        _gw_base_url = None if os.getenv("LLM_BASE_URL") else f"http://{_gw_host}:{_gw_port}/v1"
-        self.engine = LiveArenaEngine(symbol="ETH/USD", initial_cash=initial_cash, auto_redeploy_when_flat=_auto_redeploy, gateway_base_url=_gw_base_url)
-        self.gateway_supervisor = GatewaySupervisor(host=_gw_host, port=_gw_port, omni_data_dir=self.config_manager.omni_env_file.parent, on_gateway_recovered=lambda: self.engine.trigger_intel_refresh_async())
+            _auto_redeploy = True
+        _api_key = self.config_manager.get_gemini_api_key()
+        self.engine = LiveArenaEngine(
+            symbol="ETH/USD",
+            initial_cash=initial_cash,
+            auto_redeploy_when_flat=_auto_redeploy,
+            llm_base_url=os.getenv("LLM_BASE_URL") or DEFAULT_GEMINI_BASE_URL,
+            gemini_api_key=_api_key or None,
+        )
         self.window = None
         self.allow_exit = False
         self.closing_prompt_active = False
@@ -955,46 +702,26 @@ class ArenaDashboard:
         self._stopped = False
         self._bridge = _ArenaBridgeApi(self)
 
-    def get_gateway_diagnosis(self) -> str:
-        """Gateway failure diagnosis for the Intel Hub line (gateway
-        diagnosis workstream). One of "ok", "quota_exhausted",
-        "connection_problem", "restarting". Never raises.
-
-        Precedence: a restart in flight beats everything; a dead
-        gateway beats a quota signal (quota cannot be known while the
-        gateway is down). "quota_exhausted" means every configured
-        provider has failed with a quota/credit signal, or the user's
-        own daily token budget is used up -- never a computed %.
-        Before the watchdog's first probe there is no health signal, so
-        a gateway that never started shows no line (the setup wizard
-        owns that case).
+    def get_ai_diagnosis(self) -> str:
+        """Gemini AI failure diagnosis for the Intel Hub panel.
+        Returns one of 'ok', 'quota_exhausted', 'connection_problem'. Never raises.
         """
         try:
-            wd = self.gateway_supervisor.watchdog_status()
-        except Exception as e:
-            logger.debug("Gateway watchdog status read failed: %s", e)
-            wd = {"state": "idle", "healthy": None}
-        if wd.get("state") == "restarting":
-            return "restarting"
-        if wd.get("healthy") is False:
-            return "connection_problem"
-        try:
-            client = getattr(self.engine, "omniroute_client", None)
+            client = getattr(self.engine, "llm_client", None)
             if client is None:
                 return "ok"
             budget_fn = getattr(client, "is_daily_budget_exhausted", None)
             if callable(budget_fn) and budget_fn() is True:
                 return "quota_exhausted"
             has_q_fn = getattr(client, "has_quota_failures", None)
-            if callable(has_q_fn) and has_q_fn() is False:
-                return "ok"
-            exhausted_fn = getattr(client, "is_all_providers_quota_exhausted", None)
-            if callable(exhausted_fn):
-                configured = self.config_manager.get_configured_providers()
-                if exhausted_fn(configured) is True:
-                    return "quota_exhausted"
+            if callable(has_q_fn) and has_q_fn() is True:
+                return "quota_exhausted"
+            last_fail = getattr(client, "last_failure", None)
+            if isinstance(last_fail, dict) and last_fail.get("kind") in ("connection", "auth"):
+                if not getattr(client, "is_gateway_online", False):
+                    return "connection_problem"
         except Exception as e:
-            logger.debug("Gateway quota diagnosis failed: %s", e)
+            logger.debug("AI diagnosis evaluation failed: %s", e)
         return "ok"
 
     def reset_engine(self) -> None:
@@ -1047,16 +774,13 @@ class ArenaDashboard:
             if self._stopped:
                 return
 
-            _gw_base_url = (
-                None
-                if os.getenv("LLM_BASE_URL")
-                else f"http://{self.gateway_supervisor.host}:{self.gateway_supervisor.port}/v1"
-            )
+            _api_key = self.config_manager.get_gemini_api_key()
             new_engine = LiveArenaEngine(
                 symbol="ETH/USD",
                 initial_cash=self.initial_cash,
                 auto_redeploy_when_flat=old_auto_redeploy,
-                gateway_base_url=_gw_base_url,
+                llm_base_url=os.getenv("LLM_BASE_URL") or DEFAULT_GEMINI_BASE_URL,
+                gemini_api_key=_api_key or None,
             )
             new_engine.auto_evolve_interval_sec = old_interval
             new_engine.auto_evolve_enabled = old_enabled
@@ -1120,27 +844,15 @@ class ArenaDashboard:
         threading.Thread(target=_check, daemon=True).start()
 
     def stop(self) -> None:
-        """Cleanly halts trading engine, persistence, and background daemon supervisor (idempotent)."""
+        """Cleanly halts trading engine and persistence (idempotent)."""
         with self._stop_lock:
             if self._stopped:
                 return
             self._stopped = True
             try:
-                self.gateway_supervisor.cancel_runtime_install()
-            except Exception as e:
-                logger.debug("Error cancelling gateway runtime install: %s", e)
-            try:
-                self.gateway_supervisor.stop_watchdog()
-            except Exception as e:
-                logger.debug("Error stopping gateway watchdog: %s", e)
-            try:
                 self.engine.stop()
             except Exception as e:
                 logger.debug("Error stopping engine: %s", e)
-            try:
-                self.gateway_supervisor.shutdown()
-            except Exception as e:
-                logger.debug("Error shutting down gateway supervisor: %s", e)
             _destroy_window_hicons()
 
     def close_window(self) -> None:
@@ -1179,43 +891,13 @@ class ArenaDashboard:
     def run(self) -> None:
         import webview
 
-        # Auto-launch background OmniRoute daemon on every start once
-        # onboarding is complete. There is no opt-out: offline mode was
-        # removed, so OmniRoute is required to use the app at all.
-        # The config is loaded exactly once: the old code loaded it twice in
-        # run() (once here, once below before starting the engine) (item 7).
         cfg: Dict[str, Any] = {}
         try:
             cfg = self.config_manager.load_config()
-            if (
-                cfg.get("has_completed_onboarding")
-                and not cfg.get("skip_ai_mode")
-                # Item 10 A1: never auto-start a gateway whose console is still
-                # protected only by OmniRoute's built-in default password; the
-                # setup wizard forces the user to set one first.
-                and self.config_manager.is_admin_password_configured()
-            ):
-                _gw_healthy = False
-                if not self.gateway_supervisor.is_port_open(timeout=0.25):
-                    logger.info("Auto-spawning background OmniRoute gateway daemon...")
-                    _spawn_ok, _ = self.gateway_supervisor.start_daemon(max_wait_sec=30.0)
-                    _gw_healthy = bool(_spawn_ok)
-                else:
-                    try:
-                        _healthy, _ = self.gateway_supervisor.probe_health(timeout=0.6)
-                        _gw_healthy = bool(_healthy)
-                    except Exception as e:
-                        logger.debug("Gateway health probe at startup failed: %s", e)
-                        _gw_healthy = False
-                # Gateway diagnosis workstream: watch the daemon while the
-                # app runs and restart it if it dies. Only started when
-                # the gateway is expected to be running (onboarding done,
-                # password set, not pure-math mode).
-                self.gateway_supervisor.start_watchdog(armed=_gw_healthy)
         except Exception as e:
-            logger.warning("Auto-launch check encountered non-fatal error: %s", e)
+            logger.warning("Startup config load failed: %s", e)
 
-        # Only start live engine if onboarding has completed or in pure math mode
+        # Start live engine directly if onboarding has completed or in pure math mode
         if cfg.get("has_completed_onboarding") or cfg.get("skip_ai_mode"):
             logger.info("Starting TradeBot0 LiveArenaEngine (ETH/USD)...")
             self.engine.start_live_loop(interval_sec=1.0)

@@ -1,10 +1,10 @@
 """Audit 3.12: the sync "failed" stage was effectively unreachable.
 
-OmniRouteClient.check_health catches every Exception and returns a
+GeminiClient.check_health catches every Exception and returns a
 bool, so the except branch around the health check never fired: a
-dead gateway surfaced as waiting/done. The fix reads the return
-value -- False means the gateway is dead -- and reports "failed"
-when a dead gateway also produces nothing to synthesize. When the
+dead AI endpoint surfaced as waiting/done. The fix reads the return
+value -- False means the endpoint is unreachable -- and reports "failed"
+when an unreachable endpoint also produces nothing to synthesize. When the
 refresh DOES produce a digest (RSS + keyword fallback), "done"
 still stands: the stream genuinely updated.
 """
@@ -56,7 +56,7 @@ def test_sync_status_failed_when_gateway_dead_and_nothing_produced():
     # was nothing to show. Never 100 on a failure.
     assert tel["sync"]["percent"] == 70
     assert tel["sync"]["percent"] < 100
-    assert "Gateway unreachable" in tel["sync"]["detail"]
+    assert "AI unreachable" in tel["sync"]["detail"]
 
 
 def test_sync_status_done_when_dead_gateway_still_yields_fallback_digest():

@@ -20,7 +20,7 @@ import threading
 
 from src.intelligence.ingestion import StructuredEvent
 from src.intelligence.macro_commander import MacroCommander
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import GeminiClient
 
 # Six-section mock article, ~1400 chars: long enough to count as an
 # article, never the one-line summary.
@@ -87,19 +87,33 @@ class _FakeSession:
 
     def _is_article(self, payload):
         try:
-            msgs = (payload or {}).get("messages", [])
-            text = " ".join(str(m.get("content", "")) for m in msgs if isinstance(m, dict))
+            parts = []
+            sys_inst = (payload or {}).get("systemInstruction", {})
+            for p in sys_inst.get("parts", []):
+                if isinstance(p, dict):
+                    parts.append(str(p.get("text", "")))
+            for item in (payload or {}).get("contents", []):
+                if isinstance(item, dict):
+                    for p in item.get("parts", []):
+                        if isinstance(p, dict):
+                            parts.append(str(p.get("text", "")))
+            text = " ".join(parts)
         except Exception:
             return False
         return "整理一篇繁體中文文章" in text
 
     def post(self, url, json=None, headers=None, timeout=None):
-        resp = _FakeResp(200, {"choices": [{"message": {"content": RESPONSE_CONTENT}}],
-                               "usage": {"total_tokens": 10}})
+        resp = _FakeResp(
+            200,
+            {
+                "candidates": [{"content": {"parts": [{"text": RESPONSE_CONTENT}]}}],
+                "usageMetadata": {"totalTokenCount": 10},
+            },
+        )
         return _FakeCM(self, resp, slow=self._is_article(json))
 
-    def get(self, url, timeout=None):
-        return _FakeCM(self, _FakeResp(200, {"ok": True}), slow=False)
+    def get(self, url, headers=None, timeout=None):
+        return _FakeCM(self, _FakeResp(200, {"name": "models/gemini-3.1-flash-lite"}), slow=False)
 
     async def close(self):
         self.close_calls += 1
@@ -107,9 +121,7 @@ class _FakeSession:
 
 
 def _make_commander():
-    # Unroutable base_url: even if a bug ever rebuilt the session, the
-    # test could never reach the real gateway.
-    client = OmniRouteClient(base_url="http://127.0.0.1:1/v1", api_key="test-key")
+    client = GeminiClient(api_key="test-key")
     session = _FakeSession()
     client._session = session
     client._owns_session = True

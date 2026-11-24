@@ -45,8 +45,8 @@ from src.data.timemachine import (
 )
 from src.data.ws_feed import StreamingCryptoFeed
 from src.gui.view_model import ViewModelPublisher, build_engine_view_model
+from src.intelligence.gemini_client import GeminiClient
 from src.intelligence.macro_commander import MacroCommander, MacroRegimeState
-from src.intelligence.omniroute_client import OmniRouteClient
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,8 @@ class LiveArenaEngine(
         storage: Optional[ArenaStorage] = None,
         auto_redeploy_when_flat: bool = True,
         gateway_base_url: Optional[str] = None,
+        llm_base_url: Optional[str] = None,
+        gemini_api_key: Optional[str] = None,
     ):
         self.symbol = symbol
         self.initial_cash = initial_cash
@@ -218,12 +220,13 @@ class LiveArenaEngine(
 
         self.mc_evaluator = MonteCarloOddsEvaluator(seed=19)
 
-        self.omniroute_client = (
-            OmniRouteClient(base_url=gateway_base_url)
-            if gateway_base_url
-            else OmniRouteClient()
+        resolved_base_url = llm_base_url or gateway_base_url
+        self.llm_client = GeminiClient(
+            base_url=resolved_base_url,
+            api_key=gemini_api_key,
         )
-        self.macro_commander = MacroCommander(self.omniroute_client)
+        self.gemini_client = self.llm_client
+        self.macro_commander = MacroCommander(self.llm_client)
         self.intel_refresh_interval_sec: float = 300.0
         self.last_intel_refresh_ts: float = time.time()
         self._is_refreshing_intel: bool = False
@@ -745,8 +748,15 @@ class LiveArenaEngine(
             t.start()
             return True
 
+    def update_gemini_api_key(self, api_key: Optional[str]) -> None:
+        """Hot-reloads the running Gemini client key and clears stale quota errors."""
+        if hasattr(self.llm_client, "update_api_key"):
+            self.llm_client.update_api_key(api_key)
+        if self.running and api_key:
+            self.trigger_intel_refresh_async()
+
     def refresh_intel_digest(self) -> Dict[str, Any]:
-        """Triggers an AI-driven macro intelligence refresh via OmniRoute."""
+        """Triggers an AI-driven macro intelligence refresh via Google Gemini."""
         if self._stop_event.is_set() or not self._is_current_generation():
             return self.macro_commander.get_intel_hub_telemetry()
         with self._intel_refresh_lock:
@@ -866,11 +876,11 @@ class LiveArenaEngine(
         with self._lifecycle_lock:
             self.running = False
             self._stop_event.set()
-            if hasattr(self.omniroute_client, "mark_shutting_down"):
+            if hasattr(self.llm_client, "mark_shutting_down"):
                 try:
-                    self.omniroute_client.mark_shutting_down()
+                    self.llm_client.mark_shutting_down()
                 except Exception as e:
-                    logger.debug("OmniRouteClient shutdown marker failed: %s", e)
+                    logger.debug("GeminiClient shutdown marker failed: %s", e)
             for task in list(self._bg_tasks):
                 try:
                     task.get_loop().call_soon_threadsafe(task.cancel)

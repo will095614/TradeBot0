@@ -12,8 +12,7 @@
   CCXT Kraken fetch_ohlcv 非空
   FEED_REGISTRY 18 項逐一 GET（timeout 5 秒；任一非 200 只警告，不讓整體失敗）
   StockTwits ETH.X／BTC.X 200 且含 messages
-  OmniRoute /api/health（gateway 未跑時印提示、不算失敗）
-  Node 下載 URL 可 HEAD 到（不下載本體）
+  Google Gemini /v1beta/models（未設定 GEMINI_API_KEY 時跳過、不算失敗）
 
 結束碼：0＝核心報價路徑暢通（Binance REST、Kraken REST、Binance WS 至少一項 PASS）；1＝核心路徑全滅。個別來源 FAIL 只列在結果中，不影響結束碼——使用者政策（2026-11-13）：外部來源皆為 best-effort，不同使用者的網路過濾不同，連不到也沒關係。
 """
@@ -56,20 +55,15 @@ _FALLBACK_REGISTRY = [
     ("fred_releases", "https://fred.stlouisfed.org/rss/releases.xml"),
     ("us_treasury", "https://home.treasury.gov/rss/press-releases.xml"),
 ]
-_FALLBACK_NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
-
 try:
-    from src.intelligence.gateway_supervisor import RUNTIME_NODE_ZIP_URL
     from src.intelligence.ingestion import FEED_REGISTRY, USER_AGENT
 
     REGISTRY = [(e["id"], e["url"]) for e in FEED_REGISTRY]
-    NODE_URL = RUNTIME_NODE_ZIP_URL
     HEADERS = {"User-Agent": USER_AGENT}
     REGISTRY_SOURCE = "src.intelligence.ingestion.FEED_REGISTRY"
 except Exception as e:  # pragma: no cover - import fallback only
     print(f"WARN could not import project registry ({e}); using embedded copy.")
     REGISTRY = list(_FALLBACK_REGISTRY)
-    NODE_URL = _FALLBACK_NODE_URL
     HEADERS = {"User-Agent": "TradeBot0-Smoke/1.0"}
     REGISTRY_SOURCE = "embedded fallback (import failed)"
 
@@ -268,26 +262,20 @@ def check_stocktwits(symbol):
         record(name, "FAIL", f"{type(e).__name__}: {e}")
 
 
-def check_omniroute_health():
-    name = "omniroute_health"
+def check_gemini_health():
+    name = "gemini_api_health"
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        return record(name, "SKIP", "GEMINI_API_KEY is not set in environment")
     try:
-        r = requests.get("http://127.0.0.1:20128/api/health", timeout=2, headers=HEADERS)
+        r = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            timeout=5,
+            headers={**HEADERS, "x-goog-api-key": api_key},
+        )
         if r.status_code == 200:
-            return record(name, "PASS", f"200 body={r.text[:120]}")
+            return record(name, "PASS", f"200 len={len(r.text)}")
         record(name, "FAIL", f"HTTP {r.status_code}")
-    except Exception:
-        # Gateway is optional for the smoke run: not running is a hint, not a failure.
-        record(name, "SKIP", "gateway is not running on 127.0.0.1:20128 "
-                             "(start it first if you want this checked)")
-
-
-def check_node_head():
-    name = "node_download_head"
-    try:
-        r = requests.head(NODE_URL, timeout=10, allow_redirects=True, headers=HEADERS)
-        if 200 <= r.status_code < 300:
-            return record(name, "PASS", f"HEAD {r.status_code} (body not downloaded)")
-        record(name, "FAIL", f"HEAD HTTP {r.status_code}")
     except Exception as e:
         record(name, "FAIL", f"{type(e).__name__}: {e}")
 
@@ -310,8 +298,7 @@ def main():
         check_feed_registry()
     check_stocktwits("ETH.X")
     check_stocktwits("BTC.X")
-    check_omniroute_health()
-    check_node_head()
+    check_gemini_health()
 
     counts = {}
     for _, status, _ in RESULTS:

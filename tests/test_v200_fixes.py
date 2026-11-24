@@ -326,10 +326,10 @@ def test_v200_bug13_deterministic_sha256_event_id():
     """BUG-13: Curated event IDs use deterministic SHA-256 hash suffix + carry event_ts & date_time."""
     from src.intelligence.ingestion import StructuredEvent
     from src.intelligence.macro_commander import MacroCommander
-    from src.intelligence.omniroute_client import OmniRouteClient
+    from src.intelligence.gemini_client import GeminiClient
 
     async def _run():
-        client = OmniRouteClient()
+        client = GeminiClient()
         cmd1 = MacroCommander(client)
         cmd2 = MacroCommander(client)
         evt = StructuredEvent(
@@ -383,7 +383,7 @@ def test_v200_frontend_and_prompt_consistency():
 
     # BUG-14: falsy confidence fix & dynamic omniSourceBadge
     assert "macro.confidence != null" in js
-    assert "isAiOnline ? 'OmniRoute AI' : 'Pure Math Core'" in js
+    assert "isAiOnline ? 'Gemini AI' : 'Pure Math Core'" in js
 
     # BUG-16: no fabricated hardcoded ETF inflow headline in HTML
     assert "CoinDesk &middot; Live" not in html

@@ -53,6 +53,6 @@ graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 # Runtime system config (audit 3.18): per-machine state, never versioned
 data/system_config.json
 
-# Local secrets (never versioned; keys live in ~/.omniroute/.env, never in the repo)
+# Local secrets (never versioned; API key lives in data/system_config.json, never in the repo)
 .env
 .env.*

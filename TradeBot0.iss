@@ -1,18 +1,14 @@
 ; TradeBot0 installer (Inno Setup 6)
 ; Installs the standalone TradeBot0_Arena.exe to {autopf}\TradeBot0.
 ;
-; Node.js / OmniRoute are deliberately NOT bundled: the global omniroute
-; install is ~2.6 GB / 164,349 files and no standalone OmniRoute binary
-; exists (npm or Docker only), so bundling it is infeasible. On first run
-; the app offers a one-click install of Node.js + OmniRoute into its own
-; per-user runtime folder (%LOCALAPPDATA%\TradeBot0\runtime), and until
-; then it runs in Pure Math mode. The installer shows a note when Node.js
-; is missing (see [Code] below).
+; Direct Google Gemini API integration via Python/aiohttp (no Node.js or
+; local AI gateway runtime required). Users enter a single Gemini
+; API key in the in-app Setup Wizard.
 ;
 ; Version: the single source of truth is src/version.py (APP_VERSION);
 ; keep MyAppVersion in sync with it at release time. Bump both per release.
 #define MyAppName "TradeBot0"
-#define MyAppVersion "V2.6.0"
+#define MyAppVersion "V3.0.0"
 #define MyAppPublisher "TradeBot0"
 #define MyAppExeName "TradeBot0_Arena.exe"
 
@@ -21,7 +17,7 @@ AppId={{A21CE6E9-710C-4C80-B1A0-B1A4DF694A6E}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 ; Numeric form of MyAppVersion (no V prefix) for the version resource.
-VersionInfoVersion=2.6.0
+VersionInfoVersion=3.0.0
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
@@ -71,46 +67,8 @@ begin
       'TradeBot0 data from a previous install was found on this computer.',
       'Your old data is kept by default. Check the box only if you want to remove it and start fresh.',
       False, False);
-    OldDataPage.Add('Delete old TradeBot0 settings and trading history (keeps OmniRoute runtime and ~/.omniroute)');
+    OldDataPage.Add('Delete old TradeBot0 settings and trading history (from LocalAppData)');
     OldDataPage.Values[0] := False;
-  end;
-end;
-
-function NodeJsMissing(): Boolean;
-var
-  Path, Dir, LocalNode: String;
-  I: Integer;
-begin
-  Result := True;
-  LocalNode := ExpandConstant('{localappdata}\TradeBot0\runtime\node\node.exe');
-  if FileExists(LocalNode) then
-  begin
-    Result := False;
-    Exit;
-  end;
-  Path := GetEnv('PATH');
-  while Path <> '' do
-  begin
-    I := Pos(';', Path);
-    if I = 0 then
-    begin
-      Dir := Path;
-      Path := '';
-    end
-    else
-    begin
-      Dir := Copy(Path, 1, I - 1);
-      Path := Copy(Path, I + 1, Length(Path));
-    end;
-    Dir := Trim(Dir);
-    if (Length(Dir) >= 2) and (Dir[1] = '"') and (Dir[Length(Dir)] = '"') then
-      Dir := Copy(Dir, 2, Length(Dir) - 2);
-    Dir := RemoveBackslashUnlessRoot(Dir);
-    if (Dir <> '') and FileExists(AddBackslash(Dir) + 'node.exe') then
-    begin
-      Result := False;
-      Exit;
-    end;
   end;
 end;
 
@@ -128,13 +86,5 @@ begin
           mbError, MB_OK, IDOK);
       end;
     end;
-  end;
-  if CurStep = ssPostInstall then
-  begin
-    if NodeJsMissing() then
-      SuppressibleMsgBox('Node.js was not found on this computer.' + #13#10 +
-        'TradeBot0 works without it (Pure Math mode), but the AI gateway needs Node.js 22 or later.' + #13#10 +
-        'On first launch, use "Install Node.js & OmniRoute" in the setup wizard, or install Node.js from https://nodejs.org/ and run: npm install -g omniroute',
-        mbInformation, MB_OK, IDOK);
   end;
 end;

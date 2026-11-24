@@ -16,10 +16,9 @@ from src.data.live_engine import LiveArenaEngine, _safe_fmt_hms
 from src.data.timemachine import TimeMachineArena
 from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
 from src.gui.view_model import ViewModelPublisher
-from src.intelligence.gateway_supervisor import GatewaySupervisor
+from src.intelligence.gemini_client import GeminiClient
 from src.intelligence.ingestion import StructuredEvent, _parse_feed_ts
 from src.intelligence.macro_commander import MacroCommander, _parse_event_epoch
-from src.intelligence.omniroute_client import OmniRouteClient
 from src.logging_setup import _SafeRotatingFileHandler
 from src.version import APP_VERSION
 
@@ -216,47 +215,8 @@ def test_view_model_delta_shallow_clones_and_cache():
     assert "price_history" not in second
 
 
-def test_gateway_supervisor_cp950_netstat_watchdog_stop_and_callback(tmp_path):
-    recovered_calls = []
-    sup = GatewaySupervisor(
-        host="127.0.0.1",
-        port=29999,
-        omni_data_dir=tmp_path,
-        on_gateway_recovered=lambda: recovered_calls.append(1),
-    )
-
-    with patch("src.intelligence.gateway_supervisor.subprocess.run") as mock_run:
-        mock_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
-        sup._kill_port_owner(29999)
-        if mock_run.called:
-            _, kw = mock_run.call_args
-            assert kw.get("encoding") == "utf-8"
-            assert kw.get("errors") == "replace"
-
-    # Stopping watchdog while restart runs must return early without counting failures
-    sup._watchdog_armed = True
-    sup._probe_gateway_healthy = MagicMock(return_value=False)
-    sup.start_daemon = MagicMock(return_value=(False, "aborted"))
-    stop_evt = MagicMock()
-    stop_evt.is_set.side_effect = [False, False, True]
-    sup._watchdog_tick(stop_evt=stop_evt)
-    assert sup._watchdog_failures == 0
-
-    # Successful recovery invokes on_gateway_recovered once outside lock
-    sup._watchdog_armed = True
-    sup._watchdog_state = "ok"
-    sup._watchdog_next_retry_ts = 0.0
-    sup._probe_gateway_healthy = MagicMock(return_value=False)
-    sup.start_daemon = MagicMock(return_value=(True, "ok"))
-    live_evt = MagicMock()
-    live_evt.is_set.return_value = False
-    sup._watchdog_tick(stop_evt=live_evt)
-    assert len(recovered_calls) == 1
-    assert sup._watchdog_healthy is True
-
-
-def test_omniroute_client_quota_fastpath_sse_error_and_timeout():
-    client = OmniRouteClient(base_url="http://127.0.0.1:29998/v1")
+def test_gemini_client_quota_fastpath_sse_error_and_timeout():
+    client = GeminiClient(api_key="AIzaTestKey")
     assert client.has_quota_failures() is False
     client.note_failure({"kind": "quota", "provider": "gemini", "status": 429, "detail": "quota exceeded"})
     assert client.has_quota_failures() is True
@@ -299,7 +259,7 @@ def test_omniroute_client_quota_fastpath_sse_error_and_timeout():
     async def _run_sse():
         client._session = _FakeSession()
         client._owns_session = False
-        return await client.chat_json("auto", "system", "user", timeout_sec=30.0, stream_progress=True)
+        return await client.chat_json("gemini-3.1-flash-lite", "system", "user", timeout_sec=30.0, stream_progress=True)
 
     res = asyncio.run(_run_sse())
     assert res is None
@@ -328,7 +288,7 @@ def test_omniroute_client_quota_fastpath_sse_error_and_timeout():
     async def _run_timeout():
         client._session = _TimeoutSession()
         client._owns_session = False
-        return await client.chat_json("auto", "system", "user", timeout_sec=60.0)
+        return await client.chat_json("gemini-3.1-flash-lite", "system", "user", timeout_sec=60.0)
 
     res_to = asyncio.run(_run_timeout())
     assert res_to is None
@@ -442,16 +402,16 @@ def test_dashboard_deferred_shutdown_and_reset_seq_carryover():
 
 
 def test_v260_frontend_and_installer_contracts():
-    assert APP_VERSION == "V2.6.0"
+    assert APP_VERSION == "V3.0.0"
     iss = (ROOT / "TradeBot0.iss").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     css = (ROOT / "src" / "gui" / "assets" / "app.css").read_text(encoding="utf-8")
     js = (ROOT / "src" / "gui" / "assets" / "app.js").read_text(encoding="utf-8")
 
-    assert '#define MyAppVersion "V2.6.0"' in iss
-    assert "VersionInfoVersion=2.6.0" in iss
+    assert '#define MyAppVersion "V3.0.0"' in iss
+    assert "VersionInfoVersion=3.0.0" in iss
     assert iss.count('AppUserModelID: "TradeBot0.QuantArena"') == 2
-    assert "TradeBot0Setup-V2.6.0.exe" in readme
+    assert "TradeBot0Setup-V3.0.0.exe" in readme
     assert "nf-is-rolling" not in js
     assert "@keyframes nfRollCurrUp" in css
     assert ".border-beam-ring::before" in css

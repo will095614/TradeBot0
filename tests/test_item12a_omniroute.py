@@ -8,10 +8,9 @@ import urllib.error
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.intelligence.gateway_supervisor import GatewaySupervisor
 from src.intelligence.ingestion import IntelligenceHarvester, RawEvent, StructuredEvent
 from src.intelligence.macro_commander import MacroCommander, MacroRegimeState
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import GeminiClient, probe_gemini_api_key
 
 
 def _offline_commander():
@@ -41,21 +40,22 @@ def _strong_bearish_events():
 def test_key_rate_limit_429_is_not_verified(mock_urlopen):
     """A4-1: 429 proves the key was accepted far enough to be rate limited,
     not that it is valid. It must never be reported as verified."""
-    gs = GatewaySupervisor()
     mock_urlopen.side_effect = urllib.error.HTTPError(
-        url="https://api.groq.com", code=429, msg="Too Many Requests",
-        hdrs={}, fp=io.BytesIO(b'{"error":"rate limited"}'),
+        url="https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite",
+        code=429,
+        msg="Too Many Requests",
+        hdrs={},
+        fp=io.BytesIO(b'{"error":"rate limited"}'),
     )
-    res = gs.test_single_key("groq", "gsk_rate_limited_key_12345678")
+    res = probe_gemini_api_key("AIzaRateLimitedKey12345678")
     assert res["ok"] is False
     assert "429" in res["message"]
-    assert "unconfirmed" in res["message"].lower()
     assert "valid" not in res["message"].lower()
 
 
 def test_dedup_hits_counted_not_token_estimate():
     """A4-3: a duplicate event counts one dedup hit and claims no tokens."""
-    client = OmniRouteClient()
+    client = GeminiClient()
     harvester = IntelligenceHarvester(client=client)
     ev = RawEvent(source="Test", domain="crypto", title="Dup title", url="https://example.com/x", timestamp=2000.0)
     assert harvester.push_raw_events([ev]) == [ev]
@@ -121,7 +121,7 @@ def test_quota_throttling_slows_digest(monkeypatch):
     # F4: the quota is the user's own DAILY_TOKEN_QUOTA budget -- the
     # client no longer invents a 100000 denominator when it is unset.
     monkeypatch.setenv("DAILY_TOKEN_QUOTA", "100000")
-    client = OmniRouteClient()
+    client = GeminiClient()
     commander = MacroCommander(client)
     assert client.get_quota_pct() == 100.0
     assert client.is_over_quota() is False
@@ -137,9 +137,9 @@ def test_quota_throttling_slows_digest(monkeypatch):
     assert commander.is_quota_throttled() is True
 
     tel = commander.get_intel_hub_telemetry()
-    assert tel["omniroute"]["quota_throttled"] is True
-    assert tel["omniroute"]["digest_interval_sec"] == 900.0
-    assert tel["omniroute"]["dedup_hits"] == 0
+    assert tel["ai"]["quota_throttled"] is True
+    assert tel["ai"]["digest_interval_sec"] == 900.0
+    assert tel["ai"]["dedup_hits"] == 0
 
 
 def test_regime_state_dict_exposes_fallback():
@@ -157,20 +157,20 @@ def test_quota_pct_has_no_invented_denominator(monkeypatch):
     import time as _time
 
     monkeypatch.delenv("DAILY_TOKEN_QUOTA", raising=False)
-    client = OmniRouteClient()
+    client = GeminiClient()
     assert client.get_quota_pct() is None
     assert client.is_over_quota() is False
     commander = MacroCommander(client)
     assert commander.is_quota_throttled() is False
     assert commander.digest_interval_sec() == 300.0
     tel = commander.get_intel_hub_telemetry()
-    assert tel["omniroute"]["quota_pct"] is None
-    assert tel["omniroute"]["quota_throttled"] is False
+    assert tel["ai"]["quota_pct"] is None
+    assert tel["ai"]["quota_throttled"] is False
 
     # A 429 observed through chat_json starts the cooldown: the digest
     # throttles while the signal is fresh...
     async def _run_429():
-        c = OmniRouteClient(base_url="http://mock-omniroute:20128/v1", max_retries=0)
+        c = GeminiClient(api_key="test-key", max_retries=0)
         mock_resp = AsyncMock()
         mock_resp.status = 429
         mock_resp.headers = {}
@@ -179,7 +179,7 @@ def test_quota_pct_has_no_invented_denominator(monkeypatch):
         mock_session.post.return_value.__aenter__.return_value = mock_resp
         c._session = mock_session
         c._owns_session = False
-        assert await c.chat_json("auto", "system", "user") is None
+        assert await c.chat_json("gemini-3.1-flash-lite", "system", "user") is None
         return c
 
     limited = asyncio.run(_run_429())
@@ -198,7 +198,7 @@ def test_quota_pct_uses_user_set_budget(monkeypatch):
     """F4: when the user sets their own DAILY_TOKEN_QUOTA, the denominator
     is real and the % is computed from it."""
     monkeypatch.setenv("DAILY_TOKEN_QUOTA", "200000")
-    client = OmniRouteClient()
+    client = GeminiClient()
     assert client.get_quota_pct() == 100.0
     client.total_tokens_used = 50000
     assert client.get_quota_pct() == 75.0

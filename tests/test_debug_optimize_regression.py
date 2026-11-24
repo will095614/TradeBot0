@@ -2,7 +2,7 @@
 Full Debug & Optimization Pass Regression Suite.
 
 Covers Track A (Arena & Competitors), Track B (Data & LiveEngine),
-Track C (Intelligence, Gateway & Infrastructure), and Track D (GUI & Frontend).
+Track C (Intelligence, AI Client & Infrastructure), and Track D (GUI & Frontend).
 All tests are deterministic and strictly offline (zero real network calls).
 """
 from __future__ import annotations
@@ -318,11 +318,11 @@ def test_track_b_non_integer_cadence_advances_slots():
 
 
 # ============================================================================
-# Track C: Intelligence, Gateway & Infrastructure
+# Track C: Intelligence, Gemini AI & Infrastructure
 # ============================================================================
-def test_track_c_omniroute_max_concurrent_1_repair_no_deadlock():
+def test_track_c_gemini_max_concurrent_1_repair_no_deadlock():
     """With max_concurrent=1, JSON repair retry must NOT deadlock on the concurrency semaphore."""
-    from src.intelligence.omniroute_client import OmniRouteClient
+    from src.intelligence.gemini_client import GeminiClient
 
     class _FakeResp:
         def __init__(self, content: str):
@@ -338,8 +338,8 @@ def test_track_c_omniroute_max_concurrent_1_repair_no_deadlock():
 
         async def json(self):
             return {
-                "choices": [{"message": {"content": self._content}}],
-                "usage": {"total_tokens": 12},
+                "candidates": [{"content": {"parts": [{"text": self._content}]}}],
+                "usageMetadata": {"totalTokenCount": 12},
             }
 
         async def text(self):
@@ -357,8 +357,8 @@ def test_track_c_omniroute_max_concurrent_1_repair_no_deadlock():
             return _FakeResp('{"ok": true, "score": 1}')
 
     fake_sess = _FakeSession()
-    client = OmniRouteClient(
-        base_url="http://127.0.0.1:20128/v1",
+    client = GeminiClient(
+        api_key="test-key",
         max_concurrent=1,
         max_retries=1,
         session=fake_sess,
@@ -367,7 +367,7 @@ def test_track_c_omniroute_max_concurrent_1_repair_no_deadlock():
     async def _run():
         return await asyncio.wait_for(
             client.chat_json(
-                model="auto",
+                model="gemini-3.1-flash-lite",
                 system_prompt="Return JSON",
                 user_prompt="ping",
             ),
@@ -392,18 +392,16 @@ def test_track_c_forum_collector_parses_dot_x_symbols():
         assert _symbols_from_registry() == ["SOL.X", "ETH.X"]
 
 
-def test_track_c_config_manager_refuses_to_wipe_unreadable_env(tmp_path):
-    """If ~/.omniroute/.env exists but cannot be read, _write_omni_env_vars aborts instead of overwriting."""
+def test_track_c_config_manager_preserves_existing_config_on_write_error(tmp_path):
+    """If persisting updated config fails, existing system_config.json stays intact."""
     from src.intelligence.config_manager import ConfigManager
 
-    env_file = tmp_path / ".env"
-    env_file.write_text("JWT_SECRET=keep_me\n", encoding="utf-8")
-
-    cm = ConfigManager(data_dir=tmp_path / "data", omni_env_path=env_file)
-    with patch.object(Path, "read_text", side_effect=PermissionError("locked")):
-        res = cm._write_omni_env_vars({"GEMINI_API_KEY": "AIzaSyDummyTestKey123456"})
+    cm = ConfigManager(data_dir=tmp_path / "data")
+    assert cm.save_config({"gemini_api_key": "AIzaKeepMeIntact12345"}) is True
+    with patch.object(cm, "_atomic_write_text", side_effect=PermissionError("locked")):
+        res = cm.set_gemini_api_key("AIzaOverwriteAttempt")
     assert res["ok"] is False
-    assert "JWT_SECRET=keep_me" in env_file.read_text(encoding="utf-8")
+    assert cm.load_config()["gemini_api_key"] == "AIzaKeepMeIntact12345"
 
 
 def test_track_c_update_checker_rejects_non_https_and_clears_download_url_when_up_to_date():
@@ -431,121 +429,26 @@ def test_track_c_update_checker_rejects_non_https_and_clears_download_url_when_u
     fake_resp.close.assert_called_once()
 
 
-def test_track_c_gateway_npm_strips_secrets_and_no_blind_retry(tmp_path):
-    """_npm_install_omniroute strips *_API_KEY/INITIAL_PASSWORD from npm env and skips retry on generic errors."""
-    from src.intelligence.gateway_supervisor import GatewaySupervisor
-
-    sup = GatewaySupervisor(install_log_path=tmp_path / "install.log")
-    npm_cmd = tmp_path / "npm.cmd"
-    npm_cmd.write_text("@echo off\n", encoding="utf-8")
-
-    captured_envs = []
-    call_count = 0
-
-    class _FakeProc:
-        pid = 99999
-        returncode = 1
-
-        def __init__(self, stdout_file):
-            stdout_file.write("npm ERR! code ECONNRESET network failure\n")
-            stdout_file.flush()
-
-        def poll(self):
-            return 1
-
-        def wait(self, timeout=None):
-            return 1
-
-    def _fake_popen(args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        captured_envs.append(dict(kwargs.get("env") or {}))
-        return _FakeProc(kwargs["stdout"])
-
-    with patch.dict(
-        "os.environ",
-        {"GEMINI_API_KEY": "secret_key_placeholder", "INITIAL_PASSWORD": "secret_pw_placeholder"},
-    ), patch("src.intelligence.gateway_supervisor.subprocess.Popen", side_effect=_fake_popen):
-        with pytest.raises(RuntimeError):
-            sup._npm_install_omniroute(str(npm_cmd), tmp_path / "runtime")
-
-    assert call_count == 1
-    assert "GEMINI_API_KEY" not in captured_envs[0]
-    assert "INITIAL_PASSWORD" not in captured_envs[0]
-
-
 # ============================================================================
 # Track D: GUI & Frontend
 # ============================================================================
-def test_track_c_gateway_sync_admin_password_fresh_and_existing_db(tmp_path):
-    """sync_admin_password uses setup --non-interactive for fresh DB and reset-password --password-stdin for existing DB,
-    never placing the password in command-line arguments and always pinning DATA_DIR."""
-    from src.intelligence.gateway_supervisor import GatewaySupervisor
-
-    data_dir = tmp_path / ".omniroute"
-    sup = GatewaySupervisor(omni_data_dir=data_dir)
-    captured = []
-
-    def _fake_run(cmd, **kwargs):
-        captured.append((list(cmd), dict(kwargs)))
-        res = MagicMock()
-        res.returncode = 0
-        res.stdout = "ok"
-        res.stderr = ""
-        return res
-
-    with patch.object(GatewaySupervisor, "_get_cli_base_command", classmethod(lambda cls: ["node", "omniroute.mjs"])), \
-         patch("src.intelligence.gateway_supervisor.subprocess.run", side_effect=_fake_run):
-        # 1. Fresh DB (storage.sqlite does not exist yet) -> setup --non-interactive via child env
-        r1 = sup.sync_admin_password("InitPass1234", data_dir=data_dir)
-        assert r1 == {"ok": True, "skipped": False, "mode": "setup"}
-        cmd1, kw1 = captured[-1]
-        assert cmd1 == ["node", "omniroute.mjs", "setup", "--non-interactive"]
-        assert "InitPass1234" not in " ".join(cmd1)
-        assert kw1["env"]["DATA_DIR"] == str(data_dir)
-        assert kw1["env"]["OMNIROUTE_CLI_SKIP_DEFAULT_DATA_ENV"] == "1"
-        assert kw1["env"]["INITIAL_PASSWORD"] == "InitPass1234"
-
-        # 2. Existing DB (storage.sqlite exists) -> reset-password --password-stdin via stdin
-        (data_dir / "storage.sqlite").write_bytes(b"sqlite")
-        r2 = sup.sync_admin_password("UpdatedPass5678", data_dir=data_dir)
-        assert r2 == {"ok": True, "skipped": False, "mode": "reset-password"}
-        cmd2, kw2 = captured[-1]
-        assert cmd2 == ["node", "omniroute.mjs", "reset-password", "--password-stdin"]
-        assert "UpdatedPass5678" not in " ".join(cmd2)
-        assert kw2["input"] == "UpdatedPass5678"
-        assert "INITIAL_PASSWORD" not in kw2["env"]
-        assert kw2["env"]["DATA_DIR"] == str(data_dir)
-
-
-def test_track_c_save_and_launch_aborts_if_password_db_sync_fails(tmp_path):
-    """save_and_launch_gateway does not mark onboarding complete when OmniRoute DB password sync fails."""
+def test_track_c_save_and_launch_aborts_if_key_save_fails(tmp_path):
+    """save_and_launch does not mark onboarding complete when persisting the Gemini key fails."""
     from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
     from src.intelligence.config_manager import ConfigManager
-    from src.intelligence.gateway_supervisor import GatewaySupervisor
 
     dash = ArenaDashboard()
-    dash.config_manager = ConfigManager(
-        data_dir=tmp_path / "data",
-        omni_env_path=tmp_path / ".omniroute" / ".env",
-    )
-    dash.gateway_supervisor = GatewaySupervisor(
-        daemon_log_path=tmp_path / "logs" / "omniroute_daemon.log",
-        omni_data_dir=tmp_path / ".omniroute",
-    )
+    dash.config_manager = ConfigManager(data_dir=tmp_path / "data")
     bridge = _ArenaBridgeApi(dash)
     try:
         with patch.object(
-            dash.gateway_supervisor,
-            "sync_admin_password",
-            return_value={"ok": False, "error": "sqlite locked"},
+            dash.config_manager,
+            "set_gemini_api_key",
+            return_value={"ok": False, "error": "config locked"},
         ):
-            res = bridge.save_and_launch_gateway(
-                {"gemini": "AIzaSyFakeKeyForTest12345678"},
-                admin_password="ValidPassword123",
-            )
+            res = bridge.save_and_launch({"gemini": "AIzaSyFakeKeyForTest12345678"})
         assert res["ok"] is False
-        assert "sqlite locked" in res["message"]
+        assert "config locked" in res["message"]
         assert dash.config_manager.load_config()["has_completed_onboarding"] is False
     finally:
         dash.engine.stop()
@@ -581,18 +484,17 @@ def test_track_d_view_model_publisher_excludes_fills_and_detects_is_live_change(
 
 
 def test_track_d_dashboard_save_launch_aborts_on_key_sync_failure():
-    """save_and_launch_gateway reports failure cleanly when sync_omniroute_keys returns ok=False."""
+    """save_and_launch reports failure cleanly when set_gemini_api_key returns ok=False."""
     from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
 
     dash = ArenaDashboard()
     bridge = _ArenaBridgeApi(dash)
-    dash.config_manager.load_config = MagicMock(return_value={"gateway_port": 20128})
-    dash.config_manager.is_admin_password_configured = MagicMock(return_value=True)
-    dash.config_manager.sync_omniroute_keys = MagicMock(return_value={"ok": False, "error": "disk full"})
+    dash.config_manager.set_gemini_api_key = MagicMock(return_value={"ok": False, "error": "disk full"})
 
-    res = bridge.save_and_launch_gateway({"gemini": "AIzaSyFakeKeyForTest12345678"})
+    res = bridge.save_and_launch({"gemini": "AIzaSyFakeKeyForTest12345678"})
     assert res["status"] == "error"
     assert "disk full" in res["message"]
+    dash.engine.stop()
 
 
 def test_track_d_reset_engine_preserves_fills_after_bootstrap_completes():
@@ -779,16 +681,16 @@ def test_v24_track_a_portfolio_apply_fill_upfront_quantization():
     assert closed.realized_pnl == Decimal("98.00")
 
 
-def test_v24_track_b_live_engine_custom_gateway_url_and_reset_broker_binding():
+def test_v24_track_b_live_engine_custom_llm_url_and_reset_broker_binding():
     from src.data.live_engine import LiveArenaEngine
     from src.gui.dashboard import ArenaDashboard
 
     eng = LiveArenaEngine(
         initial_cash=Decimal("100000.00"),
-        gateway_base_url="http://127.0.0.1:29999/v1",
+        llm_base_url="http://127.0.0.1:29999/v1beta",
     )
     try:
-        assert eng.macro_commander.client.base_url == "http://127.0.0.1:29999/v1"
+        assert eng.macro_commander.client.base_url == "http://127.0.0.1:29999/v1beta"
     finally:
         eng.stop()
 
@@ -851,71 +753,40 @@ def test_v24_track_b_mtf_seed_1h_merges_same_slot():
     assert first["v"] == 25.0
 
 
-def test_v24_track_c_env_roundtrip_and_no_initial_password_in_environ(tmp_path, monkeypatch):
-    import os
-    from src.intelligence.config_manager import (
-        ConfigManager,
-        format_omni_env_value,
-        parse_omni_env_line,
-    )
-
-    for raw in ("SimplePass123", "Pass # with hash", "lead space ", "has'quote#1"):
-        encoded = format_omni_env_value(raw)
-        parsed = parse_omni_env_line(f"INITIAL_PASSWORD={encoded} # trailing comment")
-        assert parsed == ("INITIAL_PASSWORD", raw)
-
-    monkeypatch.delenv("INITIAL_PASSWORD", raising=False)
-    env_file = tmp_path / ".env"
-    cm = ConfigManager(data_dir=tmp_path, omni_env_path=env_file)
-    res_pw = cm.set_admin_password("My#Secret Pass")
-    assert res_pw.get("ok") is True
-    assert "INITIAL_PASSWORD" not in os.environ
-    assert cm.is_admin_password_configured() is True
-
-
-def test_v24_track_c_gemini_header_and_save_gateway_no_split_brain(tmp_path):
+def test_v24_track_c_gemini_header_and_save_no_split_brain(tmp_path):
     from unittest.mock import MagicMock, patch
     from src.gui.dashboard import ArenaDashboard, _ArenaBridgeApi
     from src.intelligence.config_manager import ConfigManager
-    from src.intelligence.gateway_supervisor import GatewaySupervisor
+    from src.intelligence.gemini_client import probe_gemini_api_key
 
-    sup = GatewaySupervisor(host="127.0.0.1", port=20128)
     mock_resp = MagicMock()
     mock_resp.status = 200
     mock_cm = MagicMock()
     mock_cm.__enter__.return_value = mock_resp
     mock_cm.__exit__.return_value = False
     with patch("urllib.request.urlopen", return_value=mock_cm) as mock_open:
-        res = sup.test_single_key("gemini", "AIzaFakeSecretKey1234567890")
+        res = probe_gemini_api_key("AIzaFakeSecretKey1234567890")
     assert res["ok"] is True
     req_obj = mock_open.call_args[0][0]
     assert "AIzaFakeSecretKey" not in req_obj.full_url
     assert req_obj.get_header("X-goog-api-key") == "AIzaFakeSecretKey1234567890"
 
-    env_file = tmp_path / ".env"
-    env_file.write_text("INITIAL_PASSWORD=OldPass123\n", encoding="utf-8")
     dash = ArenaDashboard(initial_cash=Decimal("100000.00"))
     try:
-        dash.config_manager = ConfigManager(data_dir=tmp_path, omni_env_path=env_file)
+        dash.config_manager = ConfigManager(data_dir=tmp_path / "data")
+        dash.config_manager.set_gemini_api_key("AIzaExistingKey123456")
         bridge = _ArenaBridgeApi(dash)
-        with patch.object(dash.gateway_supervisor, "stop_watchdog"), \
-             patch.object(dash.gateway_supervisor, "shutdown"), \
-             patch.object(
-                 dash.gateway_supervisor,
-                 "sync_admin_password",
-                 return_value={"ok": False, "error": "sqlite locked"},
-             ):
-            out = bridge.save_and_launch_gateway({"gemini": "AIzaNewKey1234567890"}, admin_password="NewPass1234")
+        with patch.object(dash.config_manager, "save_config", return_value=False):
+            out = bridge.save_and_launch({"gemini": "AIzaNewKey1234567890"})
         assert out["ok"] is False
-        assert "INITIAL_PASSWORD=OldPass123" in env_file.read_text(encoding="utf-8")
     finally:
         dash.engine.stop()
 
 
-def test_v24_track_c_omniroute_extract_json_retry_hint_dedup_and_https_redirect():
+def test_v24_track_c_gemini_extract_json_retry_hint_dedup_and_https_redirect():
     from unittest.mock import MagicMock, patch
     from src.intelligence.ingestion import DeduplicationBuffer
-    from src.intelligence.omniroute_client import _retry_window_seconds, extract_json
+    from src.intelligence.gemini_client import _retry_window_seconds, extract_json
     from src.update_checker import check_for_updates
 
     raw_with_fence = '{"summary": "use ```python\\nprint(1)\\n``` cleanly", "score": 7}'

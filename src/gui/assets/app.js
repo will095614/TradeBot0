@@ -31,7 +31,7 @@ let hasCompletedSetup = false;
 let hasCheckedOnboarding = false;
 let isWizardOpen = false;
 let wizardOpenGen = 0;
-let isSavingGateway = false;
+let isSavingSetup = false;
 let isCheckingWizardClose = false;
 
 // Global Arena Data & Polling States
@@ -297,6 +297,37 @@ function startSplashSequence(isReset = false) {
             }
             locateMouseAndRefreshChart();
             hasInitializedPositions = true;
+            // One-time catch-up for initial positions opened during splash/loading
+            // (which were absorbed into knownStrategyPositions before reveal).
+            const catchupStrats = Array.isArray(latestState && latestState.strategies)
+              ? latestState.strategies
+              : [];
+            const isRestoredSession = Boolean(latestState && latestState.session_restored === true);
+            catchupStrats.forEach((s) => {
+              if (!s || !s.id) return;
+              knownStrategyPositions[s.id] = {
+                in_position: Boolean(s.in_position),
+                entry_price: Number(s.entry_price || 0),
+                qty: Number(s.qty || 0),
+                trades: Number(s.closed_trades || 0),
+                position_side: s.position_side || 'LONG'
+              };
+            });
+            if (!isRestoredSession && catchupStrats.length > 0) {
+              const openInitialStrats = catchupStrats
+                .filter((s) => s && s.in_position && Number(s.qty) > 0)
+                .slice()
+                .sort((a, b) => {
+                  const rankA = Number(a.rank) || 99;
+                  const rankB = Number(b.rank) || 99;
+                  if (rankA !== rankB) return rankA - rankB;
+                  return (Number(b.roi_pct) || 0) - (Number(a.roi_pct) || 0);
+                });
+              openInitialStrats.forEach((s) => {
+                showPositionToast(s);
+                addChartBeacon(s);
+              });
+            }
             ensureLiveTradingStarted();
           };
           if (typeof requestAnimationFrame === 'function') {
@@ -456,10 +487,7 @@ async function initAppBoot() {
       const res = await window.pywebview.api.get_setup_status();
       if (res && res.status === 'ok') {
         setupCheckedOk = true;
-        if (typeof res.gateway_port === 'number') {
-          window.__tradebotGatewayPort = res.gateway_port;
-        }
-        if ((!res.onboarding_completed && !res.skip_ai_mode) || res.admin_password_required) {
+        if (!res.onboarding_completed && !res.skip_ai_mode) {
           needsOnboarding = true;
         } else {
           hasCompletedSetup = true;
@@ -1913,9 +1941,9 @@ function renderHeader(state) {
   const srcEl = _hdrRefs.srcEl;
   if (srcEl) {
     const mcState = state.macro_commander || {};
-    const omniState = (state.intel_hub && state.intel_hub.omniroute) || {};
-    const isAiOnline = (omniState.status === 'ONLINE') || (mcState.status === 'ONLINE');
-    const nextSrcTxt = isAiOnline ? 'OmniRoute AI' : 'Pure Math Core';
+    const aiState = (state.intel_hub && state.intel_hub.ai) || {};
+    const isAiOnline = (aiState.status === 'ONLINE') || (mcState.status === 'ONLINE');
+    const nextSrcTxt = isAiOnline ? 'Gemini AI' : 'Pure Math Core';
     if (srcEl.textContent !== nextSrcTxt) {
       srcEl.textContent = nextSrcTxt;
       srcEl.style.background = isAiOnline ? 'rgba(56, 189, 248, 0.16)' : 'rgba(0, 242, 254, 0.14)';
@@ -1936,7 +1964,7 @@ function renderHeader(state) {
 function showEngineInfo() {
   alert(
     '[TradeBot0 High-Performance Quant Core]\n\n' +
-    '* Architecture: Deterministic Quant Engine + OmniRoute Macro Intelligence\n' +
+    '* Architecture: Deterministic Quant Engine + Gemini Macro Intelligence\n' +
     '* Strategy Evolution: Tournament Selection + Uniform Crossover\n' +
     '* Risk Mitigation: Monte Carlo EV Gate (1,000 Antithetic Student-t / Bootstrap Paths)\n' +
     '* Market Data Feed: Multi-Exchange Sub-Second Live Websocket/REST Stream\n' +
@@ -4024,7 +4052,7 @@ function blurActiveFocus() {
 
 function isAnyModalBlockingShortcuts() {
   if (isWizardOpen) return true;
-  const ids = ['shutdownModal', 'resetConfirmModal', 'installCancelConfirmModal', 'wizardCloseConfirmModal', 'networkOfflineOverlay', 'commandPaletteModal'];
+  const ids = ['shutdownModal', 'resetConfirmModal', 'wizardCloseConfirmModal', 'networkOfflineOverlay', 'commandPaletteModal'];
   for (let i = 0; i < ids.length; i++) {
     const el = document.getElementById(ids[i]);
     if (el && el.classList.contains('modal-visible')) return true;
@@ -4187,38 +4215,7 @@ function updateUiClockDisplay() {
     uiClockInterval = setInterval(updateUiClockDisplay, 1000);
   }
 
-  function openOmniRouteConsole() {
-    // Console URL follows the configured gateway port (item 10 A2): the
-    // bridge is the primary path; the fallback reuses the last port the
-    // setup status reported (20128 until the first status call).
-    const btn = document.getElementById('btnOpenOmniConsole');
-    // No feedback used to make repeated clicks open a new tab each time:
-    // show "opening..." immediately and ignore re-clicks until it settles.
-    if (btn && btn.dataset.opening === '1') return;
-    const labelEl = btn ? btn.querySelector('span') : null;
-    const prevLabel = labelEl ? labelEl.textContent : '';
-    if (btn) { btn.dataset.opening = '1'; btn.disabled = true; }
-    if (labelEl) labelEl.textContent = 'opening...';
-    const done = () => {
-      if (btn) { delete btn.dataset.opening; btn.disabled = false; }
-      if (labelEl) labelEl.textContent = prevLabel || 'Launch Console';
-    };
-    const port = (typeof window.__tradebotGatewayPort === 'number') ? window.__tradebotGatewayPort : 20128;
-    const fallbackUrl = `http://127.0.0.1:${port}`;
-    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.open_omniroute_console === 'function') {
-      window.pywebview.api.open_omniroute_console().then(done, () => {
-        window.open(fallbackUrl, '_blank');
-        done();
-      });
-    } else {
-      window.open(fallbackUrl, '_blank');
-      setTimeout(done, 1200);
-    }
-  }
-
-  // AI panels (W2): 'Get a key' links open the provider's key page
-  // in the system browser via the bridge (allowlisted there); the
-  // window.open fallback covers the no-bridge preview.
+  // Google Gemini 'Get a key' links open the AI Studio key page in the system browser.
   function openProviderKeyPage(url) {
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.open_external_url === 'function') {
       window.pywebview.api.open_external_url(url).catch((e) => console.debug('open key page err:', e));
@@ -4771,8 +4768,7 @@ function updateUiClockDisplay() {
   // mid-preload never duplicates the call, and the rendered article is
   // already in the (hidden) body when the card opens. Sequential on
   // purpose: each article is one ~1000-word LLM call; a burst would
-  // hammer the gateway. Only runs while the Hub view is active (called
-  // from renderIntelHub's list-update branch). Preload never expands a card.
+  // Sequential article preload queue: prevents bursting Gemini rate limits.
   const intelArticlePreloadQueue = [];
   let intelArticlePreloadRunning = false;
 
@@ -4787,8 +4783,8 @@ function updateUiClockDisplay() {
   function pumpIntelArticlePreload() {
     if (intelArticlePreloadRunning) return;
     if (currentMainView !== 'intel' || document.hidden) return;
-    const omniStatus = latestState && latestState.intel_hub && latestState.intel_hub.omniroute && latestState.intel_hub.omniroute.status;
-    if (omniStatus !== 'ONLINE') return;
+    const aiStatus = latestState && latestState.intel_hub && latestState.intel_hub.ai && latestState.intel_hub.ai.status;
+    if (aiStatus !== 'ONLINE') return;
     let id;
     while ((id = intelArticlePreloadQueue.shift()) !== undefined) {
       // The event may have left the list, or an expand may have already
@@ -5007,21 +5003,18 @@ function updateUiClockDisplay() {
   function renderIntelHub(state) {
     if (!state) return;
     const intel = state.intel_hub || {};
-    const omni = intel.omniroute || {};
+    const ai = intel.ai || {};
     const macro = intel.macro_state || state.macro_commander || {};
     const events = intel.events || [];
 
-    // 1. OmniRoute Gateway Status
-    const statusPill = document.getElementById('omniGatewayStatusPill');
+    // 1. Gemini AI Status
+    const statusPill = document.getElementById('aiStatusPill');
     if (statusPill) {
-      const isOnline = omni.status === 'ONLINE';
+      const isOnline = ai.status === 'ONLINE';
       const nextPillCls = `intel-status-pill ss-badge ${isOnline ? 'online' : 'standby'}`;
       if (statusPill.className !== nextPillCls) {
         statusPill.className = nextPillCls;
       }
-      // AI panels (I1): the pill says only Online / Standby. When
-      // the current regime came from the local keyword fallback,
-      // say so on the reserved line under the pill instead.
       const isFallback = macro.fallback === true;
       const nextPillHtml = `<span class="ss-badge__dot"></span><span class="ss-badge__label">${isOnline ? 'Online' : 'Standby'}</span>`;
       if (statusPill._lastHtml !== nextPillHtml) {
@@ -5030,19 +5023,12 @@ function updateUiClockDisplay() {
       }
       const fbLine = document.getElementById('intelFallbackLine');
       if (fbLine) fbLine.classList.toggle('visible', isFallback);
-      // Gateway diagnosis workstream: one plain-language line under
-      // the pill -- quota exhausted (all providers), connection
-      // problem, or restarting. Only the two user-facing states plus
-      // the restarting line; anything else leaves the line empty.
-      // The slot collapses while empty (user decision 2026-11-16,
-      // sim-approved), so showing the line grows the deck.
       const diagLine = document.getElementById('intelDiagnosisLine');
       if (diagLine) {
-        const diag = omni.diagnosis || 'ok';
+        const diag = ai.diagnosis || 'ok';
         let diagText = '';
-        if (diag === 'quota_exhausted') diagText = 'AI quota exhausted — all providers out of credits';
-        else if (diag === 'connection_problem') diagText = 'Connection problem — AI services unreachable';
-        else if (diag === 'restarting') diagText = 'AI services stopped — restarting…';
+        if (diag === 'quota_exhausted') diagText = 'Gemini API quota exhausted';
+        else if (diag === 'connection_problem') diagText = 'Connection problem — Gemini AI unreachable';
         if (diagLine._lastDiag !== diag) {
           diagLine.textContent = diagText;
           diagLine._lastDiag = diag;
@@ -5051,55 +5037,49 @@ function updateUiClockDisplay() {
       }
     }
 
-    const epEl = document.getElementById('omniEndpointVal');
-    if (epEl) {
-      const nextEp = omni.endpoint || 'http://localhost:20128/v1';
-      if (epEl.textContent !== nextEp) epEl.textContent = nextEp;
+    const modelEl = document.getElementById('aiModelNameVal');
+    if (modelEl) {
+      const nextModel = ai.model_commander || ai.model_ingest || 'gemini-3.1-flash-lite';
+      if (modelEl.textContent !== nextModel) modelEl.textContent = nextModel;
     }
 
-    const tokensEl = document.getElementById('omniTokensVal');
+    const tokensEl = document.getElementById('aiTokensVal');
     if (tokensEl) {
-      const usedNum = Number(omni.tokens_used || 0);
-      const savedNum = Number(omni.tokens_saved || 0);
+      const usedNum = Number(ai.tokens_used || 0);
+      const savedNum = Number(ai.tokens_saved || 0);
       const nextTokens = savedNum > 0
         ? `${usedNum.toLocaleString()} used / ${savedNum.toLocaleString()} saved`
         : `${usedNum.toLocaleString()} tokens used`;
       if (tokensEl.textContent !== nextTokens) tokensEl.textContent = nextTokens;
     }
 
-    const tokensSub = document.getElementById('omniTokensSub');
+    const tokensSub = document.getElementById('aiTokensSub');
     if (tokensSub) {
-      const used = omni.tokens_used || 0;
-      const saved = omni.tokens_saved || 0;
+      const used = ai.tokens_used || 0;
+      const saved = ai.tokens_saved || 0;
       const tot = used + saved;
-      const pct = tot > 0 ? ((saved / tot) * 100).toFixed(1) : (omni.dedup_pct ? omni.dedup_pct.toFixed(1) : '0.0');
-      // Item 12 / A4-3: token "saved" is no longer a claimed figure, so the
-      // dedup line reports the counted hits instead of a fabricated percent.
-      const hits = omni.dedup_hits;
+      const pct = tot > 0 ? ((saved / tot) * 100).toFixed(1) : (ai.dedup_pct ? ai.dedup_pct.toFixed(1) : '0.0');
+      const hits = ai.dedup_hits;
       let nextSub = (typeof hits === 'number' && hits > 0)
         ? `${hits.toLocaleString()} dupes skipped (SHA-256)`
         : `${pct}% SHA-256 Dedup Saved`;
-      // The Remaining Quota cell was removed (2026-11-13); the digest
-      // throttle note (item 12 / A4-4) moves here so it stays visible.
-      if (omni.quota_throttled === true) {
+      if (ai.quota_throttled === true) {
         nextSub += ' — Digest throttled';
       }
       if (tokensSub.textContent !== nextSub) tokensSub.textContent = nextSub;
-      // AI panels (I3): the user-facing throttle signal is a plain
-      // line under the Market Direction card, shown only while throttled.
       const throttleLine = document.getElementById('macroThrottleLine');
-      if (throttleLine) throttleLine.classList.toggle('visible', omni.quota_throttled === true);
+      if (throttleLine) throttleLine.classList.toggle('visible', ai.quota_throttled === true);
     }
 
-    // Bencho context-meter segment sync for Token Utilization
-    const meterEl = document.getElementById('omniTokenMeter');
-    const segAct = document.getElementById('omniTokenSegActive');
-    const segSav = document.getElementById('omniTokenSegSaved');
-    const lblAct = document.getElementById('omniMeterActiveLbl');
-    const lblSav = document.getElementById('omniMeterSavedLbl');
+    // Context-meter segment sync for Token Utilization
+    const meterEl = document.getElementById('aiTokenMeter');
+    const segAct = document.getElementById('aiTokenSegActive');
+    const segSav = document.getElementById('aiTokenSegSaved');
+    const lblAct = document.getElementById('aiMeterActiveLbl');
+    const lblSav = document.getElementById('aiMeterSavedLbl');
     if (meterEl && segAct && segSav && lblAct && lblSav) {
-      const usedNum = Number(omni.tokens_used || 0);
-      const savedNum = Number(omni.tokens_saved || 0);
+      const usedNum = Number(ai.tokens_used || 0);
+      const savedNum = Number(ai.tokens_saved || 0);
       const totNum = usedNum + savedNum;
       let activePct = 0;
       let savedPct = 0;
@@ -5109,8 +5089,8 @@ function updateUiClockDisplay() {
       } else if (usedNum > 0) {
         activePct = 100;
         savedPct = 0;
-      } else if (typeof omni.dedup_pct === 'number' && omni.dedup_pct > 0) {
-        savedPct = Math.min(100, Math.round(omni.dedup_pct));
+      } else if (typeof ai.dedup_pct === 'number' && ai.dedup_pct > 0) {
+        savedPct = Math.min(100, Math.round(ai.dedup_pct));
         activePct = Math.max(0, 100 - savedPct);
       }
       const nextActW = activePct + '%';
@@ -5123,12 +5103,15 @@ function updateUiClockDisplay() {
       if (lblSav.textContent !== nextSavLbl) lblSav.textContent = nextSavLbl;
     }
 
-    // AI panels (I5): the Stage-1 / Stage-2 model tags were removed;
-    // the ingest/commander model names are no longer displayed.
+    const concEl = document.getElementById('aiConcurrencyVal');
+    if (concEl) {
+      const nextConc = `${ai.concurrency_limit || 25} Semaphores`;
+      if (concEl.textContent !== nextConc) concEl.textContent = nextConc;
+    }
 
-    const reqEl = document.getElementById('omniReqCounters');
+    const reqEl = document.getElementById('aiReqCounters');
     if (reqEl) {
-      const nextReq = `Reqs: ${omni.total_requests || 0} | OK: ${omni.successful_requests || 0} | Fail: ${omni.failed_requests || 0}`;
+      const nextReq = `Reqs: ${ai.total_requests || 0} | OK: ${ai.successful_requests || 0} | Fail: ${ai.failed_requests || 0}`;
       if (reqEl.textContent !== nextReq) reqEl.textContent = nextReq;
     }
 
@@ -5361,20 +5344,9 @@ function updateUiClockDisplay() {
       });
     }
 
-    const pwdBadgeEl = document.getElementById('omniConsolePwd');
-    if (pwdBadgeEl) {
-      pwdBadgeEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          copyOmniPassword();
-        }
-      });
-    }
-
     window.addEventListener('resize', triggerSmoothResize);
 
     if (typeof initIntelFilterControls === 'function') initIntelFilterControls();
-    if (typeof initAdminPasswordStrength === 'function') initAdminPasswordStrength();
     if (typeof initScrollAreaFades === 'function') initScrollAreaFades();
     if (typeof initResetSlideConfirm === 'function') initResetSlideConfirm();
     if (typeof initCommandPalette === 'function') initCommandPalette();
@@ -5400,7 +5372,6 @@ function updateUiClockDisplay() {
      ========================================================================== */
   let shutdownCloseTimer = null;
   let resetCloseTimer = null;
-  let installCancelCloseTimer = null;
   let wizardCloseConfirmCloseTimer = null;
   let wizardCloseTimer = null;
 
@@ -5467,7 +5438,6 @@ function updateUiClockDisplay() {
     if (spotlightRaf) { cancelAnimationFrame(spotlightRaf); spotlightRaf = null; }
     if (typeof chartAnimRaf === 'number' && chartAnimRaf > 0) { cancelAnimationFrame(chartAnimRaf); chartAnimRaf = null; }
     Object.keys(intelArticleProgressTimers).forEach((k) => stopIntelArticleProgressPoll(k));
-    stopRuntimeInstallPoll();
     stopSaveLaunchPoll();
     if (typeof destroyAmbientBackdrop === 'function') destroyAmbientBackdrop();
     isPolling = true;
@@ -5486,7 +5456,7 @@ function updateUiClockDisplay() {
   };
 
   /* ==========================================================================
-     GATEWAY SETUP WIZARD & CREDENTIALS CONTROLLER
+     GEMINI AI SETUP WIZARD & CREDENTIALS CONTROLLER
      ========================================================================== */
   // Wizard & onboarding flags initialized at top of script
 
@@ -5515,32 +5485,19 @@ function updateUiClockDisplay() {
     if (closeBtn) {
       closeBtn.style.display = canDismiss ? 'flex' : 'none';
     }
-    // Reset transient save progress, eye-toggle mask states & sensitive password fields on reopen
-    omniPwdRevealed = false;
-    omniPwdCachedValue = '';
-    if (typeof syncOmniPwdDisplay === 'function') syncOmniPwdDisplay();
     updateSaveLaunchProgress({ status: 'idle', message: '', progress: null, phase: '' });
-    ['keyGemini', 'keyAdminPassword', 'keyAdminPasswordConfirm'].forEach((id) => {
-      const inp = document.getElementById(id);
-      if (inp) inp.type = 'password';
-    });
+    const keyGeminiInput = document.getElementById('keyGemini');
+    if (keyGeminiInput) {
+      keyGeminiInput.type = 'password';
+      keyGeminiInput.value = '';
+    }
     if (modal) {
       modal.querySelectorAll('.setup-eye-btn.active').forEach((btn) => {
         btn.classList.remove('active');
         btn.title = 'Show Key';
       });
     }
-    const keyGeminiInput = document.getElementById('keyGemini');
-    const pwInput = document.getElementById('keyAdminPassword');
-    const pwConfirm = document.getElementById('keyAdminPasswordConfirm');
-    if (keyGeminiInput) keyGeminiInput.value = '';
-    if (pwInput) pwInput.value = '';
-    if (pwConfirm) pwConfirm.value = '';
-    if (typeof updateAdminPasswordStrength === 'function') updateAdminPasswordStrength('');
-    const curInst = window.__runtimeInstallStatus && window.__runtimeInstallStatus.status;
-    if (curInst !== 'downloading-node' && curInst !== 'installing-omniroute') {
-      setWizardBanner('');
-    }
+    setWizardBanner('');
     if (modal) {
       modal.style.display = 'flex';
       modal.classList.remove('wizard-closing');
@@ -5550,59 +5507,16 @@ function updateUiClockDisplay() {
       syncAppShellInert();
     }
 
-    // Pre-populate configured providers from bridge
-    const provIdMap = {
-      gemini: 'Gemini'
-    };
-
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
       window.pywebview.api.get_setup_status().then((res) => {
         if (openGen !== wizardOpenGen || !isWizardOpen) return;
         if (res && res.status === 'ok') {
-          const configured = res.configured_providers || [];
-          Object.entries(provIdMap).forEach(([pKey, domId]) => {
-            const stEl = document.getElementById(`status${domId}`);
-            if (stEl) {
-              if (configured.includes(pKey)) {
-                stEl.innerHTML = '<span class="setup-status-pill valid">Connected</span>';
-              } else {
-                stEl.innerHTML = '<span class="setup-status-pill neutral">Not added</span>';
-              }
-            }
-          });
-
-          // The backend never sends the password value: only whether a
-          // custom password is configured. The badge always shows a mask
-          // (item 7); the real password lives in ~/.omniroute/.env.
-          omniPwdRevealed = false;
-          omniPwdCachedValue = '';
-          if (typeof syncOmniPwdDisplay === 'function') syncOmniPwdDisplay();
-          const pwdEl = document.getElementById('omniConsolePwd');
-          if (pwdEl) {
-            const pwdSpan = pwdEl.querySelector('span') || pwdEl;
-            pwdSpan.textContent = '********';
-            pwdEl.title = res.omniroute_password_configured
-              ? 'Custom admin password configured in ~/.omniroute/.env'
-              : 'No admin password set - set one below to protect the gateway console';
+          const stEl = document.getElementById('statusGemini');
+          if (stEl) {
+            stEl.innerHTML = res.gemini_key_configured
+              ? '<span class="setup-status-pill valid">Connected</span>'
+              : '<span class="setup-status-pill neutral">Not added</span>';
           }
-
-          if (typeof res.gateway_port === 'number') {
-            window.__tradebotGatewayPort = res.gateway_port;
-          }
-
-          // Admin password card (item 10 A1): required on first run and for
-          // installs still on the built-in default password; blank keeps the
-          // existing password when one is already configured.
-          window.__adminPasswordRequired = !!res.admin_password_required;
-          const adminStatus = document.getElementById('statusAdminPassword');
-          if (adminStatus) {
-            adminStatus.innerHTML = res.omniroute_password_configured
-              ? '<span class="setup-status-pill valid">Set</span>'
-              : '<span class="setup-status-pill neutral">Not Set - Required</span>';
-          }
-
-          applyGatewayAvailability(res);
-          updateRuntimeInstallBanner(res.runtime_install_status, true);
         }
       }).catch((e) => console.debug('get_setup_status err:', e));
     }
@@ -5612,12 +5526,7 @@ function updateUiClockDisplay() {
     wizardOpenGen += 1;
     isCheckingWizardClose = false;
     const keyGeminiInput = document.getElementById('keyGemini');
-    const pwInput = document.getElementById('keyAdminPassword');
-    const pwConfirm = document.getElementById('keyAdminPasswordConfirm');
     if (keyGeminiInput) keyGeminiInput.value = '';
-    if (pwInput) pwInput.value = '';
-    if (pwConfirm) pwConfirm.value = '';
-    if (typeof updateAdminPasswordStrength === 'function') updateAdminPasswordStrength('');
     const modal = document.getElementById('setupWizardModal');
     if (modal) {
       modal.classList.remove('wizard-visible');
@@ -5662,101 +5571,6 @@ function updateUiClockDisplay() {
     }
   }
 
-  let omniPwdRevealed = false;
-  let omniPwdCachedValue = '';
-
-  function syncOmniPwdDisplay() {
-    const pwdBadge = document.getElementById('omniConsolePwd');
-    const pwdText = document.getElementById('omniConsolePwdText');
-    const eyeBtn = document.getElementById('btnToggleOmniPwd');
-    if (pwdText && (!pwdBadge || !pwdBadge._copiedTimer)) {
-      pwdText.textContent = (omniPwdRevealed && omniPwdCachedValue) ? omniPwdCachedValue : '********';
-    }
-    if (pwdBadge && !pwdBadge._copiedTimer) {
-      pwdBadge.classList.toggle('pwd-revealed', Boolean(omniPwdRevealed && omniPwdCachedValue));
-    }
-    if (eyeBtn) {
-      eyeBtn.classList.toggle('is-revealed', omniPwdRevealed);
-      eyeBtn.setAttribute('aria-pressed', omniPwdRevealed ? 'true' : 'false');
-      eyeBtn.setAttribute('aria-label', omniPwdRevealed ? 'Hide password' : 'Show password');
-      eyeBtn.title = omniPwdRevealed ? 'Hide password' : 'Show password';
-    }
-  }
-
-  function flashOmniPwdBadge(text, isSuccess) {
-    const pwdBadge = document.getElementById('omniConsolePwd');
-    const pwdText = document.getElementById('omniConsolePwdText');
-    if (!pwdBadge) return;
-    if (pwdBadge._copiedTimer) clearTimeout(pwdBadge._copiedTimer);
-    if (pwdText) {
-      pwdText.textContent = text;
-    } else {
-      pwdBadge.textContent = text;
-    }
-    pwdBadge.classList.remove('pwd-revealed');
-    pwdBadge.classList.toggle('pwd-copied', Boolean(isSuccess));
-    pwdBadge._copiedTimer = setTimeout(() => {
-      pwdBadge._copiedTimer = undefined;
-      pwdBadge.classList.remove('pwd-copied');
-      syncOmniPwdDisplay();
-    }, 2000);
-  }
-
-  function toggleOmniPasswordVisibility() {
-    if (omniPwdRevealed) {
-      omniPwdRevealed = false;
-      omniPwdCachedValue = '';
-      syncOmniPwdDisplay();
-      return;
-    }
-    const onUnavailable = () => {
-      omniPwdRevealed = false;
-      omniPwdCachedValue = '';
-      syncOmniPwdDisplay();
-      flashOmniPwdBadge('not set', false);
-    };
-    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.reveal_omniroute_password === 'function') {
-      window.pywebview.api.reveal_omniroute_password().then((res) => {
-        if (res && res.status === 'ok' && typeof res.password === 'string' && res.password.length > 0) {
-          omniPwdCachedValue = res.password;
-          omniPwdRevealed = true;
-          syncOmniPwdDisplay();
-        } else {
-          onUnavailable();
-        }
-      }, onUnavailable);
-      return;
-    }
-    onUnavailable();
-  }
-
-  function copyOmniPassword() {
-    // The clipboard copy stays server-side via copy_omniroute_password:
-    // clicking the badge copies the admin password and flashes "copied!"
-    // on the badge itself, then restores either the masked or revealed text.
-    const showEnvHint = () => {
-      flashOmniPwdBadge('copy failed', false);
-      if (typeof showChartToast === 'function') {
-        showChartToast({ triggerReason: 'Console password saved', action: 'INFO' });
-      }
-    };
-    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.copy_omniroute_password === 'function') {
-      window.pywebview.api.copy_omniroute_password().then((res) => {
-        if (res && res.status === 'ok') {
-          flashOmniPwdBadge('copied!', true);
-          if (typeof showChartToast === 'function') showChartToast({ triggerReason: 'copied!', action: 'COPY' });
-        } else {
-          showEnvHint();
-        }
-      }, showEnvHint);
-      return;
-    }
-    showEnvHint();
-  }
-
-  window.copyOmniPassword = copyOmniPassword;
-  window.toggleOmniPasswordVisibility = toggleOmniPasswordVisibility;
-
   function handleWizardOverlayClick(e) {
     if (e && e.target && e.target.id === 'setupWizardModal') {
       const closeBtn = document.getElementById('btnWizardClose');
@@ -5766,114 +5580,17 @@ function updateUiClockDisplay() {
     }
   }
 
-  // Wizard dismiss paths (X button / overlay click / Escape) must confirm
-  // first. While an install is running the cancel-install prompt warns
-  // that closing would interrupt the download; otherwise the dedicated
-  // wizard-close prompt warns that the typed API key / password will not
-  // be saved. Save & Skip close the wizard directly and never warn --
-  // the install keeps running behind them.
+  // Wizard dismiss paths (X button / overlay click / Escape) warn that
+  // any typed API key has not been saved yet.
   function requestCloseSetupWizardModal() {
-    if (isSavingGateway || !isWizardOpen || isCheckingWizardClose) return;
+    if (isSavingSetup || !isWizardOpen || isCheckingWizardClose) return;
     const closeBtn = document.getElementById('btnWizardClose');
     if (closeBtn && closeBtn.style.display === 'none') return;
-    const myGen = wizardOpenGen;
-    const decide = (st) => {
-      if (myGen !== wizardOpenGen || !isWizardOpen || isSavingGateway) return;
-      if (st === 'downloading-node' || st === 'installing-omniroute') {
-        openInstallCancelConfirm();
-      } else {
-        openWizardCloseConfirm();
-      }
-    };
-    const cached = window.__runtimeInstallStatus;
-    if (cached && (cached.status === 'downloading-node' || cached.status === 'installing-omniroute')) {
-      decide(cached.status);
-      return;
-    }
-    // Fresh lock-only check (no TCP/HTTP/filesystem I/O): avoids stalling on close.
-    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_runtime_install_status === 'function') {
-      isCheckingWizardClose = true;
-      window.pywebview.api.get_runtime_install_status().then((res) => {
-        const s = res ? res.status : null;
-        decide(s);
-      }).catch(() => decide(cached ? cached.status : null))
-        .finally(() => { isCheckingWizardClose = false; });
-    } else if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
-      isCheckingWizardClose = true;
-      window.pywebview.api.get_setup_status().then((res) => {
-        const s = (res && res.runtime_install_status) ? res.runtime_install_status.status : null;
-        decide(s);
-      }).catch(() => decide(cached ? cached.status : null))
-        .finally(() => { isCheckingWizardClose = false; });
-    } else {
-      decide(cached ? cached.status : null);
-    }
+    openWizardCloseConfirm();
   }
 
-  function openInstallCancelConfirm() {
-    if (installCancelCloseTimer) { clearTimeout(installCancelCloseTimer); installCancelCloseTimer = null; }
-    blurActiveFocus();
-    const modal = document.getElementById('installCancelConfirmModal');
-    if (modal) {
-      modal.style.display = 'flex';
-      modal.classList.remove('modal-closing');
-      void modal.offsetWidth;
-      modal.classList.add('modal-visible');
-      syncAppShellInert();
-    }
-  }
-
-  function closeInstallCancelConfirm() {
-    const modal = document.getElementById('installCancelConfirmModal');
-    if (modal) {
-      modal.classList.remove('modal-visible');
-      modal.classList.add('modal-closing');
-      syncAppShellInert();
-      if (installCancelCloseTimer) clearTimeout(installCancelCloseTimer);
-      installCancelCloseTimer = setTimeout(() => {
-        installCancelCloseTimer = null;
-        if (!modal.classList.contains('modal-visible')) {
-          modal.style.display = 'none';
-          modal.classList.remove('modal-closing');
-        }
-      }, 1250);
-    }
-  }
-
-  function handleInstallCancelOverlayClick(e) {
-    if (e && e.target && e.target.id === 'installCancelConfirmModal') {
-      closeInstallCancelConfirm();
-    }
-  }
-
-  async function confirmCancelInstallAndClose() {
-    stopRuntimeInstallPoll();
-    try {
-      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.cancel_gateway_runtime_install === 'function') {
-        await window.pywebview.api.cancel_gateway_runtime_install();
-      }
-    } catch (err) {
-      console.debug('cancel install err:', err);
-    }
-    stopRuntimeInstallPoll();
-    window.__runtimeInstallStatus = { status: 'cancelled', message: '', progress: null, phase: '' };
-    const btn = document.getElementById('btnInstallGatewayRuntime');
-    if (btn) btn.disabled = false;
-    const progWrap = document.getElementById('setupInstallProgressWrap');
-    const fill = document.getElementById('setupInstallProgressFill');
-    if (progWrap) progWrap.classList.remove('is-open');
-    if (fill) {
-      fill.classList.remove('indeterminate');
-      fill.style.width = '0%';
-    }
-    closeInstallCancelConfirm();
-    closeSetupWizardModal();
-  }
-
-  // Wizard-close confirmation (no install running): a dedicated dialog,
-  // separate from the shutdown prompt and the cancel-install prompt. It
-  // warns that the API key / password typed in the wizard will not be
-  // saved. Confirming closes the wizard; dismissing stays on the wizard.
+  // Wizard-close confirmation: warns that the unsaved API key typed in the
+  // wizard will not be saved.
   function openWizardCloseConfirm() {
     if (wizardCloseConfirmCloseTimer) { clearTimeout(wizardCloseConfirmCloseTimer); wizardCloseConfirmCloseTimer = null; }
     blurActiveFocus();
@@ -5929,161 +5646,9 @@ function updateUiClockDisplay() {
     if (wrap) wrap.classList.add('is-open');
   }
 
-  let runtimeInstallPollTimer = null;
-  let runtimeInstallPollGen = 0;
-  let runtimeInstallPollInFlight = false;
   let saveLaunchPollTimer = null;
   let saveLaunchPollGen = 0;
   let saveLaunchPollInFlight = false;
-
-  function stopRuntimeInstallPoll() {
-    runtimeInstallPollGen += 1;
-    runtimeInstallPollInFlight = false;
-    if (runtimeInstallPollTimer) { clearInterval(runtimeInstallPollTimer); runtimeInstallPollTimer = null; }
-  }
-
-  function ensureRuntimeInstallPoll() {
-    if (runtimeInstallPollTimer) return;
-    const pollGen = ++runtimeInstallPollGen;
-    runtimeInstallPollTimer = setInterval(() => {
-      if (runtimeInstallPollInFlight || pollGen !== runtimeInstallPollGen) return;
-      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
-        runtimeInstallPollInFlight = true;
-        window.pywebview.api.get_setup_status().then((r) => {
-          if (pollGen !== runtimeInstallPollGen) return;
-          if (r && r.status === 'ok') {
-            applyGatewayAvailability(r);
-            updateRuntimeInstallBanner(r.runtime_install_status);
-          }
-        }).catch((e) => console.debug('install poll err:', e))
-          .finally(() => { runtimeInstallPollInFlight = false; });
-      }
-    }, 5000);
-  }
-
-  // Gateway availability (item 10 A4): display live detected environment
-  // status (Node.js & OmniRoute) and smoothly expand/collapse the missing
-  // component note + one-click install button to fit content with zero gap.
-  function applyGatewayAvailability(res) {
-    if (!res) return;
-    if (typeof res.gateway_port === 'number') {
-      window.__tradebotGatewayPort = res.gateway_port;
-    }
-    const nodeOk = !!res.node_available;
-    const omniOk = !!res.omniroute_installed;
-
-    const nodePill = document.getElementById('envNodePill');
-    if (nodePill) {
-      nodePill.className = `setup-status-pill ${nodeOk ? 'valid' : 'neutral'}`;
-      nodePill.textContent = nodeOk ? 'Detected' : 'Not installed';
-      nodePill.title = nodeOk
-        ? 'Node.js is already detected on this machine and will not be re-downloaded'
-        : 'Node.js will be downloaded automatically if needed';
-    }
-    const omniPill = document.getElementById('envOmniRoutePill');
-    if (omniPill) {
-      omniPill.className = `setup-status-pill ${omniOk ? 'valid' : 'neutral'}`;
-      omniPill.textContent = omniOk ? 'Installed' : 'Not installed';
-      omniPill.title = omniOk
-        ? 'OmniRoute is already installed on this machine and will not be re-downloaded'
-        : 'OmniRoute needs a one-time installation (~2.6 GB)';
-    }
-
-    const actionWrap = document.getElementById('gatewayRuntimeActionWrap');
-    const gwNote = document.getElementById('gatewayUnavailableNote');
-    const gwBtn = document.getElementById('btnInstallGatewayRuntime');
-    const showAction = !!res.gateway_unavailable_reason;
-    if (gwNote) {
-      gwNote.textContent = showAction
-        ? (res.gateway_unavailable_reason + ' The arena still works in Pure Math mode meanwhile.')
-        : '';
-    }
-    if (gwBtn) {
-      const btnSpan = gwBtn.querySelector('span') || gwBtn;
-      if (!nodeOk && !omniOk) {
-        btnSpan.textContent = 'Install Node.js & OmniRoute';
-      } else if (nodeOk && !omniOk) {
-        btnSpan.textContent = 'Install OmniRoute';
-      } else if (!nodeOk && omniOk) {
-        btnSpan.textContent = 'Install Node.js';
-      } else {
-        btnSpan.textContent = 'Install Node.js & OmniRoute';
-      }
-    }
-    if (actionWrap) {
-      actionWrap.classList.toggle('is-open', showAction);
-    }
-  }
-
-  function updateRuntimeInstallBanner(statusObj, fromOpen = false) {
-    if (!statusObj) return;
-    const st = statusObj.status || 'idle';
-    const msg = statusObj.message || '';
-    const pct = (typeof statusObj.progress === 'number') ? statusObj.progress : null;
-    // Latest install state, so the close warning can decide without
-    // waiting for the next poll (the poll runs every 5 s).
-    window.__runtimeInstallStatus = { status: st, message: msg, progress: pct, phase: statusObj.phase || '' };
-    const progWrap = document.getElementById('setupInstallProgressWrap');
-    const prog = document.getElementById('setupInstallProgress');
-    const fill = document.getElementById('setupInstallProgressFill');
-    const showBar = (st === 'downloading-node' || st === 'installing-omniroute');
-    if (progWrap) progWrap.classList.toggle('is-open', showBar);
-    if (prog) {
-      if (showBar && fill) {
-        if (pct !== null) {
-          fill.classList.remove('indeterminate');
-          fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
-          prog.setAttribute('aria-valuenow', String(pct));
-        } else {
-          // No trustworthy percent available (e.g. download without
-          // Content-Length): show an honest indeterminate bar, never a
-          // fabricated number.
-          fill.classList.add('indeterminate');
-          fill.style.width = '40%';
-          prog.removeAttribute('aria-valuenow');
-        }
-      } else if (!showBar && fill) {
-        fill.classList.remove('indeterminate');
-      }
-    }
-    if (showBar) {
-      const btn = document.getElementById('btnInstallGatewayRuntime');
-      if (btn) btn.disabled = true;
-      ensureRuntimeInstallPoll();
-    }
-    if (st === 'idle') return;
-    if (fromOpen && (st === 'done' || st === 'failed' || st === 'cancelled')) {
-      stopRuntimeInstallPoll();
-      const btn = document.getElementById('btnInstallGatewayRuntime');
-      if (btn) btn.disabled = false;
-      return;
-    }
-    if (st === 'done') {
-      setWizardBanner(msg || 'OmniRoute installed.', 'success');
-      stopRuntimeInstallPoll();
-      refreshGatewayAvailability();
-    } else if (st === 'failed') {
-      setWizardBanner(msg || 'Installation failed.', 'error');
-      stopRuntimeInstallPoll();
-      const btn = document.getElementById('btnInstallGatewayRuntime');
-      if (btn) btn.disabled = false;
-    } else if (st === 'cancelled') {
-      setWizardBanner(msg || 'Installation cancelled.', 'info');
-      stopRuntimeInstallPoll();
-      const btn = document.getElementById('btnInstallGatewayRuntime');
-      if (btn) btn.disabled = false;
-      refreshGatewayAvailability();
-    } else {
-      // In progress: append the percent when the backend has one and
-      // the message does not already embed it (e.g. OmniRoute ETA messages).
-      const bannerText = pct !== null
-        ? (new RegExp('(?:^|\\D)' + pct + '%').test(msg)
-          ? msg
-          : ((msg || 'Installing...') + ' ' + pct + '%'))
-        : (msg || 'Installing...');
-      setWizardBanner(bannerText, 'info');
-    }
-  }
 
   function stopSaveLaunchPoll() {
     saveLaunchPollGen += 1;
@@ -6102,9 +5667,8 @@ function updateUiClockDisplay() {
     const progWrap = document.getElementById('setupSaveProgressWrap');
     const prog = document.getElementById('setupSaveProgress');
     const fill = document.getElementById('setupSaveProgressFill');
-    const inProgress = (st === 'saving-password' || st === 'syncing-keys' ||
-      st === 'saving-config' || st === 'restarting-gateway' ||
-      st === 'connecting-gateway' || st === 'starting-gateway' ||
+    const inProgress = (st === 'syncing-keys' ||
+      st === 'saving-config' || st === 'verifying-ai' ||
       st === 'starting-engine');
     const showBar = inProgress || st === 'done';
     if (progWrap) progWrap.classList.toggle('is-open', showBar);
@@ -6122,41 +5686,6 @@ function updateUiClockDisplay() {
     if (st === 'done' || st === 'failed' || st === 'idle') return;
     if (inProgress) {
       setWizardBanner(pct !== null ? (msg + ' ' + pct + '%') : (msg || 'Saving...'), 'info');
-    }
-  }
-
-  function refreshGatewayAvailability() {
-    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
-      window.pywebview.api.get_setup_status().then((res) => {
-        if (res && res.status === 'ok') applyGatewayAvailability(res);
-      }).catch((e) => console.debug('refresh gateway availability err:', e));
-    }
-  }
-
-  async function installGatewayRuntime() {
-    const btn = document.getElementById('btnInstallGatewayRuntime');
-    if (btn) btn.disabled = true;
-    setWizardBanner('Starting installation in the background...', 'info');
-    try {
-      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.install_gateway_runtime === 'function') {
-        const res = await window.pywebview.api.install_gateway_runtime();
-        if (res && res.ok) {
-          setWizardBanner(res.message || 'Installation started in the background.', 'info');
-          stopRuntimeInstallPoll();
-          ensureRuntimeInstallPoll();
-          if (typeof window.pywebview.api.get_runtime_install_status === 'function') {
-            window.pywebview.api.get_runtime_install_status()
-              .then((st) => { if (st) updateRuntimeInstallBanner(st); })
-              .catch(() => { });
-          }
-        } else {
-          setWizardBanner((res && res.message) ? res.message : 'Could not start the installation.', 'error');
-          if (btn) btn.disabled = false;
-        }
-      }
-    } catch (err) {
-      setWizardBanner(`Encountered error: ${err}`, 'error');
-      if (btn) btn.disabled = false;
     }
   }
 
@@ -6208,46 +5737,22 @@ function updateUiClockDisplay() {
     }
   }
 
-  async function saveAndLaunchGateway() {
-    if (isSavingGateway) return;
+  async function saveAndLaunch() {
+    if (isSavingSetup) return;
     const saveBtn = document.getElementById('btnSaveAndLaunch');
 
     const keys = {
       gemini: (document.getElementById('keyGemini')?.value || '').trim(),
     };
 
-    // Admin password (item 10 A1): required when the backend says so, or
-    // whenever the user typed one (changing it). Blank keeps the existing
-    // password when one is already configured.
-    const adminPw = (document.getElementById('keyAdminPassword')?.value || '');
-    const adminPwConfirm = (document.getElementById('keyAdminPasswordConfirm')?.value || '');
-    if (window.__adminPasswordRequired || adminPw || adminPwConfirm) {
-      if (adminPw.length < 8) {
-        setWizardBanner('Admin password must be at least 8 characters.', 'error');
-        return;
-      }
-      if (adminPw !== adminPwConfirm) {
-        setWizardBanner('Admin password and confirmation do not match.', 'error');
-        return;
-      }
-    }
-
-    isSavingGateway = true;
+    isSavingSetup = true;
     if (saveBtn) {
       saveBtn.disabled = true;
       saveBtn.innerHTML = '<span>Saving &amp; Launching...</span>';
     }
-    setWizardBanner('Connecting AI services...', 'info');
+    setWizardBanner('Saving Gemini API key...', 'info');
 
-    // Save progress: show the bar immediately, then poll the backend
-    // stage (~500 ms) while the synchronous bridge call runs, so the
-    // user sees which step is running. The bar only reaches 100% when
-    // the call actually returns ok.
-    updateSaveLaunchProgress(
-      adminPw
-        ? { status: 'saving-password', message: 'Saving password...', progress: 0, phase: 'password' }
-        : { status: 'syncing-keys', message: 'Connecting AI services...', progress: 0, phase: 'keys' }
-    );
+    updateSaveLaunchProgress({ status: 'syncing-keys', message: 'Saving Gemini API key...', progress: 0, phase: 'keys' });
     if (saveLaunchPollTimer) clearInterval(saveLaunchPollTimer);
     const pollGen = ++saveLaunchPollGen;
     saveLaunchPollInFlight = false;
@@ -6263,21 +5768,16 @@ function updateUiClockDisplay() {
     }, 500);
 
     try {
-      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.save_and_launch_gateway === 'function') {
-        const res = await window.pywebview.api.save_and_launch_gateway(keys, adminPw || null);
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.save_and_launch === 'function') {
+        const res = await window.pywebview.api.save_and_launch(keys);
         if (res && res.ok) {
           stopSaveLaunchPoll();
-          omniPwdRevealed = false;
-          omniPwdCachedValue = '';
-          if (typeof syncOmniPwdDisplay === 'function') syncOmniPwdDisplay();
           updateSaveLaunchProgress({ status: 'done', message: res.message || 'Credentials saved successfully!', progress: 100, phase: '' });
           hasCompletedSetup = true;
           setWizardBanner(res.message || 'Credentials saved successfully!', 'success');
           setTimeout(() => {
             closeSetupWizardModal();
             if (!splashCompleted) {
-              // No jump-start: the splash begins at its real starting
-              // point and advances by real milestones.
               startSplashSequence(false);
             } else {
               if (typeof showChartToast === 'function') {
@@ -6287,7 +5787,7 @@ function updateUiClockDisplay() {
                   action: 'READY',
                   symbol: 'ETH/USD',
                   price: livePrice,
-                  triggerReason: 'AI services connected',
+                  triggerReason: res.ai_online ? 'Gemini AI connected' : 'Settings saved',
                   timestamp: Date.now()
                 });
               }
@@ -6295,8 +5795,8 @@ function updateUiClockDisplay() {
           }, 400);
         } else {
           stopSaveLaunchPoll();
-          updateSaveLaunchProgress({ status: 'failed', message: (res && res.message) || 'Failed to launch gateway', progress: null, phase: '' });
-          setWizardBanner((res && res.message) ? res.message : 'Failed to launch gateway', 'error');
+          updateSaveLaunchProgress({ status: 'failed', message: (res && res.message) || 'Failed to save Gemini setup', progress: null, phase: '' });
+          setWizardBanner((res && res.message) ? res.message : 'Failed to save Gemini setup', 'error');
         }
       } else {
         stopSaveLaunchPoll();
@@ -6315,7 +5815,7 @@ function updateUiClockDisplay() {
       updateSaveLaunchProgress({ status: 'failed', message: `Encountered error: ${err}`, progress: null, phase: '' });
       setWizardBanner(`Encountered error: ${err}`, 'error');
     } finally {
-      isSavingGateway = false;
+      isSavingSetup = false;
       stopSaveLaunchPoll();
       if (saveBtn) {
         saveBtn.disabled = false;
@@ -6331,7 +5831,7 @@ function updateUiClockDisplay() {
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_setup_status === 'function') {
       window.pywebview.api.get_setup_status().then((res) => {
         if (res && res.status === 'ok') {
-          if ((!res.onboarding_completed && !res.skip_ai_mode) || res.admin_password_required) {
+          if (!res.onboarding_completed && !res.skip_ai_mode) {
             openSetupWizardModal(false);
           }
         }
@@ -6343,7 +5843,7 @@ function updateUiClockDisplay() {
     if (e.key === 'Escape') {
       // Dismiss topmost visible modal strictly in descending z-index order:
       // #commandPaletteModal (10006) > #shutdownModal (10005) > #wizardCloseConfirmModal (10003) >
-      // #installCancelConfirmModal (10002) > #setupWizardModal (10001) > #resetConfirmModal (9999)
+      // #setupWizardModal (10001) > #resetConfirmModal (9999)
       const cmdModal = document.getElementById('commandPaletteModal');
       if (cmdModal && cmdModal.classList.contains('modal-visible')) {
         closeCommandPalette();
@@ -6357,11 +5857,6 @@ function updateUiClockDisplay() {
       const wizardCloseModal = document.getElementById('wizardCloseConfirmModal');
       if (wizardCloseModal && wizardCloseModal.classList.contains('modal-visible')) {
         closeWizardCloseConfirm();
-        return;
-      }
-      const cancelModal = document.getElementById('installCancelConfirmModal');
-      if (cancelModal && cancelModal.classList.contains('modal-visible')) {
-        closeInstallCancelConfirm();
         return;
       }
       if (isWizardOpen) {
@@ -6453,41 +5948,6 @@ function updateUiClockDisplay() {
         }
       });
     }
-  }
-
-  function updateAdminPasswordStrength(rawValue) {
-    const wrap = document.getElementById('adminPwdStrengthWrap');
-    const bar = document.getElementById('adminPwdStrengthBar');
-    const txt = document.getElementById('adminPwdStrengthText');
-    if (!wrap || !txt) return;
-    if (bar && !bar._initialized) bar._initialized = true;
-
-    const val = String(rawValue == null ? '' : rawValue);
-    let level = 0;
-    let label = 'Min 8 chars';
-    if (val.length > 0 && val.length < 8) {
-      level = 1;
-      label = `${8 - val.length} more chars`;
-    } else if (val.length >= 8) {
-      let score = 1;
-      if (/[a-z]/.test(val) && /[A-Z]/.test(val)) score += 1;
-      if (/\d/.test(val)) score += 1;
-      if (/[^A-Za-z0-9]/.test(val) || val.length >= 14) score += 1;
-      level = Math.min(4, Math.max(1, score));
-      const labels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
-      label = labels[level] || 'Fair';
-    }
-    wrap.setAttribute('data-level', String(level));
-    if (txt.textContent !== label) txt.textContent = label;
-  }
-
-  function initAdminPasswordStrength() {
-    const pwInput = document.getElementById('keyAdminPassword');
-    if (!pwInput) return;
-    pwInput.addEventListener('input', () => {
-      updateAdminPasswordStrength(pwInput.value || '');
-    });
-    updateAdminPasswordStrength(pwInput.value || '');
   }
 
   function updateScrollAreaFades(el) {
@@ -6661,9 +6121,8 @@ function updateUiClockDisplay() {
       { id: 'evolve', group: 'Trading Control', title: 'Trigger Evolution Now', sub: 'Run tournament selection & genome crossover', kbd: 'E', run: () => triggerEvolution() },
       { id: 'scale', group: 'Chart', title: 'Toggle Chart Scale Mode (Focus / Full)', sub: 'Zoom on candle range or include distant brackets', kbd: 'F', run: () => setScaleMode(scaleMode === 'auto' ? 'full' : 'auto') },
       { id: 'refresh_intel', group: 'Intelligence', title: 'Refresh News Analysis', sub: 'Synthesize latest multi-domain macro digest', kbd: '', run: () => requestAiIntelDigest() },
-      { id: 'console', group: 'Intelligence', title: 'Launch OmniRoute Console', sub: 'Open gateway admin console in browser', kbd: '', run: () => openOmniRouteConsole() },
       { id: 'backdrop', group: 'Appearance', title: `Cycle Backdrop Mode (${modeLabel})`, sub: 'Switch between HorizonX WebGL Shader, Grainient WebP, and Minimal Obsidian', kbd: '', run: () => cycleBackdropMode() },
-      { id: 'settings', group: 'System', title: 'Open AI Services Setup', sub: 'Configure Gemini API key & gateway credentials', kbd: '', run: () => openSetupWizardModal(true) },
+      { id: 'settings', group: 'System', title: 'Open AI Services Setup', sub: 'Configure Google Gemini API key', kbd: '', run: () => openSetupWizardModal(true) },
       { id: 'fullscreen', group: 'System', title: 'Toggle Fullscreen', sub: 'Expand or restore desktop window', kbd: 'F11', run: () => toggleFullscreen() },
       { id: 'shortcuts', group: 'Help', title: 'View Keyboard Shortcuts Cheat Sheet', sub: 'Inspect all hotkeys and navigation keys', kbd: '?', run: () => { openCommandPalette('shortcuts'); return false; } },
       { id: 'reset', group: 'Danger', title: 'Reset Quant Arena Session', sub: 'Open confirmation dialog to reset $100k ledgers', kbd: '', run: () => requestResetArena() },

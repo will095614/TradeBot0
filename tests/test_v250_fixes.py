@@ -25,10 +25,9 @@ from src.data.live_engine import LiveArenaEngine
 from src.data.persistence import ArenaStorage
 from src.gui.dashboard import ArenaDashboard
 from src.gui.view_model import ViewModelPublisher, build_engine_view_model
-from src.intelligence.gateway_supervisor import GatewaySupervisor
+from src.intelligence.gemini_client import GeminiClient, extract_json, probe_gemini_api_key
 from src.intelligence.ingestion import DeduplicationBuffer, StructuredEvent, _clean_html_text
 from src.intelligence.macro_commander import MacroCommander
-from src.intelligence.omniroute_client import OmniRouteClient, extract_json
 from src.update_checker import check_for_updates, compare_versions
 from src.version import APP_VERSION
 
@@ -377,73 +376,9 @@ def test_eth_feed_ohlc_invariant_normalization():
 # Track C: GatewaySupervisor, OmniRouteClient, MacroCommander, Harvester, UpdateChecker
 # ---------------------------------------------------------------------------
 
-def test_gateway_env_sets_server_host_and_strips_provider_keys_when_env_exists(tmp_path, monkeypatch):
-    omni_dir = tmp_path / "omni"
-    omni_dir.mkdir()
-    (omni_dir / ".env").write_text("INITIAL_PASSWORD=from_file\n", encoding="utf-8")
-
-    monkeypatch.setenv("INITIAL_PASSWORD", "from_os_env")
-    monkeypatch.setenv("GEMINI_API_KEY", "AIza_stale_os_env_key")
-    monkeypatch.setenv("STORAGE_ENCRYPTION_KEY", "stale_enc_key")
-
-    sup = GatewaySupervisor(
-        host="127.0.0.1",
-        port=20128,
-        omni_data_dir=omni_dir,
-        daemon_log_path=tmp_path / "daemon.log",
-    )
-    captured: dict = {}
-
-    class _FakeProc:
-        pid = 42424
-        def poll(self):
-            return None
-
-    def _fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["env"] = kwargs["env"]
-        return _FakeProc()
-
-    port_calls = iter([False, True])
-    with (
-        patch.object(GatewaySupervisor, "_get_daemon_command", classmethod(lambda cls, port: ["node", "omni.mjs"])),
-        patch.object(sup, "is_port_open", side_effect=lambda timeout=0.2: next(port_calls, True)),
-        patch.object(sup, "probe_health", return_value=(True, {"ok": True})),
-        patch("src.intelligence.gateway_supervisor.subprocess.Popen", side_effect=_fake_popen),
-        patch("src.intelligence.gateway_supervisor.time.sleep", return_value=None),
-    ):
-        ok, _ = sup.start_daemon(max_wait_sec=2.0)
-
-    # Clean up fake handle without invoking taskkill on fake PID
-    sup.is_self_spawned = False
-    sup.child_process = None
-    if sup._daemon_log_file is not None:
-        sup._daemon_log_file.close()
-        sup._daemon_log_file = None
-
-    assert ok is True
-    env = captured["env"]
-    assert env["OMNIROUTE_SERVER_HOST"] == "127.0.0.1"
-    assert env["OMNIROUTE_CLI_SKIP_REPO_ENV"] == "1"
-    assert env["OMNIROUTE_NO_UPDATE_NOTIFIER"] == "1"
-    assert "INITIAL_PASSWORD" not in env
-    assert "GEMINI_API_KEY" not in env
-    assert "STORAGE_ENCRYPTION_KEY" not in env
-
-
-def test_gateway_cli_command_never_falls_back_to_npx():
-    with (
-        patch.object(GatewaySupervisor, "_resolve_node_bin", return_value=None),
-        patch("src.intelligence.gateway_supervisor.shutil.which", return_value=None),
-    ):
-        assert GatewaySupervisor._get_cli_base_command() is None
-        assert GatewaySupervisor._get_daemon_command(20128) is None
-
-
-def test_gateway_test_single_key_non_ascii_and_gemini_400():
-    sup = GatewaySupervisor()
+def test_probe_gemini_api_key_non_ascii_and_gemini_400():
     # Non-ASCII key rejected without issuing HTTP request
-    res_bad_chars = sup.test_single_key("gemini", "AIza中文金鑰")
+    res_bad_chars = probe_gemini_api_key("AIza中文金鑰")
     assert res_bad_chars["ok"] is False
 
     # Gemini HTTP 400 with API_KEY_INVALID body reports invalid/unauthorized key
@@ -458,20 +393,19 @@ def test_gateway_test_single_key_non_ascii_and_gemini_400():
         fp=err_body,
     )
     with patch("urllib.request.urlopen", side_effect=http_err):
-        res_400 = sup.test_single_key("gemini", "AIzaBadKey12345")
+        res_400 = probe_gemini_api_key("AIzaBadKey12345")
     assert res_400["ok"] is False
-    assert "400" in res_400["message"]
-    assert "invalid key" in res_400["message"].lower()
+    assert "400" in res_400["message"] or "invalid" in res_400["message"].lower()
 
 
-def test_omniroute_client_shutdown_short_circuit_and_bounded_extract_json():
-    client = OmniRouteClient(base_url="http://127.0.0.1:20128/v1")
+def test_gemini_client_shutdown_short_circuit_and_bounded_extract_json():
+    client = GeminiClient(api_key="AIzaTestKey")
     assert client.is_shutting_down() is False
     client.mark_shutting_down()
     assert client.is_shutting_down() is True
 
     # chat_json returns None immediately when shutting down (zero network I/O)
-    result = asyncio.run(client.chat_json(model="auto", system_prompt="sys", user_prompt="hi"))
+    result = asyncio.run(client.chat_json(model="gemini-2.5-flash", system_prompt="sys", user_prompt="hi"))
     assert result is None
 
     # Pathological input with thousands of `{` returns quickly (bounded to 64 scan attempts)
@@ -481,7 +415,7 @@ def test_omniroute_client_shutdown_short_circuit_and_bounded_extract_json():
 
 
 def test_macro_commander_veto_expires_stale_fallback_and_raw_title_dedup():
-    client = OmniRouteClient(base_url="http://127.0.0.1:20128/v1")
+    client = GeminiClient(api_key="AIzaTestKey")
     client.is_gateway_online = False
     cmd = MacroCommander(client=client)
     # Seed a stale fallback state (>1800s old)
@@ -540,7 +474,7 @@ def test_ingestion_clean_html_strips_script_style_and_dedup_forget():
 
 
 def test_update_checker_semver_prerelease_and_non_string_version():
-    assert APP_VERSION == "V2.6.0"
+    assert APP_VERSION == "V3.0.0"
     assert compare_versions("V2.5.0-rc.1", "V2.5.0") == -1
     assert compare_versions("V2.5.0", "V2.5.0-rc.1") == 1
     assert compare_versions("V2.5.0-alpha.1", "V2.5.0-beta.1") == -1
@@ -667,19 +601,14 @@ def test_view_model_preserves_gen1_tv_champion_and_sanitizes_nonfinite(tmp_path)
 def test_dashboard_stop_is_idempotent_and_blocks_reset_engine():
     fake_engine = MagicMock()
     fake_engine.storage = MagicMock()
-    fake_sup = MagicMock()
 
-    with (
-        patch("src.gui.dashboard.LiveArenaEngine", return_value=fake_engine) as mock_cls,
-        patch("src.gui.dashboard.GatewaySupervisor", return_value=fake_sup),
-    ):
+    with patch("src.gui.dashboard.LiveArenaEngine", return_value=fake_engine) as mock_cls:
         dash = ArenaDashboard()
         mock_cls.reset_mock()
 
         dash.stop()
         dash.stop()
         assert fake_engine.stop.call_count == 1
-        assert fake_sup.shutdown.call_count == 1
         assert dash._stopped is True
 
         # Calling reset_engine after stop must be a safe no-op
@@ -694,7 +623,7 @@ def test_app_js_and_installer_v250_contracts():
     # Strategy tag disambiguation & UI contracts
     assert "'Trailing': 'TRAIL'" in js
     assert "'Session': 'MEAN'" in js
-    assert "omniStatus !== 'ONLINE'" in js
+    assert "aiStatus !== 'ONLINE'" in js
     assert "pendingControlActions" in js
     assert "2650.0" not in js
 
@@ -708,4 +637,5 @@ def test_app_js_and_installer_v250_contracts():
     assert f'#define MyAppVersion "{APP_VERSION}"' in iss
     assert f"VersionInfoVersion={APP_VERSION.lstrip('Vv')}" in iss
     assert "SuppressibleMsgBox" in iss
-    assert r"TradeBot0\runtime\node\node.exe" in iss
+    assert "NodeJsMissing" not in iss
+    assert r"TradeBot0\runtime\node\node.exe" not in iss

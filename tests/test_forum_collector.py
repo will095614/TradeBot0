@@ -18,7 +18,7 @@ from src.intelligence.ingestion import (
     parse_stocktwits_stream,
 )
 from src.intelligence.macro_commander import MacroCommander
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import GeminiClient
 
 
 def _stream_json(symbol, latest_id, bodies):
@@ -120,7 +120,7 @@ def _registry_mock_get(url, headers=None, timeout=None):
 
 
 def test_fetch_from_registry_dispatches_by_type_and_skips_forum():
-    client = OmniRouteClient()
+    client = GeminiClient()
     harvester = IntelligenceHarvester(client=client)
     with patch("requests.get", side_effect=_registry_mock_get):
         events = harvester.fetch_from_registry()
@@ -138,7 +138,7 @@ def test_fetch_from_registry_dispatches_by_type_and_skips_forum():
 
 def test_fetch_live_feeds_still_returns_test_fixtures():
     """ARENA_FAST_TEST=1 (conftest) still returns the 2 marked fixtures."""
-    client = OmniRouteClient()
+    client = GeminiClient()
     harvester = IntelligenceHarvester(client=client)
     events = harvester.fetch_live_feeds()
     assert len(events) == 2

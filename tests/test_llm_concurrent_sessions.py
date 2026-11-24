@@ -19,7 +19,7 @@ import threading
 import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import GeminiClient
 
 _STATE = {}
 _STATE_LOCK = threading.Lock()
@@ -29,7 +29,7 @@ class _StubGateway(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
-        prompt = body["messages"][-1]["content"]
+        prompt = body["contents"][-1]["parts"][0]["text"]
         with _STATE_LOCK:
             _STATE["active"] += 1
             _STATE["peak"] = max(_STATE["peak"], _STATE["active"])
@@ -38,8 +38,8 @@ class _StubGateway(BaseHTTPRequestHandler):
             threading.Event().wait(0.35)
             content = json.dumps({"reply": prompt})
             payload = json.dumps({
-                "choices": [{"message": {"content": content}}],
-                "usage": {"total_tokens": 3},
+                "candidates": [{"content": {"parts": [{"text": content}]}}],
+                "usageMetadata": {"totalTokenCount": 3},
             }).encode("utf-8")
         finally:
             with _STATE_LOCK:
@@ -62,8 +62,8 @@ def test_four_threads_expand_concurrently_without_closing_each_other():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     port = server.server_address[1]
-    client = OmniRouteClient(
-        base_url=f"http://127.0.0.1:{port}/v1", api_key="test-key", timeout_sec=15.0
+    client = GeminiClient(
+        base_url=f"http://127.0.0.1:{port}/v1beta", api_key="test-key", timeout_sec=15.0
     )
     barrier = threading.Barrier(4)
     results = {}
@@ -71,7 +71,7 @@ def test_four_threads_expand_concurrently_without_closing_each_other():
 
     async def _one(index: int):
         try:
-            return await client.chat_json("test/model", "sys", f"req-{index}")
+            return await client.chat_json("gemini-3.1-flash-lite", "sys", f"req-{index}")
         finally:
             # Exactly what _run_article_with_cleanup does per expansion.
             await client.close_loop_session()

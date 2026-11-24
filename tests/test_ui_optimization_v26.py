@@ -45,10 +45,9 @@ def test_phase0_to_4_ui_hooks_present():
         'id="lgAmbientShaderCanvas"',
         'id="lgAmbientGrainient"',
         'id="commandPaletteModal"',
-        'id="omniTokenMeter"',
+        'id="aiTokenMeter"',
         'id="intelSearchInput"',
         'id="intelDomainChips"',
-        'id="adminPwdStrengthWrap"',
         'id="resetSlideTrack"',
         'id="viewStageHost"',
         'id="hudVesselChampCard"',
@@ -86,7 +85,6 @@ def test_phase0_to_4_ui_hooks_present():
         ".intel-search-wrap",
         ".intel-chip",
         ".scroll-area-faded",
-        ".pwd-strength-wrap",
         ".lg-ambient-grainient",
         ".lg-ambient-shader",
     ):
@@ -102,7 +100,6 @@ def test_phase0_to_4_ui_hooks_present():
         "function syncToastStackLayout(",
         "function openCommandPalette(",
         "function initResetSlideConfirm(",
-        "function updateAdminPasswordStrength(",
         "function initScrollAreaFades(",
         "function mountSilverStreamAmbient(",
     ):

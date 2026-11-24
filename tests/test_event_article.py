@@ -150,13 +150,13 @@ def test_concurrent_expands_merge_into_one_llm_call():
     assert client.chat_json.await_count == 1
 
 
-def test_gateway_offline_returns_failure_without_llm():
+def test_ai_offline_returns_failure_without_llm():
     commander, client = _make_commander(chat_result={"article": ARTICLE_TEXT}, online=False)
     evt_id = _event_id(commander)
     res = commander.get_event_article(evt_id)
     assert res["ok"] is False
     assert res["state"] == "failed"
-    assert "gateway" in res["reason"].lower()
+    assert "ai" in res["reason"].lower()
     assert client.chat_json.await_count == 0
     evt = commander.curated_events[0]
     assert evt["article"] is None

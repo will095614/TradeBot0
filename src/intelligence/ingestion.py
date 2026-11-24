@@ -21,7 +21,7 @@ import weakref
 import xml.etree.ElementTree as ET
 import aiohttp
 
-from src.intelligence.omniroute_client import OmniRouteClient
+from src.intelligence.gemini_client import GeminiClient
 
 logger = logging.getLogger(__name__)
 
@@ -798,7 +798,7 @@ class IntelligenceHarvester:
 
     def __init__(
         self,
-        client: OmniRouteClient,
+        client: GeminiClient,
         dedup_buffer: Optional[DeduplicationBuffer] = None,
         on_urgent_interrupt: Optional[Callable[[Any], Coroutine[Any, Any, None]]] = None,
     ) -> None:
