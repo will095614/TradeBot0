@@ -141,23 +141,28 @@ def main() -> None:
         if not check_and_ensure_environment():
             return
         _set_windows_app_user_model_id()
-        app = ArenaDashboard(initial_cash=Decimal("100000.00"))
         import atexit
         import time
-        atexit.register(app.stop)
+        app: Optional[ArenaDashboard] = None
         try:
+            app = ArenaDashboard(initial_cash=Decimal("100000.00"))
+            atexit.register(app.stop)
             app.run()
+        except Exception:
+            logger.exception("Fatal unhandled error in TradeBot0")
+            raise
         finally:
             close_native_splash()
             logger.info("Exiting TradeBot0 process cleanly...")
-            try:
-                app.stop()
-            except Exception as e:
-                logger.debug("Clean shutdown encountered error: %s", e)
-            try:
-                atexit.unregister(app.stop)
-            except Exception:
-                pass
+            if app is not None:
+                try:
+                    app.stop()
+                except Exception as e:
+                    logger.debug("Clean shutdown encountered error: %s", e)
+                try:
+                    atexit.unregister(app.stop)
+                except Exception:
+                    pass
             import gc
             import os
             for h in list(logging.getLogger().handlers):

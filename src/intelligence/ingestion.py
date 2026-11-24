@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple, Union
 import weakref
@@ -814,6 +815,35 @@ class IntelligenceHarvester:
         self.is_running: bool = False
         self._harvest_task: Optional[asyncio.Task] = None
         self._interrupt_tasks: Set[asyncio.Task] = set()
+        self._http_session: Any = None
+        self._http_session_lock = threading.Lock()
+        self._orig_requests_get: Any = None
+
+    def _get_pooled_session(self) -> Tuple[Any, Any]:
+        import requests
+        from requests.adapters import HTTPAdapter
+
+        with self._http_session_lock:
+            if self._orig_requests_get is None:
+                import requests.api as _req_api
+                self._orig_requests_get = _req_api.get
+            if self._http_session is None:
+                sess = requests.Session()
+                adapter = HTTPAdapter(pool_connections=16, pool_maxsize=16)
+                sess.mount("https://", adapter)
+                sess.mount("http://", adapter)
+                self._http_session = sess
+            return self._http_session, self._orig_requests_get
+
+    def close(self) -> None:
+        """Closes pooled HTTP feed session if open."""
+        with self._http_session_lock:
+            sess, self._http_session = self._http_session, None
+        if sess is not None:
+            try:
+                sess.close()
+            except Exception:
+                pass
 
     def _spawn_interrupt(self, coro: Coroutine[Any, Any, Any]) -> None:
         task = asyncio.create_task(coro)
@@ -830,6 +860,8 @@ class IntelligenceHarvester:
             pass
         return fallback_iso
 
+    _MAX_FEED_BYTES = 2 * 1024 * 1024
+
     @staticmethod
     def _fetch_registry_entry(
         entry: Dict[str, Any],
@@ -837,38 +869,70 @@ class IntelligenceHarvester:
         timeout_sec: float,
         max_age_hours: Optional[float] = DEFAULT_MAX_ARTICLE_AGE_HOURS,
         fetch_now: Optional[float] = None,
+        session: Any = None,
+        orig_requests_get: Any = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> List[RawEvent]:
         """Fetch + parse ONE registry entry (worker side, no shared state).
 
-        Pure per-entry work: one requests.get plus the type-dispatched
-        parser. Deliberately does NOT touch self.dedup -- dedup runs
-        sequentially in the caller, in registry order, so parallel
-        fetching cannot change event order or dedup outcomes. Stale
-        dated articles beyond max_age_hours are dropped, and remaining
-        per-source items are sorted newest-first before capping at
-        max_per_source. Any failure yields [] (never fatal).
+        Reuses a pooled requests.Session when requests.get is unpatched and enforces
+        a 2 MiB body cap plus cooperative stop_event cancellation.
         """
+        if stop_event is not None and stop_event.is_set():
+            return []
         import requests
 
         etype = str(entry.get("type", ""))
         ua = SEC_EDGAR_USER_AGENT if entry.get("id") == "sec_edgar_8k" else USER_AGENT
         ref_now = time.time() if fetch_now is None else float(fetch_now)
         resp = None
+        use_pool = (
+            session is not None
+            and orig_requests_get is not None
+            and requests.get is orig_requests_get
+        )
         try:
-            resp = requests.get(
-                entry["url"], headers={"User-Agent": ua}, timeout=timeout_sec
-            )
+            if use_pool:
+                resp = session.get(
+                    entry["url"], headers={"User-Agent": ua}, timeout=timeout_sec, stream=True
+                )
+            else:
+                resp = requests.get(
+                    entry["url"], headers={"User-Agent": ua}, timeout=timeout_sec
+                )
             if resp.status_code != 200:
                 logger.debug("Registry feed %s returned HTTP %d", entry.get("id"), resp.status_code)
                 return []
-            if etype in ("rss", "atom"):
-                raw_xml = resp.content if isinstance(getattr(resp, "content", None), (bytes, bytearray)) else resp.text
-                parsed = parse_rss_atom(raw_xml, entry["name"], entry["domain"], tier=int(entry.get("tier", 2)))
-            elif etype == "rest_json":
-                parsed = parse_polymarket_events(resp.json())
+            if use_pool and hasattr(resp, "iter_content"):
+                buf = bytearray()
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if stop_event is not None and stop_event.is_set():
+                        return []
+                    if not chunk:
+                        continue
+                    rem = IntelligenceHarvester._MAX_FEED_BYTES - len(buf)
+                    if rem <= 0:
+                        break
+                    buf.extend(chunk[:rem])
+                raw_bytes = bytes(buf)
+                if etype in ("rss", "atom"):
+                    parsed = parse_rss_atom(raw_bytes, entry["name"], entry["domain"], tier=int(entry.get("tier", 2)))
+                elif etype == "rest_json":
+                    parsed = parse_polymarket_events(json.loads(raw_bytes.decode("utf-8", errors="replace")))
+                else:
+                    logger.debug("Unknown registry feed type %r for %s, skipped", etype, entry.get("id"))
+                    return []
             else:
-                logger.debug("Unknown registry feed type %r for %s, skipped", etype, entry.get("id"))
-                return []
+                if etype in ("rss", "atom"):
+                    raw_xml = resp.content if isinstance(getattr(resp, "content", None), (bytes, bytearray)) else resp.text
+                    if isinstance(raw_xml, (bytes, bytearray, str)) and len(raw_xml) > IntelligenceHarvester._MAX_FEED_BYTES:
+                        raw_xml = raw_xml[:IntelligenceHarvester._MAX_FEED_BYTES]
+                    parsed = parse_rss_atom(raw_xml, entry["name"], entry["domain"], tier=int(entry.get("tier", 2)))
+                elif etype == "rest_json":
+                    parsed = parse_polymarket_events(resp.json())
+                else:
+                    logger.debug("Unknown registry feed type %r for %s, skipped", etype, entry.get("id"))
+                    return []
 
             if max_age_hours is not None and max_age_hours > 0:
                 max_age_sec = float(max_age_hours) * 3600.0
@@ -893,40 +957,53 @@ class IntelligenceHarvester:
         max_per_source: int = 5,
         timeout_sec: float = 3.5,
         max_age_hours: Optional[float] = DEFAULT_MAX_ARTICLE_AGE_HOURS,
+        stop_event: Optional[threading.Event] = None,
     ) -> List[RawEvent]:
         """
         Registry-driven fetch (item 12B): every entry in FEED_REGISTRY is a
-        no-login source (user rule 2026-11-13), dispatched by its `type`:
-        rss/atom -> parse_rss_atom, rest_json -> parse_polymarket_events.
-        `stocktwits` entries are owned by ForumCollector (forum batch, own
-        cadence) and are explicitly skipped here, so the same stream is
-        never scored twice per digest. Unknown types are skipped, never
-        fatal: one dead source must not take down the whole digest.
-
-        Fetches all active registry entries concurrently (ThreadPoolExecutor,
-        up to 10 workers), filters out stale items older than max_age_hours,
-        dedups in registry round-robin order, and ranks newest-first with
-        per-batch source diversity so fresh breaking news lands in events[:6].
+        no-login source (user rule 2026-11-13), dispatched by its `type`.
         """
+        if stop_event is not None and stop_event.is_set():
+            return []
         fetchable = [e for e in FEED_REGISTRY if str(e.get("type", "")) != "stocktwits"]
         if not fetchable:
             return []
         fetch_now = time.time()
         max_age_sec = float(max_age_hours) * 3600.0 if (max_age_hours is not None and max_age_hours > 0) else None
         workers = min(10, len(fetchable))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            per_entry = list(
-                pool.map(
-                    lambda entry: self._fetch_registry_entry(
-                        entry,
-                        max_per_source,
-                        timeout_sec,
-                        max_age_hours=max_age_hours,
-                        fetch_now=fetch_now,
-                    ),
-                    fetchable,
+        sess, orig_get = self._get_pooled_session()
+        per_entry: List[List[RawEvent]] = []
+        pool = ThreadPoolExecutor(max_workers=workers)
+        aborted = False
+        try:
+            futs = [
+                pool.submit(
+                    self._fetch_registry_entry,
+                    entry,
+                    max_per_source,
+                    timeout_sec,
+                    max_age_hours=max_age_hours,
+                    fetch_now=fetch_now,
+                    session=sess,
+                    orig_requests_get=orig_get,
+                    stop_event=stop_event,
                 )
-            )
+                for entry in fetchable
+            ]
+            for fut in futs:
+                if stop_event is not None and stop_event.is_set():
+                    aborted = True
+                    break
+                try:
+                    per_entry.append(fut.result())
+                except Exception:
+                    per_entry.append([])
+        finally:
+            should_fast_cancel = aborted or (stop_event is not None and stop_event.is_set())
+            pool.shutdown(wait=not should_fast_cancel, cancel_futures=True)
+
+        if should_fast_cancel:
+            return []
 
         fresh_events: List[RawEvent] = []
         max_len = max((len(p) for p in per_entry), default=0)
@@ -952,31 +1029,24 @@ class IntelligenceHarvester:
         max_per_source: int = 5,
         timeout_sec: float = 3.5,
         max_age_hours: Optional[float] = DEFAULT_MAX_ARTICLE_AGE_HOURS,
+        stop_event: Optional[threading.Event] = None,
     ) -> List[RawEvent]:
         """
         Fetches genuine live RSS news items from multi-domain feeds over HTTP.
         Returns newly discovered, deduplicated RawEvents ranked newest-first.
         """
         if os.environ.get("ARENA_FAST_TEST") == "1":
-            # Test fixture only: clearly marked synthetic data for the test
-            # suite (conftest sets ARENA_FAST_TEST=1). Never presented as
-            # real news: source is "Test Feed" and titles carry a [TEST]
-            # marker, so these events can never be mistaken for genuine
-            # intelligence in the veto pipeline (item 6).
             now = time.time()
             return [
                 RawEvent(source="Test Feed", domain="crypto", title="[TEST] Ethereum L2 Scaling Inflows Rise 15%", url="https://coindesk.com", timestamp=now),
                 RawEvent(source="Test Feed", domain="macro", title="[TEST] Fed Reiterates Rate Path Stability in Policy Note", url="https://forexlive.com", timestamp=now),
             ]
 
-        # Registry-driven fetch (item 12B): the 4 previously hardcoded RSS
-        # sources are registry entries now (Decrypt included); the single
-        # source of truth is FEED_REGISTRY, which holds no-login sources
-        # only (user rule 2026-11-13).
         return self.fetch_from_registry(
             max_per_source=max_per_source,
             timeout_sec=timeout_sec,
             max_age_hours=max_age_hours,
+            stop_event=stop_event,
         )
 
     def push_raw_events(self, raw_events: List[RawEvent]) -> List[RawEvent]:
@@ -1056,9 +1126,15 @@ class IntelligenceHarvester:
                     raw_idx = item.get("index", pos)
                     idx = (int(raw_idx) - 1) if raw_idx is not None else (pos - 1)
                     resolved_idx = idx if (0 <= idx < len(batch)) else min(pos - 1, len(batch) - 1)
+                    if resolved_idx in processed_indices:
+                        continue
                     raw = batch[resolved_idx]
                     raw_urg = item.get("urgency_score")
-                    urg_val = int(float(raw_urg)) if raw_urg is not None else 5
+                    if raw_urg is not None:
+                        urg_f = float(raw_urg)
+                        urg_val = int(urg_f) if math.isfinite(urg_f) else 5
+                    else:
+                        urg_val = 5
                     urgency = max(1, min(10, urg_val))
                     raw_sent = item.get("sentiment_score")
                     sent_val = float(raw_sent) if raw_sent is not None else 0.0
@@ -1077,12 +1153,17 @@ class IntelligenceHarvester:
                     raw_headline_zh = str(item.get("headline_zh") or "").strip()
                     raw_summary = str(item.get("summary") or "").strip()
 
-                    fallback_head_zh, fallback_sum_zh = self._build_zh_headline_and_summary(
-                        raw.title, raw.raw_content, raw.source, raw.domain, urgency, sentiment, tickers
-                    )
-
-                    headline_zh = raw_headline_zh if self._contains_cjk(raw_headline_zh) else fallback_head_zh
-                    summary = raw_summary if self._contains_cjk(raw_summary) else fallback_sum_zh
+                    has_head_cjk = self._contains_cjk(raw_headline_zh)
+                    has_sum_cjk = self._contains_cjk(raw_summary)
+                    if has_head_cjk and has_sum_cjk:
+                        headline_zh = raw_headline_zh
+                        summary = raw_summary
+                    else:
+                        fallback_head_zh, fallback_sum_zh = self._build_zh_headline_and_summary(
+                            raw.title, raw.raw_content, raw.source, raw.domain, urgency, sentiment, tickers
+                        )
+                        headline_zh = raw_headline_zh if has_head_cjk else fallback_head_zh
+                        summary = raw_summary if has_sum_cjk else fallback_sum_zh
 
                     se = StructuredEvent(
                         timestamp=self._event_iso_ts(raw.timestamp, iso_now),
@@ -1324,5 +1405,7 @@ class IntelligenceHarvester:
 
     def get_latest_events(self, count: int = 30) -> List[StructuredEvent]:
         """Returns the most recent structured events."""
+        if count <= 0:
+            return []
         return list(self.recent_structured_events)[-count:]
 

@@ -187,6 +187,16 @@ class MacroRegimeState:
     status: str = "ONLINE"  # "ONLINE", "STANDBY", "OFFLINE"
     latest_event: Optional[Dict[str, Any]] = None
 
+    @staticmethod
+    def _fmt_local_hms(raw_ts: Any) -> str:
+        try:
+            ts_f = float(raw_ts)
+            if not math.isfinite(ts_f) or ts_f <= 0.0:
+                return ""
+            return time.strftime("%H:%M:%S", time.localtime(ts_f))
+        except (TypeError, ValueError, OSError, OverflowError):
+            return ""
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "regime": self.regime,
@@ -194,9 +204,9 @@ class MacroRegimeState:
             "risk_multiplier": round(self.risk_multiplier, 2),
             "active_headline": self.active_headline,
             "confidence": round(self.confidence, 2),
-            "last_synthesis_time": time.strftime("%H:%M:%S", time.localtime(self.last_synthesis_ts)) if self.last_synthesis_ts else "",
+            "last_synthesis_time": self._fmt_local_hms(self.last_synthesis_ts),
             "fallback": self.fallback,
-            "fallback_since": time.strftime("%H:%M:%S", time.localtime(self.fallback_since_ts)) if self.fallback_since_ts else "",
+            "fallback_since": self._fmt_local_hms(self.fallback_since_ts),
             "weighted_sentiment": round(self.weighted_sentiment, 3),
             "weighted_urgency": round(self.weighted_urgency, 2),
             "weighted_coverage": round(self.weighted_coverage, 2),
@@ -387,7 +397,18 @@ class MacroCommander:
             return self.current_state
         try:
             self._set_sync_stage("fetching", "Fetching live news feeds")
-            raw_events = await asyncio.to_thread(self.harvester.fetch_live_feeds, 5, 4.0)
+            _fetch_fn = self.harvester.fetch_live_feeds
+            try:
+                _fparams = inspect.signature(_fetch_fn).parameters
+                _f_accepts_stop = "stop_event" in _fparams or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in _fparams.values()
+                )
+            except (TypeError, ValueError):
+                _f_accepts_stop = False
+            if _f_accepts_stop and stop_event is not None:
+                raw_events = await asyncio.to_thread(_fetch_fn, 5, 4.0, stop_event=stop_event)
+            else:
+                raw_events = await asyncio.to_thread(_fetch_fn, 5, 4.0)
             if _shutting_down():
                 return self.current_state
             structured_all: List[StructuredEvent] = []
@@ -439,6 +460,11 @@ class MacroCommander:
         if not ai_healthy:
             with self._events_lock:
                 self._expire_fallback_if_stale(time.time())
+                has_curated = bool(self.curated_events)
+            # Intentional Pure-Math standby (no key configured) with an active digest should stay "done".
+            if not getattr(self.client, "api_key", None) and has_curated:
+                self._set_sync_stage("done", "Pure-Math Standby active", percent=100)
+                return self.current_state
             self._set_sync_stage("failed", "AI unreachable")
             return self.current_state
 
@@ -506,36 +532,40 @@ class MacroCommander:
 
         return asyncio.run(_wrapped())
 
+    @staticmethod
+    def _safe_int(val: Any, default: int = 0) -> int:
+        if isinstance(val, bool):
+            return default
+        try:
+            f = float(val)
+            return int(f) if math.isfinite(f) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+
     def get_intel_hub_telemetry(self) -> Dict[str, Any]:
         """
         Returns complete intelligence diagnostic telemetry for the Macro Intel Hub panel.
         Honest metrics: reports 0 tokens when total_requests is 0.
         """
         is_online = bool(getattr(self.client, "is_gateway_online", False))
-        total_reqs = getattr(self.client, "total_requests", 0)
-        total_reqs = int(total_reqs) if isinstance(total_reqs, (int, float)) else 0
-        raw_used = getattr(self.client, "total_tokens_used", 0)
-        tokens_used = int(raw_used) if isinstance(raw_used, (int, float)) else 0
-        raw_saved = getattr(self.client, "total_tokens_saved", 0)
-        tokens_saved = int(raw_saved) if isinstance(raw_saved, (int, float)) else 0
-        raw_hits = getattr(self.client, "total_dedup_hits", 0)
-        dedup_hits = int(raw_hits) if isinstance(raw_hits, (int, float)) else 0
-
-        status_text = "ONLINE" if is_online else "STANDBY"
-
-        # Unknown quota is reported as None, never as a fabricated 100.0%
-        # (item 6). The frontend already treats a non-number as unknown.
+        # Read quota percentage first so any midnight rollover zeroes total_tokens_used consistently.
         quota_pct: Optional[float] = None
         if hasattr(self.client, "get_quota_pct") and callable(self.client.get_quota_pct):
             try:
                 q_val = self.client.get_quota_pct()
-                if isinstance(q_val, (int, float)):
-                    quota_pct = float(q_val)
+                if isinstance(q_val, (int, float)) and not isinstance(q_val, bool):
+                    q_f = float(q_val)
+                    if math.isfinite(q_f):
+                        quota_pct = q_f
             except Exception as e:
                 logger.debug("Failed to read quota from client: %s", e)
-        # P0-B / F4: no fallback estimate. The old `elif` divided by a
-        # made-up 100000 denominator; with no user-set DAILY_TOKEN_QUOTA
-        # the quota is unknown and stays None.
+
+        total_reqs = self._safe_int(getattr(self.client, "total_requests", 0))
+        tokens_used = self._safe_int(getattr(self.client, "total_tokens_used", 0))
+        tokens_saved = self._safe_int(getattr(self.client, "total_tokens_saved", 0))
+        dedup_hits = self._safe_int(getattr(self.client, "total_dedup_hits", 0))
+
+        status_text = "ONLINE" if is_online else "STANDBY"
 
         tot_tokens = tokens_used + tokens_saved
         dedup_pct = round((tokens_saved / tot_tokens) * 100.0, 1) if tot_tokens > 0 else 0.0
@@ -558,11 +588,11 @@ class MacroCommander:
                 "dedup_hits": dedup_hits,
                 "quota_throttled": throttled,
                 "digest_interval_sec": interval_sec,
-                "total_requests": int(getattr(self.client, "total_requests", 0)),
-                "successful_requests": int(getattr(self.client, "successful_requests", 0)),
-                "retried_requests": int(getattr(self.client, "retried_requests", 0)),
-                "failed_requests": int(getattr(self.client, "failed_requests", 0)),
-                "concurrency_limit": int(getattr(self.client, "max_concurrent", 25)),
+                "total_requests": total_reqs,
+                "successful_requests": self._safe_int(getattr(self.client, "successful_requests", 0)),
+                "retried_requests": self._safe_int(getattr(self.client, "retried_requests", 0)),
+                "failed_requests": self._safe_int(getattr(self.client, "failed_requests", 0)),
+                "concurrency_limit": self._safe_int(getattr(self.client, "max_concurrent", 25), 25),
             },
             "macro_state": self._telemetry_macro_state(),
             "events": self._telemetry_events(25),

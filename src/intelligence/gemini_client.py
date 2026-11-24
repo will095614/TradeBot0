@@ -9,6 +9,7 @@ import asyncio
 from datetime import date
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -454,12 +455,25 @@ class GeminiClient:
         self.model_ingest = resolve_gemini_model(model_ingest or os.getenv("LLM_MODEL_INGEST") or DEFAULT_GEMINI_MODEL)
         self.model_commander = resolve_gemini_model(model_commander or os.getenv("LLM_MODEL_COMMANDER") or DEFAULT_GEMINI_MODEL)
 
-        self.max_concurrent = max(1, int(os.getenv("LLM_MAX_CONCURRENT_REQUESTS", str(max_concurrent))))
-        self.timeout_sec = float(os.getenv("LLM_REQUEST_TIMEOUT_SEC", str(timeout_sec)))
-        self.max_retries = int(os.getenv("LLM_MAX_RETRIES", str(max_retries)))
+        try:
+            env_conc = int(os.getenv("LLM_MAX_CONCURRENT_REQUESTS", str(max_concurrent)))
+        except (TypeError, ValueError):
+            env_conc = int(max_concurrent)
+        self.max_concurrent = max(1, env_conc)
+
+        try:
+            env_to = float(os.getenv("LLM_REQUEST_TIMEOUT_SEC", str(timeout_sec)))
+        except (TypeError, ValueError):
+            env_to = float(timeout_sec)
+        self.timeout_sec = env_to if (math.isfinite(env_to) and env_to > 0.0) else max(1.0, float(timeout_sec))
+
+        try:
+            env_retries = int(os.getenv("LLM_MAX_RETRIES", str(max_retries)))
+        except (TypeError, ValueError):
+            env_retries = int(max_retries)
+        self.max_retries = max(0, env_retries)
 
         self._sem = asyncio.Semaphore(self.max_concurrent)
-        self._sem_loop: Optional[asyncio.AbstractEventLoop] = None
         self._sems: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
         self._session = session
         self._session_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -509,11 +523,24 @@ class GeminiClient:
         model_ingest: Optional[str] = None,
         model_commander: Optional[str] = None,
     ) -> None:
-        """Hot-updates active Gemini model identifiers."""
-        if model_ingest is not None:
-            self.model_ingest = resolve_gemini_model(model_ingest)
-        if model_commander is not None:
-            self.model_commander = resolve_gemini_model(model_commander)
+        """Hot-updates active Gemini model identifiers and clears stale per-model quota state on change."""
+        with self._quota_lock:
+            changed = False
+            if model_ingest is not None:
+                resolved_ingest = resolve_gemini_model(model_ingest)
+                if resolved_ingest != self.model_ingest:
+                    self.model_ingest = resolved_ingest
+                    changed = True
+            if model_commander is not None:
+                resolved_cmd = resolve_gemini_model(model_commander)
+                if resolved_cmd != self.model_commander:
+                    self.model_commander = resolved_cmd
+                    changed = True
+            if changed:
+                self._quota_failures.clear()
+                self._unattributed_quota_ts = None
+                self._rate_limit_until = 0.0
+                self.last_failure = None
 
     def _maybe_rollover_daily_quota_locked(self) -> None:
         today = date.today()
@@ -664,7 +691,6 @@ class GeminiClient:
                 if sem is None:
                     sem = asyncio.Semaphore(self.max_concurrent)
                     self._sems[current_loop] = sem
-                self._sem_loop = current_loop
                 self._sem = sem
                 return sem
         except RuntimeError:
@@ -688,12 +714,13 @@ class GeminiClient:
             return sess
 
     async def close_loop_session(self) -> None:
-        """Closes and forgets the aiohttp session owned by the current event loop."""
+        """Closes and forgets the aiohttp session and semaphore owned by the current event loop."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
         with self._sessions_lock:
+            self._sems.pop(loop, None)
             sess = self._sessions.pop(loop, None)
             if sess is not None and self._session is sess:
                 self._session = None
@@ -749,14 +776,19 @@ class GeminiClient:
         if self.is_shutting_down():
             self.is_gateway_online = False
             return False
-        if not self.api_key:
+        api_key = self.api_key
+        if not api_key:
+            self.is_gateway_online = False
+            return False
+        if not api_key.isascii():
+            self.note_failure({"kind": "auth", "provider": "gemini", "status": 401, "detail": "Non-ASCII API key"})
             self.is_gateway_online = False
             return False
         try:
             sess = await self.get_session()
             model_id = resolve_gemini_model(self.model_commander)
             url = f"{self.base_url}/models/{model_id}"
-            headers = {"x-goog-api-key": self.api_key, "Accept": "application/json"}
+            headers = {"x-goog-api-key": api_key, "Accept": "application/json"}
             async with sess.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=3.0)) as r:
                 if r.status == 200:
                     self.is_gateway_online = True
@@ -796,6 +828,41 @@ class GeminiClient:
             payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
         return payload
 
+    @staticmethod
+    async def _iter_sse_lines(content: Any, max_line_bytes: int = 4 * 1024 * 1024):
+        """Yields decoded SSE lines from an aiohttp StreamReader without the 64 KiB readline limit."""
+        if hasattr(content, "iter_any"):
+            buf = bytearray()
+            async for chunk in content.iter_any():
+                if not chunk:
+                    continue
+                if isinstance(chunk, str):
+                    chunk_bytes = chunk.encode("utf-8", errors="replace")
+                else:
+                    chunk_bytes = bytes(chunk)
+                buf.extend(chunk_bytes)
+                while True:
+                    nl_idx = buf.find(b"\n")
+                    if nl_idx == -1:
+                        break
+                    raw_line = bytes(buf[:nl_idx])
+                    del buf[:nl_idx + 1]
+                    if len(raw_line) > max_line_bytes:
+                        logger.warning("Gemini SSE line exceeded %d bytes; truncated", max_line_bytes)
+                        raw_line = raw_line[:max_line_bytes]
+                    yield raw_line.decode("utf-8", errors="replace").rstrip("\r")
+                if len(buf) > max_line_bytes:
+                    logger.warning("Gemini SSE frame exceeded %d bytes without newline", max_line_bytes)
+                    del buf[:-max_line_bytes]
+            if buf:
+                yield bytes(buf[:max_line_bytes]).decode("utf-8", errors="replace").rstrip("\r")
+            return
+        async for raw_line in content:
+            if isinstance(raw_line, (bytes, bytearray)):
+                yield bytes(raw_line).decode("utf-8", errors="replace").rstrip("\r\n")
+            else:
+                yield str(raw_line).rstrip("\r\n")
+
     async def chat_json(
         self,
         model: str,
@@ -821,6 +888,14 @@ class GeminiClient:
 
         if self.is_shutting_down():
             return None
+        api_key = self.api_key
+        if api_key and not api_key.isascii():
+            self.note_failure({"kind": "auth", "provider": "gemini", "status": 401, "detail": "Non-ASCII API key"})
+            self.is_gateway_online = False
+            self.total_requests += 1
+            self.failed_requests += 1
+            return None
+
         sess = await self.get_session()
         call_timeout = timeout_sec if timeout_sec is not None else self.timeout_sec
         resolved_model = resolve_gemini_model(model)
@@ -839,8 +914,8 @@ class GeminiClient:
             use_json_mode=not skip_json_mode,
         )
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["x-goog-api-key"] = self.api_key
+        if api_key:
+            headers["x-goog-api-key"] = api_key
 
         use_stream = bool(stream_progress)
         self.total_requests += 1
@@ -877,8 +952,6 @@ class GeminiClient:
                         err_body = None
                         if status != 200:
                             err_body = await self._read_error_body(resp)
-                        if status == 429:
-                            self.note_rate_limit(retry_after)
 
                         if status == 200:
                             ctype = str(resp.headers.get("Content-Type") or "").lower()
@@ -890,41 +963,79 @@ class GeminiClient:
                                 usage_obj: Any = None
                                 sse_error: Any = None
                                 _emit("analyzing", 32, "Analyzing market context")
-                                async for raw_line in resp.content:
+                                data_parts: List[str] = []
+
+                                def _consume_sse_frame(frame: Any) -> bool:
+                                    nonlocal usage_obj, sse_error, total_chars, last_pct
+                                    if not isinstance(frame, dict):
+                                        return False
+                                    if frame.get("error"):
+                                        sse_error = frame.get("error")
+                                        return True
+                                    if frame.get("usageMetadata"):
+                                        usage_obj = frame.get("usageMetadata")
+                                    elif frame.get("usage"):
+                                        usage_obj = frame.get("usage")
+                                    piece, _ = self._extract_gemini_text(frame)
+                                    if piece:
+                                        chunks.append(piece)
+                                        total_chars += len(piece)
+                                        frac = min(1.0, total_chars / float(target_chars))
+                                        pct = 32 + int(frac * 56)
+                                        if pct > last_pct:
+                                            last_pct = pct
+                                            if pct < 50:
+                                                _emit("analyzing", pct, "Analyzing market context")
+                                            elif pct < 74:
+                                                _emit("drafting", pct, "Drafting in-depth report")
+                                            else:
+                                                _emit("structuring", pct, "Structuring key takeaways")
+                                    return False
+
+                                async for raw_s in self._iter_sse_lines(resp.content):
                                     if self.is_shutting_down():
                                         return None
-                                    line = raw_line.decode("utf-8", errors="replace").strip()
-                                    if not line or line.startswith(":") or not line.startswith("data:"):
+                                    line = raw_s.strip()
+                                    if not line:
+                                        if data_parts:
+                                            joined = "\n".join(data_parts)
+                                            data_parts.clear()
+                                            if joined == "[DONE]":
+                                                break
+                                            try:
+                                                frame = json.loads(joined)
+                                            except Exception:
+                                                frame = None
+                                            if _consume_sse_frame(frame):
+                                                break
                                         continue
-                                    data_str = line[5:].strip()
-                                    if data_str == "[DONE]":
+                                    if line.startswith(":") or not line.startswith("data:"):
+                                        continue
+                                    seg = line[5:].strip()
+                                    if not data_parts and seg == "[DONE]":
+                                        break
+                                    data_parts.append(seg)
+                                    joined = "\n".join(data_parts)
+                                    if joined == "[DONE]":
+                                        data_parts.clear()
                                         break
                                     try:
-                                        frame = json.loads(data_str)
+                                        frame = json.loads(joined)
                                     except Exception:
                                         continue
-                                    if isinstance(frame, dict):
-                                        if frame.get("error"):
-                                            sse_error = frame.get("error")
-                                            break
-                                        if frame.get("usageMetadata"):
-                                            usage_obj = frame.get("usageMetadata")
-                                        elif frame.get("usage"):
-                                            usage_obj = frame.get("usage")
-                                        piece, _ = self._extract_gemini_text(frame)
-                                        if piece:
-                                            chunks.append(piece)
-                                            total_chars += len(piece)
-                                            frac = min(1.0, total_chars / float(target_chars))
-                                            pct = 32 + int(frac * 56)
-                                            if pct > last_pct:
-                                                last_pct = pct
-                                                if pct < 50:
-                                                    _emit("analyzing", pct, "Analyzing market context")
-                                                elif pct < 74:
-                                                    _emit("drafting", pct, "Drafting in-depth report")
-                                                else:
-                                                    _emit("structuring", pct, "Structuring key takeaways")
+                                    data_parts.clear()
+                                    if _consume_sse_frame(frame):
+                                        break
+
+                                if data_parts and sse_error is None:
+                                    joined = "\n".join(data_parts)
+                                    data_parts.clear()
+                                    if joined != "[DONE]":
+                                        try:
+                                            _consume_sse_frame(json.loads(joined))
+                                        except Exception:
+                                            pass
+
                                 if sse_error is not None:
                                     err_payload = sse_error if isinstance(sse_error, dict) else {"error": str(sse_error)}
                                     raw_code = err_payload.get("code", 500) if isinstance(err_payload, dict) else 500
@@ -932,27 +1043,49 @@ class GeminiClient:
                                         err_status = int(raw_code)
                                     except (TypeError, ValueError):
                                         err_status = 500
-                                    classification = classify_llm_error(err_status, {"error": err_payload})
+                                    sse_body = {"error": err_payload}
+                                    _, sse_delay = _extract_gemini_detail_signals(sse_body)
+                                    sse_retry = str(sse_delay) if sse_delay is not None else None
+                                    classification = classify_llm_error(err_status, sse_body, retry_after=sse_retry)
                                     self.note_failure(classification)
-                                    self.failed_requests += 1
-                                    logger.warning("Gemini 200 SSE emitted in-band error frame (%d): %s", err_status, str(sse_error)[:150])
-                                    return None
-                                content = "".join(chunks)
-                                if not content.strip():
-                                    self.failed_requests += 1
-                                    logger.warning("Gemini 200 SSE stream ended with empty content")
-                                    return None
-                                self.is_gateway_online = True
-                                self.note_success()
-                                if usage_obj is not None:
-                                    self._record_token_usage(usage_obj)
-                                _emit("parsing", 91, "Parsing & validating report")
-                                parsed = extract_json(content)
-                                if parsed is not None:
-                                    self.successful_requests += 1
-                                    return parsed
-                                logger.warning("Gemini 200 SSE returned unparseable content: %s", content[:150])
-                                need_repair = True
+                                    if err_status == 429:
+                                        self.note_rate_limit(sse_retry)
+                                    if classification.get("kind") == "auth":
+                                        self.is_gateway_online = False
+                                    if (
+                                        err_status in _RETRY_STATUSES
+                                        and classification.get("kind") != "quota"
+                                        and attempt < self.max_retries
+                                    ):
+                                        self.retried_requests += 1
+                                        retry_delay = compute_backoff(attempt, sse_retry)
+                                        _emit("retrying", 22, f"Gemini busy, retrying ({attempt + 1}/{self.max_retries})")
+                                        logger.warning(
+                                            "Gemini 200 SSE transient error (%d); backoff %.2fs",
+                                            err_status,
+                                            retry_delay,
+                                        )
+                                    else:
+                                        self.failed_requests += 1
+                                        logger.warning("Gemini 200 SSE emitted in-band error frame (%d): %s", err_status, str(sse_error)[:150])
+                                        return None
+                                else:
+                                    content = "".join(chunks)
+                                    if not content.strip():
+                                        self.failed_requests += 1
+                                        logger.warning("Gemini 200 SSE stream ended with empty content")
+                                        return None
+                                    self.is_gateway_online = True
+                                    self.note_success()
+                                    if usage_obj is not None:
+                                        self._record_token_usage(usage_obj)
+                                    _emit("parsing", 91, "Parsing & validating report")
+                                    parsed = extract_json(content)
+                                    if parsed is not None:
+                                        self.successful_requests += 1
+                                        return parsed
+                                    logger.warning("Gemini 200 SSE returned unparseable content: %s", content[:150])
+                                    need_repair = True
                             else:
                                 _emit("receiving", 72, "Receiving AI response")
                                 body = await self._parse_ok_json_body(resp)
@@ -1004,6 +1137,11 @@ class GeminiClient:
                             retry_format = True
                             logger.info("Model %s rejected responseMimeType (HTTP %d); retrying without JSON mode", resolved_model, status)
                         else:
+                            if status == 429:
+                                _, detail_delay = _extract_gemini_detail_signals(err_body)
+                                if detail_delay is not None and not retry_after:
+                                    retry_after = str(detail_delay)
+                                self.note_rate_limit(retry_after)
                             classification = classify_llm_error(
                                 status,
                                 err_body,
@@ -1011,10 +1149,8 @@ class GeminiClient:
                                 retry_after=retry_after,
                             )
                             self.note_failure(classification)
-                            if status == 429:
-                                _, detail_delay = _extract_gemini_detail_signals(err_body)
-                                if detail_delay is not None and not retry_after:
-                                    retry_after = str(detail_delay)
+                            if classification.get("kind") == "auth":
+                                self.is_gateway_online = False
                             if (
                                 status in _RETRY_STATUSES
                                 and classification.get("kind") != "quota"
@@ -1171,11 +1307,17 @@ class GeminiClient:
                         retry_after = resp.headers.get("Retry-After")
                         err_body = await self._read_error_body(resp)
                         if resp.status == 429:
+                            _, r_delay = _extract_gemini_detail_signals(err_body)
+                            if r_delay is not None and not retry_after:
+                                retry_after = str(r_delay)
                             self.note_rate_limit(retry_after)
-                        if resp.status in (401, 402, 403, 429):
-                            self.note_failure(classify_llm_error(
-                                resp.status, err_body, headers=dict(resp.headers), retry_after=retry_after
-                            ))
+                        r_class = classify_llm_error(
+                            resp.status, err_body, headers=dict(resp.headers), retry_after=retry_after
+                        )
+                        if r_class.get("kind") == "auth":
+                            self.is_gateway_online = False
+                        if resp.status in (401, 402, 403, 429) or r_class.get("kind") == "auth":
+                            self.note_failure(r_class)
                         return None
                     body = await self._parse_ok_json_body(resp)
                     if not isinstance(body, dict):
@@ -1196,8 +1338,11 @@ class GeminiClient:
         with self._sessions_lock:
             pairs = list(self._sessions.items())
             self._sessions.clear()
+            self._sems.clear()
             latest = self._session
             latest_loop = self._session_loop
+            self._session = None
+            self._session_loop = None
         if latest is not None and all(latest is not s for _, s in pairs):
             pairs.append((latest_loop, latest))
         return pairs
@@ -1212,15 +1357,12 @@ class GeminiClient:
                     await sess.close()
                 except Exception as e:
                     logger.debug("Failed to close session: %s", e)
-        self._session = None
-        self._session_loop = None
 
     def close_sync(self) -> None:
         if sys.is_finalizing():
             return
         pairs = self._all_sessions_with_loops()
         if not self._owns_session:
-            self._session = None
             return
         try:
             running_loop = asyncio.get_running_loop()
@@ -1243,8 +1385,6 @@ class GeminiClient:
                     asyncio.run(sess.close())
             except Exception as e:
                 logger.debug("Failed to close session synchronously: %s", e)
-        self._session = None
-        self._session_loop = None
 
     def __del__(self) -> None:
         if sys.is_finalizing():

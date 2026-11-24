@@ -44,7 +44,7 @@ from src.data.timemachine import (
     efficiency_ratio,
 )
 from src.data.ws_feed import StreamingCryptoFeed
-from src.gui.view_model import ViewModelPublisher, build_engine_view_model
+from src.gui.view_model import ViewModelPublisher, _clone_json_tree, build_engine_view_model
 from src.intelligence.gemini_client import GeminiClient
 from src.intelligence.macro_commander import MacroCommander, MacroRegimeState
 
@@ -1463,7 +1463,7 @@ class LiveArenaEngine(
         with self._snapshot_lock:
             snap = self._ui_state_snapshot
         if snap is not None:
-            return copy.deepcopy(snap)
+            return _clone_json_tree(snap)
         with self.lock:
             return self._build_snapshot_locked()
 

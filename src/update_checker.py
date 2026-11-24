@@ -90,6 +90,37 @@ def _is_date_version(parts: tuple) -> bool:
     return bool(parts) and 1900 <= parts[0] <= 2099
 
 
+_VALID_VERSION_RE = re.compile(
+    r"^[vV]?\s*\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
+
+
+def _compare_prerelease(left_pre: Optional[str], right_pre: Optional[str]) -> int:
+    """SemVer 2.0.0 §11.4 pre-release comparator."""
+    if left_pre is None and right_pre is None:
+        return 0
+    if left_pre is None:
+        return 1
+    if right_pre is None:
+        return -1
+    l_ids = [s.strip() for s in left_pre.split(".") if s.strip() != ""]
+    r_ids = [s.strip() for s in right_pre.split(".") if s.strip() != ""]
+    for li, ri in zip(l_ids, r_ids):
+        l_num = li.isdigit()
+        r_num = ri.isdigit()
+        if l_num and r_num:
+            lv, rv = int(li), int(ri)
+            if lv != rv:
+                return -1 if lv < rv else 1
+        elif l_num != r_num:
+            return -1 if l_num else 1
+        elif li != ri:
+            return -1 if li < ri else 1
+    if len(l_ids) == len(r_ids):
+        return 0
+    return -1 if len(l_ids) < len(r_ids) else 1
+
+
 def compare_versions(a: str, b: str) -> int:
     """Compares two version strings, returning -1, 0, or 1.
 
@@ -109,13 +140,13 @@ def compare_versions(a: str, b: str) -> int:
     def _parse(version: str) -> tuple[tuple[int, ...], Optional[str]]:
         text = (version or "").strip()
         if text.startswith(("v", "V")):
-            text = text[1:]
+            text = text[1:].strip()
         # Strip optional build metadata (+...) and split optional -prerelease suffix.
         text = text.split("+", 1)[0]
         core, _, prerelease = text.partition("-")
         parts = []
         for segment in core.split("."):
-            match = re.match(r"(\d+)", segment)
+            match = re.match(r"(\d+)", segment.strip())
             parts.append(int(match.group(1)) if match else 0)
         return tuple(parts), (prerelease.strip().lower() or None)
 
@@ -130,18 +161,7 @@ def compare_versions(a: str, b: str) -> int:
         return -1
     if left > right:
         return 1
-    # Core versions are equal: stable release > pre-release (SemVer 2.0.0 §11).
-    if left_pre is None and right_pre is None:
-        return 0
-    if left_pre is None:
-        return 1
-    if right_pre is None:
-        return -1
-    if left_pre < right_pre:
-        return -1
-    if left_pre > right_pre:
-        return 1
-    return 0
+    return _compare_prerelease(left_pre, right_pre)
 
 
 def check_for_updates(
@@ -191,8 +211,8 @@ def check_for_updates(
         if not isinstance(raw_version, str):
             raise ValueError("update manifest version must be a string")
         latest = raw_version.strip()
-        if not latest:
-            raise ValueError("update manifest has no version")
+        if not latest or not _VALID_VERSION_RE.match(latest):
+            raise ValueError(f"update manifest has invalid version: {latest!r}")
     except Exception as exc:  # network, HTTP, JSON, or shape errors
         logger.debug("Update check failed: %s", exc)
         result["status"] = "check_failed"

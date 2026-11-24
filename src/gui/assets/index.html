@@ -329,7 +329,7 @@
               </div>
               <div class="lg-vessel-info">
                 <div class="hud-title">Gross Exposure</div>
-                <div class="hud-value num" id="hudExposureQty">0.0000 ETH</div>
+                <div class="hud-value num private-maskable" id="hudExposureQty">0.0000 ETH</div>
                 <div class="hud-sub num private-maskable" id="hudExposureVal">$0.00 · Cash 100%</div>
               </div>
             </div>
@@ -454,7 +454,6 @@
             </div>
             <div class="canvas-wrap" id="priceCanvasWrap" data-cursor="crosshair">
               <canvas id="priceCanvas"></canvas>
-              <div id="chartNotificationContainer" class="chart-notification-container toast-stack-host"></div>
               <div id="priceTooltip" class="chart-tooltip lg-glass num"></div>
             </div>
           </div>
@@ -578,7 +577,7 @@
                     </svg>
                     <div class="mod-gauge-val" id="modGaugeLevVal">0.00x</div>
                     <div class="mod-gauge-lbl">Gross Lev</div>
-                    <div class="mod-gauge-sub" id="modGaugeLevMeta">$0 exp</div>
+                    <div class="mod-gauge-sub private-maskable" id="modGaugeLevMeta">$0 exp</div>
                   </div>
                   <div class="mod-gauge-card">
                     <svg class="mod-gauge-svg" viewBox="0 0 100 58" aria-hidden="true">
@@ -600,8 +599,8 @@
                 <div class="mod-heatmap-grid num" id="modHeatmapGrid"></div>
               </div>
               <!-- Tab 3: Evolution History Timeline -->
-              <div class="mod-bay-pane scroll-area-faded" id="modBayEvolutions" style="display:none;">
-                <div class="mod-evo-list" id="modEvolutionsList"></div>
+              <div class="mod-bay-pane" id="modBayEvolutions" style="display:none;">
+                <div class="mod-evo-list scroll-area-faded" id="modEvolutionsList"></div>
               </div>
             </div>
           </div>
@@ -823,6 +822,7 @@
       </section>
     </main>
     </div>
+    <div id="chartNotificationContainer" class="chart-notification-container toast-stack-host"></div>
   </div>
 
   <!-- Google Gemini AI Credentials Setup Wizard Modal -->
@@ -1110,7 +1110,7 @@
         <div class="strat-detail-sub num" id="stratDetailSubtitle">Gen #1 · Portfolio Telemetry</div>
       </div>
       <div class="strat-detail-kpis num">
-        <div class="strat-detail-kpi"><span class="strat-detail-kpi-lbl">Equity</span><span class="strat-detail-kpi-val" id="stratDetailEquity">$100,000</span></div>
+        <div class="strat-detail-kpi"><span class="strat-detail-kpi-lbl">Equity</span><span class="strat-detail-kpi-val private-maskable" id="stratDetailEquity">$100,000</span></div>
         <div class="strat-detail-kpi"><span class="strat-detail-kpi-lbl">ROI</span><span class="strat-detail-kpi-val" id="stratDetailRoi">+0.00%</span></div>
         <div class="strat-detail-kpi"><span class="strat-detail-kpi-lbl">Win / Max DD</span><span class="strat-detail-kpi-val" id="stratDetailWrDd">0% / 0.0%</span></div>
         <div class="strat-detail-kpi"><span class="strat-detail-kpi-lbl">Sharpe / Fitness</span><span class="strat-detail-kpi-val" id="stratDetailSharpe">0.0 / +0.0</span></div>

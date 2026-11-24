@@ -48,11 +48,20 @@ class IndicatorEngineMixin:
 
     def get_chop_er_20(self) -> Optional[float]:
         """Returns Efficiency Ratio over the trailing closed 15m bars, or None while warming up."""
-        closed = self.candles_15m[:-1]
-        if len(closed) <= CHOP_GATE_WINDOW_BARS:
+        c15 = self.candles_15m
+        if len(c15) <= CHOP_GATE_WINDOW_BARS + 1:
             return None
-        closes = [float(b["c"]) for b in closed[-CHOP_GATE_WINDOW_BARS - 1:]]
-        return float(efficiency_ratio(closes))
+        closes: List[float] = []
+        for bar in c15[-(CHOP_GATE_WINDOW_BARS + 2):-1]:
+            try:
+                c_val = float(bar["c"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            if not math.isfinite(c_val):
+                return None
+            closes.append(c_val)
+        er = float(efficiency_ratio(closes))
+        return er if math.isfinite(er) else None
 
     def _chop_gate_blocks(self) -> bool:
         er = self.get_chop_er_20()

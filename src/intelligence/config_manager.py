@@ -142,7 +142,7 @@ class ConfigManager:
         if not raw_key or not isinstance(raw_key, str):
             return ""
         s = raw_key.strip().strip("'\"").strip()
-        s = re.sub(r"[\r\n\t\x00-\x1f]", "", s)
+        s = re.sub(r"[\r\n\t\x00-\x1f\x7f]", "", s)
         return s
 
     def load_config(self) -> Dict[str, Any]:
@@ -219,6 +219,12 @@ class ConfigManager:
     def set_gemini_api_key(self, raw_key: Any) -> Dict[str, Any]:
         """Sanitizes and persists the Gemini API key in system_config.json and process env."""
         cleaned = self.sanitize_key(raw_key if isinstance(raw_key, str) else "")
+        if cleaned and not cleaned.isascii():
+            return {
+                "ok": False,
+                "error": "API key must contain ASCII characters only.",
+                "configured": self.has_gemini_api_key(),
+            }
         ok = self.save_config({"gemini_api_key": cleaned})
         if not ok:
             return {"ok": False, "error": "Failed to persist Gemini API key.", "configured": False}
@@ -242,27 +248,27 @@ class ConfigManager:
         if legacy_env_path is None and legacy_runtime_dir is None and os.environ.get("PYTEST_CURRENT_TEST"):
             return {"imported_key": False, "cleaned_runtime": False}
 
-        cfg = self.load_config()
+        cfg_initial = self.load_config()
         updates: Dict[str, Any] = {}
         imported = False
         cleaned_runtime = False
 
-        if not cfg.get("legacy_omniroute_migrated", False):
+        if not cfg_initial.get("legacy_omniroute_migrated", False):
             env_path = (
                 Path(legacy_env_path)
                 if legacy_env_path is not None
                 else (None if self._custom_data_dir else (Path.home() / ".omniroute" / ".env"))
             )
-            if env_path is not None and not self.sanitize_key(cfg.get("gemini_api_key", "")):
+            if env_path is not None and not self.sanitize_key(cfg_initial.get("gemini_api_key", "")):
                 legacy_key = self.sanitize_key(_extract_env_var_from_file(env_path, "GEMINI_API_KEY"))
-                if legacy_key:
+                if legacy_key and legacy_key.isascii():
                     updates["gemini_api_key"] = legacy_key
                     os.environ["GEMINI_API_KEY"] = legacy_key
                     imported = True
                     logger.info("Imported legacy GEMINI_API_KEY into system_config.json")
             updates["legacy_omniroute_migrated"] = True
 
-        if not cfg.get("legacy_runtime_cleaned", False):
+        if not cfg_initial.get("legacy_runtime_cleaned", False):
             rt_dir: Optional[Path] = None
             if legacy_runtime_dir is not None:
                 rt_dir = Path(legacy_runtime_dir)
@@ -270,23 +276,23 @@ class ConfigManager:
                 local_app = os.environ.get("LOCALAPPDATA")
                 if local_app:
                     rt_dir = Path(local_app) / "TradeBot0" / "runtime"
-            if rt_dir is not None and rt_dir.exists() and rt_dir.is_dir():
+            if rt_dir is not None and rt_dir.exists() and rt_dir.is_dir() and not rt_dir.is_symlink():
                 try:
                     shutil.rmtree(rt_dir, ignore_errors=True)
                     cleaned_runtime = not rt_dir.exists()
                     logger.info("Cleaned legacy AI runtime directory: %s (removed=%s)", rt_dir, cleaned_runtime)
                 except Exception as exc:
                     logger.debug("Legacy runtime cleanup skipped (%s): %s", rt_dir, exc)
-            updates["legacy_runtime_cleaned"] = True
+            if rt_dir is None or not rt_dir.exists():
+                updates["legacy_runtime_cleaned"] = True
 
         if updates:
-            # Strip dead V2.x gateway keys opportunistically if present
-            for stale_key in ("gateway_port", "gateway_host", "configured_providers"):
-                if stale_key in cfg:
-                    cfg.pop(stale_key, None)
-            cfg.update(updates)
             with self._io_lock:
-                content = json.dumps(cfg, indent=2, ensure_ascii=False)
+                latest_cfg = self.load_config()
+                for stale_key in ("gateway_port", "gateway_host", "configured_providers"):
+                    latest_cfg.pop(stale_key, None)
+                latest_cfg.update(updates)
+                content = json.dumps(latest_cfg, indent=2, ensure_ascii=False)
                 self._atomic_write_text(self.config_file, content)
                 self._config_cache_key = None
                 self._config_cache = None
@@ -294,9 +300,26 @@ class ConfigManager:
         return {"imported_key": imported, "cleaned_runtime": cleaned_runtime}
 
     @staticmethod
+    def coerce_bool(val: Any, default: bool = True) -> bool:
+        """Strictly coerces persisted or bridged booleans, handling 'false'/'0'/'off' strings."""
+        if val is None:
+            return default
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return bool(val)
+        if isinstance(val, str):
+            norm = val.strip().lower()
+            if norm in ("false", "0", "no", "off", ""):
+                return False
+            if norm in ("true", "1", "yes", "on"):
+                return True
+        return default
+
+    @staticmethod
     def sanitize_model_name(raw_model: Any) -> str:
-        candidate = str(raw_model or "").strip()
-        if candidate.lower().startswith("gemini/"):
+        candidate = str(raw_model or "").strip().lower()
+        if candidate.startswith("gemini/"):
             candidate = candidate[len("gemini/"):].strip()
         return candidate
 
@@ -322,12 +345,11 @@ class ConfigManager:
     def get_preload_intel_articles(self) -> bool:
         """Returns whether background article preloading is enabled."""
         cfg = self.load_config()
-        val = cfg.get("preload_intel_articles", True)
-        return True if val is None else bool(val)
+        return self.coerce_bool(cfg.get("preload_intel_articles", True), default=True)
 
     def set_preload_intel_articles(self, enabled: Any) -> Dict[str, Any]:
         """Persists the background article preload preference."""
-        flag = bool(enabled)
+        flag = self.coerce_bool(enabled, default=True)
         if not self.save_config({"preload_intel_articles": flag}):
             return {"ok": False, "error": "Failed to persist article preload preference."}
         return {"ok": True, "preload_intel_articles": flag}

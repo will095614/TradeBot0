@@ -15,8 +15,12 @@ from typing import Any, Dict, Optional
 
 from src.arena.order import OrderSide, PositionSide
 from src.data.live_engine import LiveArenaEngine
-from src.gui.view_model import _safe_fmt_hms
-from src.intelligence.config_manager import ALLOWED_GEMINI_MODELS, ConfigManager
+from src.gui.view_model import ViewModelPublisher, _safe_fmt_hms
+from src.intelligence.config_manager import (
+    ALLOWED_GEMINI_MODELS,
+    DEFAULT_GEMINI_MODEL,
+    ConfigManager,
+)
 from src.intelligence.gemini_client import DEFAULT_GEMINI_BASE_URL, probe_gemini_api_key
 from src.update_checker import check_for_updates as _run_update_check
 from src.update_checker import get_manifest_url
@@ -132,10 +136,11 @@ def _apply_window_icon(window: Any, icon_path: Optional[pathlib.Path] = None) ->
             ctypes.c_int, ctypes.c_int, wintypes.UINT,
         ]
         user32.LoadImageW.restype = wintypes.HANDLE
-        user32.SendMessageW.argtypes = [
+        user32.SendMessageTimeoutW.argtypes = [
             wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+            wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t),
         ]
-        user32.SendMessageW.restype = ctypes.c_ssize_t
+        user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
 
         hwnd_int = _get_native_hwnd(window)
         hwnd = wintypes.HWND(hwnd_int) if hwnd_int else user32.FindWindowW(None, WINDOW_TITLE)
@@ -147,6 +152,7 @@ def _apply_window_icon(window: Any, icon_path: Optional[pathlib.Path] = None) ->
         WM_SETICON = 0x0080
         ICON_SMALL = 0
         ICON_BIG = 1
+        SMTO_ABORTIFHUNG = 0x0002
         cx_sm = int(user32.GetSystemMetrics(49) or 16)
         cy_sm = int(user32.GetSystemMetrics(50) or 16)
         cx_lg = int(user32.GetSystemMetrics(11) or 32)
@@ -165,14 +171,19 @@ def _apply_window_icon(window: Any, icon_path: Optional[pathlib.Path] = None) ->
         if new_slots:
             prev_replaced: list[int] = []
             try:
+                # Send WM_SETICON outside _ICON_LOCK with a bounded timeout so stop() cannot AB-BA deadlock.
+                for slot, handle_val in new_slots.items():
+                    msg_res = ctypes.c_size_t(0)
+                    user32.SendMessageTimeoutW(
+                        hwnd, WM_SETICON, slot, handle_val, SMTO_ABORTIFHUNG, 500, ctypes.byref(msg_res)
+                    )
+                    applied = True
                 with _ICON_LOCK:
                     for slot, handle_val in new_slots.items():
-                        user32.SendMessageW(hwnd, WM_SETICON, slot, handle_val)
                         prev = _ACTIVE_WINDOW_HICONS.get(slot)
                         if prev and prev != handle_val:
                             prev_replaced.append(prev)
                         _ACTIVE_WINDOW_HICONS[slot] = handle_val
-                        applied = True
             except Exception:
                 _destroy_win32_hicons(list(new_slots.values()))
                 raise
@@ -466,9 +477,9 @@ class _ArenaBridgeApi:
             except Exception as e:
                 logger.error("Error saving session state on shutdown: %s", e)
         try:
-            self._dashboard.engine.stop()
+            self._dashboard.stop()
         except Exception as e:
-            logger.error("Error stopping engine on shutdown: %s", e)
+            logger.error("Error stopping dashboard on shutdown: %s", e)
         if self._dashboard.window:
             if _get_native_hwnd(self._dashboard.window) is not None:
                 # Defer WM_CLOSE slightly on Windows so pywebview resolves the bridge
@@ -530,8 +541,14 @@ class _ArenaBridgeApi:
         Fail-safe: never raises an unhandled exception.
         """
         try:
-            cfg = self._dashboard.config_manager.load_config()
-            key_configured = bool(self._dashboard.config_manager.has_gemini_api_key())
+            cm = self._dashboard.config_manager
+            cfg = cm.load_config()
+            stored_key = cm.sanitize_key(cfg.get("gemini_api_key", ""))
+            active_key = stored_key if stored_key else cm.sanitize_key(os.getenv("GEMINI_API_KEY", ""))
+            key_configured = len(active_key) >= 4
+            raw_model = cm.sanitize_model_name(cfg.get("gemini_model", DEFAULT_GEMINI_MODEL))
+            active_model = raw_model if raw_model in ALLOWED_GEMINI_MODELS else DEFAULT_GEMINI_MODEL
+            active_preload = cm.coerce_bool(cfg.get("preload_intel_articles", True), default=True)
             client = getattr(getattr(self._dashboard, "engine", None), "llm_client", None)
             ai_online = bool(getattr(client, "is_gateway_online", False))
             return {
@@ -540,9 +557,9 @@ class _ArenaBridgeApi:
                 "skip_ai_mode": bool(cfg.get("skip_ai_mode", False)),
                 "gemini_key_configured": key_configured,
                 "ai_online": ai_online,
-                "gemini_model": self._dashboard.config_manager.get_gemini_model(),
+                "gemini_model": active_model,
                 "allowed_models": list(ALLOWED_GEMINI_MODELS),
-                "preload_intel_articles": self._dashboard.config_manager.get_preload_intel_articles(),
+                "preload_intel_articles": active_preload,
             }
         except Exception as e:
             logger.error("Error reading setup status: %s", e)
@@ -597,23 +614,29 @@ class _ArenaBridgeApi:
         """Persists and hot-applies Gemini model and article preload preferences."""
         try:
             cm = self._dashboard.config_manager
+            updates: Dict[str, Any] = {}
             if model is not None:
-                m_res = cm.set_gemini_model(model)
-                if not m_res.get("ok"):
-                    return {"ok": False, "error": str(m_res.get("error") or "Invalid model")}
+                candidate = cm.sanitize_model_name(model)
+                if candidate not in ALLOWED_GEMINI_MODELS:
+                    return {"ok": False, "error": f"Unsupported Gemini model: {model!r}"}
+                updates["gemini_model"] = candidate
             if preload_articles is not None:
-                p_res = cm.set_preload_intel_articles(preload_articles)
-                if not p_res.get("ok"):
-                    return {"ok": False, "error": str(p_res.get("error") or "Failed to persist preload preference")}
+                updates["preload_intel_articles"] = cm.coerce_bool(preload_articles, default=True)
+            if updates and not cm.save_config(updates):
+                return {"ok": False, "error": "Failed to persist AI preferences."}
 
-            active_model = cm.get_gemini_model()
-            active_preload = cm.get_preload_intel_articles()
+            cfg = cm.load_config()
+            raw_m = cm.sanitize_model_name(cfg.get("gemini_model", DEFAULT_GEMINI_MODEL))
+            active_model = raw_m if raw_m in ALLOWED_GEMINI_MODELS else DEFAULT_GEMINI_MODEL
+            active_preload = cm.coerce_bool(cfg.get("preload_intel_articles", True), default=True)
             engine = getattr(self._dashboard, "engine", None)
             if engine is not None:
                 client = getattr(engine, "llm_client", None)
                 if client is not None and hasattr(client, "set_models"):
                     client.set_models(active_model, active_model)
                 engine.preload_intel_articles = active_preload
+                if hasattr(engine, "_publish_state_snapshot"):
+                    engine._publish_state_snapshot()
             return {
                 "ok": True,
                 "gemini_model": active_model,
@@ -634,7 +657,10 @@ class _ArenaBridgeApi:
             return {"ok": False, "error": "Format must be 'csv' or 'json'."}
         try:
             engine = self._dashboard.engine
+            fz = ViewModelPublisher.finite
             with engine.lock:
+                if hasattr(engine, "_harvest_fills"):
+                    engine._harvest_fills()
                 fill_recs = list(getattr(engine, "fill_records", []) or [])
                 display_map = dict(getattr(engine, "STRATEGY_DISPLAY", {}) or {})
                 reason_map = dict(getattr(engine, "REASON_DISPLAY", {}) or {})
@@ -655,7 +681,7 @@ class _ArenaBridgeApi:
                 reason_obj = getattr(rec, "reason", None)
                 reason_raw = reason_obj.value if hasattr(reason_obj, "value") else str(reason_obj or "")
                 reason_label = reason_map.get(reason_raw, reason_raw)
-                ts_raw = float(getattr(rec, "timestamp", 0.0) or 0.0)
+                ts_raw = fz(getattr(rec, "timestamp", 0.0))
                 entry_p = getattr(rec, "entry_price", None)
                 rows.append({
                     "seq": int(getattr(rec, "fill_seq", idx) or idx),
@@ -665,10 +691,10 @@ class _ArenaBridgeApi:
                     "strategy": display_map.get(pid, pid),
                     "side": side_val,
                     "action": action,
-                    "qty": float(getattr(rec, "qty", 0.0) or 0.0),
-                    "price": float(getattr(rec, "price", 0.0) or 0.0),
-                    "entry_price": float(entry_p) if entry_p is not None else None,
-                    "realized_pnl": float(getattr(rec, "realized_pnl", 0.0) or 0.0) if not is_entry else None,
+                    "qty": fz(getattr(rec, "qty", 0.0)),
+                    "price": fz(getattr(rec, "price", 0.0)),
+                    "entry_price": fz(entry_p) if entry_p is not None else None,
+                    "realized_pnl": fz(getattr(rec, "realized_pnl", 0.0)) if not is_entry else None,
                     "reason": reason_label,
                     "is_live": bool(getattr(rec, "is_live", False)),
                 })
@@ -693,7 +719,10 @@ class _ArenaBridgeApi:
                         if not picked:
                             return {"ok": False, "cancelled": True}
                         chosen = picked[0] if isinstance(picked, (tuple, list)) else picked
-                        dest = pathlib.Path(str(chosen))
+                        chosen_str = str(chosen or "").strip()
+                        if not chosen_str:
+                            return {"ok": False, "cancelled": True}
+                        dest = pathlib.Path(chosen_str)
                 except Exception as dlg_err:
                     logger.debug("File dialog fallback to data_dir: %s", dlg_err)
 
@@ -728,8 +757,19 @@ class _ArenaBridgeApi:
                             handle,
                             indent=2,
                             ensure_ascii=False,
+                            allow_nan=False,
                         )
-                os.replace(tmp_path, dest)
+                last_perm: Optional[Exception] = None
+                for attempt in range(4):
+                    try:
+                        os.replace(tmp_path, dest)
+                        last_perm = None
+                        break
+                    except PermissionError as pe:
+                        last_perm = pe
+                        time.sleep(0.025 * (attempt + 1))
+                if last_perm is not None:
+                    raise last_perm
             finally:
                 if tmp_path.exists():
                     try:
@@ -762,55 +802,67 @@ class _ArenaBridgeApi:
                     if model is None and keys.get("model") is not None:
                         model = str(keys.get("model"))
                     if preload_articles is None and "preload_articles" in keys:
-                        preload_articles = bool(keys.get("preload_articles"))
+                        preload_articles = cm.coerce_bool(keys.get("preload_articles"), default=True)
                 elif isinstance(keys, str):
                     raw_key = keys
                 cleaned_key = cm.sanitize_key(raw_key)
 
-                # 1. Persist Gemini key when user typed one (blank preserves existing key)
+                # Validate inputs before modifying config or engine state
                 self._set_save_launch_stage("syncing-keys", "Saving Gemini API key...", 25, "keys")
+                if cleaned_key and not cleaned_key.isascii():
+                    err_msg = "API key must contain ASCII characters only."
+                    self._set_save_launch_stage("failed", err_msg, 25, "keys")
+                    return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
+                validated_model: Optional[str] = None
+                if model is not None:
+                    validated_model = cm.sanitize_model_name(model)
+                    if validated_model not in ALLOWED_GEMINI_MODELS:
+                        err_msg = f"Unsupported Gemini model: {model!r}"
+                        self._set_save_launch_stage("failed", err_msg, 25, "keys")
+                        return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
+
                 if cleaned_key:
                     key_res = cm.set_gemini_api_key(cleaned_key)
                     if isinstance(key_res, dict) and key_res.get("ok") is False:
                         err_msg = str(key_res.get("error") or "Failed to save Gemini API key.")
                         self._set_save_launch_stage("failed", err_msg, 25, "keys")
                         return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
-                if model is not None:
-                    m_res = cm.set_gemini_model(model)
-                    if not m_res.get("ok"):
-                        err_msg = str(m_res.get("error") or "Unsupported Gemini model.")
-                        self._set_save_launch_stage("failed", err_msg, 25, "keys")
-                        return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
-                if preload_articles is not None:
-                    cm.set_preload_intel_articles(preload_articles)
 
-                active_key = cm.get_gemini_api_key()
-                active_model = cm.get_gemini_model()
-                active_preload = cm.get_preload_intel_articles()
-
-                # 2. Update system config
+                # 2. Persist preferences & onboarding state in one atomic config write
                 self._set_save_launch_stage("saving-config", "Saving setup...", 55, "config")
-                cfg_saved = cm.save_config({
+                cfg_updates: Dict[str, Any] = {
                     "has_completed_onboarding": True,
                     "skip_ai_mode": False,
                     "last_setup_ts": time.time(),
-                })
+                }
+                if validated_model is not None:
+                    cfg_updates["gemini_model"] = validated_model
+                if preload_articles is not None:
+                    cfg_updates["preload_intel_articles"] = cm.coerce_bool(preload_articles, default=True)
+                cfg_saved = cm.save_config(cfg_updates)
                 if cfg_saved is False:
                     err_msg = "Failed to save system configuration."
                     self._set_save_launch_stage("failed", err_msg, 55, "config")
                     return {"status": "error", "ok": False, "message": err_msg, "ai_online": False}
 
-                # 3. Hot-reload client key/model and perform lightweight probe
+                cfg = cm.load_config()
+                stored_k = cm.sanitize_key(cfg.get("gemini_api_key", ""))
+                active_key = stored_k if stored_k else cm.sanitize_key(os.getenv("GEMINI_API_KEY", ""))
+                raw_m = cm.sanitize_model_name(cfg.get("gemini_model", DEFAULT_GEMINI_MODEL))
+                active_model = raw_m if raw_m in ALLOWED_GEMINI_MODELS else DEFAULT_GEMINI_MODEL
+                active_preload = cm.coerce_bool(cfg.get("preload_intel_articles", True), default=True)
+
+                # 3. Apply model & preload BEFORE triggering update_gemini_api_key intel refresh
                 self._set_save_launch_stage("verifying-ai", "Connecting to Gemini AI...", 75, "ai")
                 ai_online = False
                 engine = getattr(self._dashboard, "engine", None)
                 if engine is not None:
-                    if hasattr(engine, "update_gemini_api_key"):
-                        engine.update_gemini_api_key(active_key)
                     client_ref = getattr(engine, "llm_client", None)
                     if client_ref is not None and hasattr(client_ref, "set_models"):
                         client_ref.set_models(active_model, active_model)
                     engine.preload_intel_articles = active_preload
+                    if hasattr(engine, "update_gemini_api_key"):
+                        engine.update_gemini_api_key(active_key)
                 if active_key:
                     if active_model != ALLOWED_GEMINI_MODELS[0]:
                         probe = probe_gemini_api_key(active_key, model=active_model, timeout=3.0)
@@ -820,9 +872,22 @@ class _ArenaBridgeApi:
                     client = getattr(engine, "llm_client", None)
                     if client is not None:
                         client.is_gateway_online = ai_online
+                        if not ai_online and hasattr(client, "note_failure"):
+                            probe_msg = str(probe.get("message") or "Gemini standby")
+                            lower_p = probe_msg.lower()
+                            err_kind = "auth" if ("unauthorized" in lower_p or "invalid" in lower_p) else "connection"
+                            client.note_failure({
+                                "kind": err_kind,
+                                "provider": "gemini",
+                                "status": 401 if err_kind == "auth" else None,
+                                "detail": probe_msg[:200],
+                            })
                     msg = "Gemini AI connected." if ai_online else f"Saved. {probe.get('message', 'Gemini standby')}"
                 else:
                     msg = "Setup saved (Pure Math standby mode)."
+
+                if engine is not None and hasattr(engine, "_publish_state_snapshot"):
+                    engine._publish_state_snapshot()
 
                 # 4. Start engine live loop if held in onboarding standby
                 self._set_save_launch_stage("starting-engine", "Starting live engine...", 90, "engine")
@@ -1018,8 +1083,12 @@ class ArenaDashboard:
             if not old_enabled and old_auto_evolve_disabled_ts is not None:
                 new_engine._auto_evolve_disabled_ts = old_auto_evolve_disabled_ts
             new_engine._preserved_from_reset = True
-            self.engine = new_engine
-            new_engine.start_live_loop(interval_sec=old_cadence)
+            with self._stop_lock:
+                if self._stopped:
+                    new_engine.stop()
+                    return
+                self.engine = new_engine
+                new_engine.start_live_loop(interval_sec=old_cadence)
 
     def start_engine_if_needed(self) -> None:
         if not self.engine.running:

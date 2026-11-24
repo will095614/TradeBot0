@@ -280,6 +280,7 @@ class SessionCodecMixin:
                     "generation": gen,
                     "live_start_ts": self.live_start_ts,
                     "live_fill_seq_offset": int(getattr(self, "_live_fill_seq_offset", 0)) + evicted_live_on_save,
+                    "live_chop_gate_blocked": int(getattr(self, "live_chop_gate_blocked", 0) or 0),
                     "closed_trades_since_evolve": int(getattr(self, "_closed_trades_since_evolve", 0)),
                     "last_evolve_ts": float(getattr(self, "last_evolve_ts", 0.0)),
                     "auto_evolve_disabled_ts": getattr(self, "_auto_evolve_disabled_ts", None),
@@ -617,6 +618,13 @@ class SessionCodecMixin:
                 if "live_fill_seq_offset" in snapshot and snapshot["live_fill_seq_offset"] is not None:
                     staged_live_offset = max(0, int(snapshot["live_fill_seq_offset"]))
 
+                staged_chop_blocked: Optional[int] = None
+                if "live_chop_gate_blocked" in snapshot and snapshot["live_chop_gate_blocked"] is not None:
+                    try:
+                        staged_chop_blocked = max(0, int(snapshot["live_chop_gate_blocked"]))
+                    except (TypeError, ValueError):
+                        pass
+
                 staged_auto_interval: Optional[int] = None
                 if "auto_evolve_interval_sec" in snapshot and snapshot["auto_evolve_interval_sec"] is not None:
                     staged_auto_interval = max(60, int(snapshot["auto_evolve_interval_sec"]))
@@ -742,6 +750,8 @@ class SessionCodecMixin:
                             break
                 if staged_live_offset is not None:
                     self._live_fill_seq_offset = staged_live_offset
+                if staged_chop_blocked is not None:
+                    self.live_chop_gate_blocked = staged_chop_blocked
                 if staged_auto_interval is not None:
                     self.auto_evolve_interval_sec = staged_auto_interval
                 if staged_auto_enabled is not None:

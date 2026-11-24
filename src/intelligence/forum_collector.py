@@ -137,12 +137,14 @@ class ForumCollector:
         with self._lock:
             if self._last_collect_ts > 0.0 and (now - self._last_collect_ts) < self.collect_interval_sec:
                 return []
-        if self._hourly_cap_reached(now):
-            logger.debug(
-                "Forum hourly summary cap reached (%d), skipping", self.max_summaries_per_hour
-            )
-            return []
-        with self._lock:
+            if now - self._summary_window_start >= 3600.0:
+                self._summary_window_start = now
+                self._summary_count = 0
+            if self._summary_count >= self.max_summaries_per_hour:
+                logger.debug(
+                    "Forum hourly summary cap reached (%d), skipping", self.max_summaries_per_hour
+                )
+                return []
             prev_ts = self._last_collect_ts
             self._last_collect_ts = now
         try:

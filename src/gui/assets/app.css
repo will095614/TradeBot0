@@ -721,7 +721,7 @@ body.arena-ready .app-shell:not(.arena-entering) {
   border-radius: 2px !important;
   background: currentColor !important;
   transform-origin: bottom center !important;
-  animation: lgWaveBounce 0.95s ease-in-out infinite !important;
+  animation: lgWaveBounce 0.95s ease-in-out infinite;
 }
 
 #liveBadge .lg-wave-bars i:nth-child(1), .lg-wave-bars i:nth-child(1) { animation-delay: 0.0s !important; }
@@ -2256,17 +2256,17 @@ body.arena-paused #pauseBtn:hover,
 
 /* Floating Chart Notification & Specular Liquid Glass Toast System */
 .chart-notification-container {
-  position: absolute;
-  top: 14px;
-  left: 16px;
+  position: fixed;
+  top: 72px;
+  right: 20px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   pointer-events: none;
-  z-index: 25;
+  z-index: 9500;
   width: 310px;
-  max-width: calc(100% - 32px);
-  max-height: calc(100% - 28px);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 96px);
   overflow-y: auto;
   scrollbar-width: none;
 }
@@ -5460,12 +5460,6 @@ body:not(.arena-ready) .lg-glass {
   min-height: 0;
 }
 
-.setup-wizard-column > .setup-provider-card {
-  margin-top: 8px;
-  transition: margin-top 0.3s var(--lg-spring), border-color 0.22s ease,
-              background 0.22s ease, padding 0.3s var(--lg-spring);
-}
-
 .setup-provider-card {
   padding: 8px 12px;
   border-radius: 12px;
@@ -5787,7 +5781,6 @@ body:not(.arena-ready) .lg-glass {
   .setup-wizard-modal { padding: 12px 20px 10px; }
   .setup-wizard-header { margin-bottom: 6px; }
   .setup-wizard-body { margin-bottom: 8px; }
-  .setup-wizard-column > .setup-provider-card { margin-top: 6px; }
   .setup-collapsible.is-open { margin-top: 6px; }
   .setup-provider-card { padding: 6px 10px; }
   .setup-key-input, .setup-eye-btn, .setup-test-btn { height: 30px; }
@@ -7036,14 +7029,14 @@ body.private-balance .private-maskable {
 
 .intel-chip-slider {
   position: absolute;
-  top: 2px;
+  top: 0;
   left: 0;
   height: calc(100% - 4px);
   border-radius: var(--r-pill);
   background: rgba(56, 189, 248, 0.16);
   border: 1px solid rgba(56, 189, 248, 0.35);
   pointer-events: none;
-  transition: transform 0.22s var(--arc-ease-spring), width 0.22s var(--arc-ease-spring), opacity 0.15s ease;
+  transition: transform 0.22s var(--arc-ease-spring), width 0.22s var(--arc-ease-spring), height 0.22s var(--arc-ease-spring), opacity 0.15s ease;
   z-index: 0;
 }
 
@@ -7232,9 +7225,14 @@ body.private-balance .private-maskable {
   color: #94A3B8;
 }
 
+#networkOfflineOverlay {
+  z-index: 10004;
+}
+
 /* Strategy Detail Modal */
 .strat-detail-overlay {
   z-index: 10002;
+  transition: opacity 0.22s ease;
 }
 
 .strat-detail-modal {
@@ -7246,6 +7244,7 @@ body.private-balance .private-maskable {
   flex-direction: column;
   gap: 10px;
   overflow: hidden;
+  transition: transform 0.22s var(--arc-ease-spring), opacity 0.22s ease;
 }
 
 .strat-detail-head {
@@ -7391,7 +7390,14 @@ body.window-hidden .border-beam-ring,
 body.window-hidden .border-beam-ring::before,
 body.window-hidden .thinking-orb,
 body.window-hidden .ai-bot-avatar.is-working .ai-bot-eye,
-body.window-hidden .lg-ambient-shader {
+body.window-hidden .lg-ambient-shader,
+body.window-hidden #liveBadge .lg-wave-bars i,
+body.window-hidden .ss-badge__dot,
+body.window-hidden .splash-icon,
+body.window-hidden .btn.loading .btn-spin-icon,
+body.window-hidden .digest-refresh-progress-fill.indeterminate,
+body.window-hidden .intel-article-loading,
+body.window-hidden .intel-article-progress-fill::after {
   animation-play-state: paused !important;
 }
 
@@ -7403,6 +7409,7 @@ body.window-hidden .lg-ambient-shader {
   .lg-tube-meniscus,
   .lg-tube-bubbles i,
   .lg-wave-bars i,
+  #liveBadge .lg-wave-bars i,
   .pulse-dot,
   .live-dot,
   .catalyst-pulse-orb,
@@ -7413,7 +7420,13 @@ body.window-hidden .lg-ambient-shader {
   .border-beam-ring::before,
   .thinking-orb,
   .ai-bot-avatar.is-working .ai-bot-eye,
-  .lg-ambient-shader {
+  .lg-ambient-shader,
+  .ss-badge__dot,
+  .splash-icon,
+  .btn.loading .btn-spin-icon,
+  .digest-refresh-progress-fill.indeterminate,
+  .intel-article-loading,
+  .intel-article-progress-fill::after {
     animation-play-state: paused !important;
   }
   .nf-digit-curr {

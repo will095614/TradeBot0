@@ -16,16 +16,41 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.arena.order import OrderSide, PositionSide
 from src.data.timemachine import CHOP_GATE_ER_THRESHOLD
+from src.intelligence.config_manager import DEFAULT_GEMINI_MODEL
 
 
 logger = logging.getLogger(__name__)
 
 _SHALLOW_DELTA_DICT_LIST_KEYS = ("candles", "candles_5m", "candles_15m", "fills")
 _SHALLOW_DELTA_SCALAR_LIST_KEYS = ("price_history", "ema_fast_history", "ema_slow_history")
-_SHALLOW_DELTA_KEYS = frozenset(_SHALLOW_DELTA_DICT_LIST_KEYS + _SHALLOW_DELTA_SCALAR_LIST_KEYS)
+_FAST_CLONE_DELTA_KEYS = (
+    "strategies",
+    "evolution_events",
+    "risk_telemetry",
+    "tv_hub",
+    "ui_prefs",
+    "mtf",
+    "quant_meta",
+    "omni_meta",
+    "macro_commander",
+)
+_SHALLOW_DELTA_KEYS = frozenset(
+    _SHALLOW_DELTA_DICT_LIST_KEYS + _SHALLOW_DELTA_SCALAR_LIST_KEYS + _FAST_CLONE_DELTA_KEYS
+)
 
 _HEATMAP_STRATEGIES = ("comp_agg", "comp_cons", "comp_trail", "comp_orb", "comp_vwap")
 _HEATMAP_LABELS = ("AGG", "CONS", "TRAIL", "ORB", "MEAN")
+
+
+def _clone_json_tree(obj: Any) -> Any:
+    """Fast recursive clone for JSON-primitive dict/list snapshots without copy.deepcopy memo overhead."""
+    if isinstance(obj, dict):
+        return {k: _clone_json_tree(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clone_json_tree(item) for item in obj]
+    if isinstance(obj, tuple):
+        return [_clone_json_tree(item) for item in obj]
+    return obj
 
 
 def _safe_fmt_hms(ts: Any) -> str:
@@ -79,8 +104,10 @@ class ViewModelPublisher:
         if not candles:
             return "empty"
         last = candles[-1]
+        prev = candles[-2] if len(candles) >= 2 else None
+        prev_sig = f"{prev.get('t')}:{prev.get('c')}" if isinstance(prev, dict) else ""
         first_t = candles[0].get("t", 0)
-        return f"{len(candles)}:{first_t}:{last.get('t')}:{last.get('o')}:{last.get('h')}:{last.get('l')}:{last.get('c')}"
+        return f"{len(candles)}:{first_t}:{prev_sig}:{last.get('t')}:{last.get('o')}:{last.get('h')}:{last.get('l')}:{last.get('c')}"
 
     @staticmethod
     def compute_fill_signature(fills: List[Dict[str, Any]]) -> Tuple[int, int, bool, str]:
@@ -154,13 +181,19 @@ class ViewModelPublisher:
         """
         delta = dict(full_state)
         candles = full_state.get("candles") or []
-        candles_5m = full_state.get("candles_5m") or []
-        candles_15m = full_state.get("candles_15m") or []
         fills = full_state.get("fills") or []
 
         candle_sig = self.compute_candle_signature(candles)
-        c5_sig = self.compute_candle_signature(candles_5m)
-        c15_sig = self.compute_candle_signature(candles_15m)
+        c5_sig: Optional[str] = (
+            self.compute_candle_signature(full_state["candles_5m"] or [])
+            if "candles_5m" in full_state
+            else None
+        )
+        c15_sig: Optional[str] = (
+            self.compute_candle_signature(full_state["candles_15m"] or [])
+            if "candles_15m" in full_state
+            else None
+        )
         fill_sig = self.compute_fill_signature(fills)
         history_sig = self.compute_history_signature(full_state)
         intel_sig = self.compute_intel_events_signature(full_state)
@@ -185,8 +218,16 @@ class ViewModelPublisher:
                 return delta
 
             candles_same = candle_sig == self.last_candle_sig
-            c5_same = ("candles_5m" in full_state) and (c5_sig == self.last_candle_5m_sig)
-            c15_same = ("candles_15m" in full_state) and (c15_sig == self.last_candle_15m_sig)
+            c5_same = (
+                c5_sig is not None
+                and self.last_candle_5m_sig is not None
+                and c5_sig == self.last_candle_5m_sig
+            )
+            c15_same = (
+                c15_sig is not None
+                and self.last_candle_15m_sig is not None
+                and c15_sig == self.last_candle_15m_sig
+            )
             fills_same = fill_sig == self.last_fill_sig
             history_same = history_sig == self.last_history_sig
             intel_same = (
@@ -236,16 +277,22 @@ class ViewModelPublisher:
         """
         Audit §5.2: same output as compute_delta_payload, but any unchanged
         heavy arrays (`candles`, `candles_5m`, `candles_15m`, `fills`, price/EMA history, `intel_hub.events`)
-        are excluded BEFORE the deepcopy instead of popped after it. The snapshot
+        are excluded BEFORE cloning instead of popped after it. The snapshot
         itself is never mutated.
         """
         candles = snapshot.get("candles") or []
-        candles_5m = snapshot.get("candles_5m") or []
-        candles_15m = snapshot.get("candles_15m") or []
         fills = snapshot.get("fills") or []
         candle_sig = self.compute_candle_signature(candles)
-        c5_sig = self.compute_candle_signature(candles_5m)
-        c15_sig = self.compute_candle_signature(candles_15m)
+        c5_sig: Optional[str] = (
+            self.compute_candle_signature(snapshot["candles_5m"] or [])
+            if "candles_5m" in snapshot
+            else None
+        )
+        c15_sig: Optional[str] = (
+            self.compute_candle_signature(snapshot["candles_15m"] or [])
+            if "candles_15m" in snapshot
+            else None
+        )
         fill_sig = self.compute_fill_signature(fills)
         history_sig = self.compute_history_signature(snapshot)
         intel_sig = self.compute_intel_events_signature(snapshot)
@@ -270,8 +317,16 @@ class ViewModelPublisher:
             else:
                 is_first = False
                 candles_same = candle_sig == self.last_candle_sig
-                c5_same = ("candles_5m" in snapshot) and (c5_sig == self.last_candle_5m_sig)
-                c15_same = ("candles_15m" in snapshot) and (c15_sig == self.last_candle_15m_sig)
+                c5_same = (
+                    c5_sig is not None
+                    and self.last_candle_5m_sig is not None
+                    and c5_sig == self.last_candle_5m_sig
+                )
+                c15_same = (
+                    c15_sig is not None
+                    and self.last_candle_15m_sig is not None
+                    and c15_sig == self.last_candle_15m_sig
+                )
                 fills_same = fill_sig == self.last_fill_sig
                 history_same = history_sig == self.last_history_sig
                 intel_same = (
@@ -303,39 +358,27 @@ class ViewModelPublisher:
             omit.add("intel_hub")
 
         delta = copy.deepcopy({k: v for k, v in snapshot.items() if k not in omit})
+        for fk in _FAST_CLONE_DELTA_KEYS:
+            if fk in snapshot:
+                delta[fk] = _clone_json_tree(snapshot[fk])
 
         if not candles_same and "candles" in snapshot:
-            src_c = snapshot["candles"]
-            delta["candles"] = (
-                [dict(c) if isinstance(c, dict) else copy.deepcopy(c) for c in src_c]
-                if isinstance(src_c, list)
-                else copy.deepcopy(src_c)
-            )
+            delta["candles"] = _clone_json_tree(snapshot["candles"])
         for tf_key, same_flag in (("candles_5m", c5_same), ("candles_15m", c15_same)):
             if not same_flag and tf_key in snapshot:
-                src_tf = snapshot[tf_key]
-                delta[tf_key] = (
-                    [dict(c) if isinstance(c, dict) else copy.deepcopy(c) for c in src_tf]
-                    if isinstance(src_tf, list)
-                    else copy.deepcopy(src_tf)
-                )
+                delta[tf_key] = _clone_json_tree(snapshot[tf_key])
         if not fills_same and "fills" in snapshot:
-            src_f = snapshot["fills"]
-            delta["fills"] = (
-                [dict(f) if isinstance(f, dict) else copy.deepcopy(f) for f in src_f]
-                if isinstance(src_f, list)
-                else copy.deepcopy(src_f)
-            )
+            delta["fills"] = _clone_json_tree(snapshot["fills"])
         if not history_same:
             for hk in _SHALLOW_DELTA_SCALAR_LIST_KEYS:
                 if hk in snapshot:
                     hv = snapshot[hk]
-                    delta[hk] = list(hv) if isinstance(hv, list) else copy.deepcopy(hv)
+                    delta[hk] = list(hv) if isinstance(hv, list) else _clone_json_tree(hv)
 
         if intel_same and isinstance(snapshot.get("intel_hub"), dict):
-            delta["intel_hub"] = copy.deepcopy(
-                {k: v for k, v in snapshot["intel_hub"].items() if k != "events"}
-            )
+            delta["intel_hub"] = {
+                k: _clone_json_tree(v) for k, v in snapshot["intel_hub"].items() if k != "events"
+            }
 
         delta["is_delta"] = bool(candles_same or c5_same or c15_same or fills_same or history_same or intel_same)
         delta["candles_unchanged"] = candles_same
@@ -365,15 +408,117 @@ def _sanitize_candles_tail(src_candles: Any, limit: int = 150) -> List[Dict[str,
     return out
 
 
-def _downsample_equity_history(equity_history: Any, max_points: int = 60) -> List[Dict[str, float]]:
+def _sanitize_candles_tail_cached(
+    src_candles: Any,
+    vm_cache: Optional[Dict[str, Any]],
+    cache_prefix: str,
+    limit: int = 150,
+) -> List[Dict[str, float]]:
+    """Prefix-cached candle tail sanitization shared across 1m, 5m, and 15m series."""
+    if not isinstance(src_candles, list) or not src_candles:
+        return []
+    if vm_cache is None or len(src_candles) < 2:
+        return _sanitize_candles_tail(src_candles, limit=limit)
     fz = ViewModelPublisher.finite
-    if not equity_history:
+    tail = src_candles[-limit:]
+    n_sc = len(tail)
+    first_c = tail[0] if isinstance(tail[0], dict) else {}
+    prev_c = tail[-2] if isinstance(tail[-2], dict) else {}
+    prefix_key = (
+        id(src_candles),
+        n_sc,
+        first_c.get("t"),
+        prev_c.get("t"),
+        prev_c.get("c"),
+    )
+    key_slot = f"{cache_prefix}_prefix_key"
+    val_slot = f"{cache_prefix}_prefix"
+    if vm_cache.get(key_slot) == prefix_key:
+        out = [dict(c) for c in vm_cache[val_slot]]
+    else:
+        out = _sanitize_candles_tail(tail[:-1], limit=limit)
+        vm_cache[key_slot] = prefix_key
+        vm_cache[val_slot] = [dict(c) for c in out]
+    last_c = tail[-1]
+    if isinstance(last_c, dict):
+        out.append({
+            "t": fz(last_c.get("t")),
+            "o": fz(last_c.get("o")),
+            "h": fz(last_c.get("h")),
+            "l": fz(last_c.get("l")),
+            "c": fz(last_c.get("c")),
+        })
+    return out
+
+
+def _safe_int_val(val: Any, default: int = 0) -> int:
+    if isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return int(f) if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_opt_pct(raw: Any) -> Optional[float]:
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        f = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f):
+        return None
+    return round(f * 100.0, 2)
+
+
+def _downsample_equity_history(
+    equity_history: Any,
+    max_points: int = 60,
+    vm_cache: Optional[Dict[str, Any]] = None,
+    cache_key: Optional[str] = None,
+) -> List[Dict[str, float]]:
+    fz = ViewModelPublisher.finite
+    if not equity_history or max_points <= 0:
         return []
-    pts = list(equity_history)
-    n = len(pts)
-    if n == 0:
-        return []
-    if n <= max_points:
+
+    tail_item = None
+    try:
+        n = len(equity_history)
+        if n == 0:
+            return []
+        tail_item = equity_history[-1]
+    except Exception:
+        pts = list(equity_history)
+        n = len(pts)
+        if n == 0:
+            return []
+        tail_item = pts[-1]
+    else:
+        pts = None
+
+    hist_key = (
+        id(equity_history),
+        getattr(equity_history, "_mut_gen", None),
+        n,
+        max_points,
+        tail_item,
+    )
+    if vm_cache is not None and cache_key:
+        cached_entry = vm_cache.get(cache_key)
+        if isinstance(cached_entry, tuple) and len(cached_entry) == 2 and cached_entry[0] == hist_key:
+            return [dict(pt) for pt in cached_entry[1]]
+
+    if pts is None:
+        pts = list(equity_history)
+        n = len(pts)
+        if n == 0:
+            return []
+
+    if max_points == 1:
+        indices: Any = [n - 1]
+    elif n <= max_points:
         indices = range(n)
     else:
         step = (n - 1) / float(max_points - 1)
@@ -382,12 +527,14 @@ def _downsample_equity_history(equity_history: Any, max_points: int = 60) -> Lis
     out: List[Dict[str, float]] = []
     seen_idx = -1
     for idx in indices:
-        if idx == seen_idx or idx >= n:
+        if idx == seen_idx or idx >= n or idx < 0:
             continue
         seen_idx = idx
         item = pts[idx]
         if isinstance(item, (tuple, list)) and len(item) >= 2:
             out.append({"t": fz(item[0]), "v": fz(item[1])})
+    if vm_cache is not None and cache_key:
+        vm_cache[cache_key] = (hist_key, [dict(pt) for pt in out])
     return out
 
 
@@ -395,35 +542,61 @@ def _safe_genome_params(g: Any) -> Dict[str, Any]:
     fz = ViewModelPublisher.finite
     if g is None:
         return {}
-    tp = getattr(g, "take_profit_pct", None)
-    ta = getattr(g, "trailing_activation_pct", None)
-    td = getattr(g, "trailing_distance_pct", None)
     return {
-        "generation": int(getattr(g, "generation", 1) or 1),
+        "generation": max(1, _safe_int_val(getattr(g, "generation", 1), 1)),
         "leverage": round(fz(getattr(g, "leverage", 1.0), 1.0), 2),
         "leverage_enabled": bool(getattr(g, "leverage_enabled", False)),
         "position_ratio_pct": round(fz(getattr(g, "position_ratio", 0.0)) * 100.0, 2),
         "stop_loss_pct": round(fz(getattr(g, "stop_loss_pct", 0.0)) * 100.0, 2),
-        "take_profit_pct": round(fz(tp) * 100.0, 2) if tp is not None else None,
+        "take_profit_pct": _safe_opt_pct(getattr(g, "take_profit_pct", None)),
         "risk_per_trade_pct": round(fz(getattr(g, "risk_per_trade_pct", 0.0)) * 100.0, 2),
         "news_sensitivity": round(fz(getattr(g, "news_sensitivity", 1.0), 1.0), 2),
-        "cooldown_bars": int(getattr(g, "cooldown_bars", 0) or 0),
-        "trailing_activation_pct": round(fz(ta) * 100.0, 2) if ta is not None else None,
-        "trailing_distance_pct": round(fz(td) * 100.0, 2) if td is not None else None,
+        "cooldown_bars": max(0, _safe_int_val(getattr(g, "cooldown_bars", 0), 0)),
+        "trailing_activation_pct": _safe_opt_pct(getattr(g, "trailing_activation_pct", None)),
+        "trailing_distance_pct": _safe_opt_pct(getattr(g, "trailing_distance_pct", None)),
     }
 
 
-def _build_activity_heatmap(fill_records: Any, now_ts: Optional[float] = None) -> Dict[str, Any]:
+def _build_activity_heatmap(
+    fill_records: Any,
+    now_ts: Optional[float] = None,
+    vm_cache: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     bucket_sec = 300
     bucket_count = 12
-    now_val = float(now_ts if now_ts is not None else time.time())
+    raw_now = float(now_ts if now_ts is not None else time.time())
+    now_val = raw_now if (math.isfinite(raw_now) and raw_now >= 0.0) else time.time()
     end_bucket = int(now_val // bucket_sec) * bucket_sec
     start_bucket = end_bucket - (bucket_count - 1) * bucket_sec
+
+    n_fills = len(fill_records) if fill_records else 0
+    tail_rec = fill_records[-1] if n_fills else None
+    hm_key = (
+        id(fill_records) if fill_records is not None else None,
+        end_bucket,
+        n_fills,
+        getattr(tail_rec, "fill_seq", None) if tail_rec is not None else None,
+        getattr(tail_rec, "timestamp", None) if tail_rec is not None else None,
+    )
+    if vm_cache is not None:
+        cached_hm = vm_cache.get("activity_heatmap")
+        if isinstance(cached_hm, tuple) and len(cached_hm) == 2 and cached_hm[0] == hm_key:
+            c_val = cached_hm[1]
+            return {
+                "strategies": list(c_val["strategies"]),
+                "labels": list(c_val["labels"]),
+                "bucket_minutes": c_val["bucket_minutes"],
+                "bucket_count": c_val["bucket_count"],
+                "bucket_labels": list(c_val["bucket_labels"]),
+                "matrix": [list(row) for row in c_val["matrix"]],
+                "max_count": c_val["max_count"],
+            }
+
     strat_idx = {pid: idx for idx, pid in enumerate(_HEATMAP_STRATEGIES)}
     matrix = [[0] * bucket_count for _ in _HEATMAP_STRATEGIES]
 
     if fill_records:
-        for rec in fill_records:
+        for rec in reversed(fill_records):
             pid = getattr(rec, "portfolio_id", None)
             if pid not in strat_idx:
                 continue
@@ -446,7 +619,7 @@ def _build_activity_heatmap(fill_records: Any, now_ts: Optional[float] = None) -
             bucket_labels.append("")
 
     max_count = max((cnt for row in matrix for cnt in row), default=0)
-    return {
+    res = {
         "strategies": list(_HEATMAP_STRATEGIES),
         "labels": list(_HEATMAP_LABELS),
         "bucket_minutes": 5,
@@ -455,6 +628,18 @@ def _build_activity_heatmap(fill_records: Any, now_ts: Optional[float] = None) -
         "matrix": matrix,
         "max_count": int(max_count),
     }
+    if vm_cache is not None:
+        vm_cache["activity_heatmap"] = (
+            hm_key,
+            {
+                **res,
+                "strategies": list(res["strategies"]),
+                "labels": list(res["labels"]),
+                "bucket_labels": list(res["bucket_labels"]),
+                "matrix": [list(row) for row in matrix],
+            },
+        )
+    return res
 
 
 def _build_risk_telemetry(
@@ -462,6 +647,7 @@ def _build_risk_telemetry(
     spot: Any,
     strategies: List[Dict[str, Any]],
     macro_state: Dict[str, Any],
+    vm_cache: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     fz = ViewModelPublisher.finite
     chop_er: Optional[float] = None
@@ -486,33 +672,30 @@ def _build_risk_telemetry(
         if qty_f <= 0.0:
             continue
         mark_f = spot_f if spot_f > 0.0 else abs(fz(getattr(p, "avg_entry_price", 0.0)))
-        gross_exposure += qty_f * mark_f
+        gross_exposure = fz(gross_exposure + qty_f * mark_f, gross_exposure)
 
-    total_equity = sum(fz(s.get("equity")) for s in strategies) if strategies else 0.0
+    total_equity = fz(sum(fz(s.get("equity")) for s in strategies)) if strategies else 0.0
     if total_equity <= 0.0:
         for c in (getattr(engine, "competitors", None) or []):
             p = getattr(c, "portfolio", None)
             if p is not None:
-                total_equity += fz(getattr(p, "total_equity", 0.0))
+                total_equity = fz(total_equity + fz(getattr(p, "total_equity", 0.0)), total_equity)
 
-    gross_lev = (gross_exposure / total_equity) if total_equity > 0.0 else 0.0
+    gross_lev = fz(gross_exposure / total_equity) if total_equity > 0.0 else 0.0
     macro_mult = fz((macro_state or {}).get("risk_multiplier", 1.0), 1.0)
     chop_thresh = float(CHOP_GATE_ER_THRESHOLD)
-    try:
-        blocked_cnt = int(getattr(engine, "live_chop_gate_blocked", 0) or 0)
-    except (TypeError, ValueError):
-        blocked_cnt = 0
+    blocked_cnt = _safe_int_val(getattr(engine, "live_chop_gate_blocked", 0), 0)
 
     return {
         "chop_er_20": chop_er,
         "chop_threshold": chop_thresh,
         "chop_blocked": bool(chop_er is not None and chop_er < chop_thresh),
         "chop_blocked_count": max(0, blocked_cnt),
-        "gross_exposure_usd": round(gross_exposure, 2),
-        "total_equity_usd": round(total_equity, 2),
-        "gross_leverage": round(gross_lev, 3),
-        "macro_risk_mult": round(macro_mult, 3),
-        "activity_heatmap": _build_activity_heatmap(getattr(engine, "fill_records", None)),
+        "gross_exposure_usd": round(fz(gross_exposure), 2),
+        "total_equity_usd": round(fz(total_equity), 2),
+        "gross_leverage": round(fz(gross_lev), 3),
+        "macro_risk_mult": round(fz(macro_mult, 1.0), 3),
+        "activity_heatmap": _build_activity_heatmap(getattr(engine, "fill_records", None), vm_cache=vm_cache),
     }
 
 
@@ -523,6 +706,14 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
     fz = ViewModelPublisher.finite
     q = engine.latest_quote
     spot = q.price if q else engine.broker.current_price
+
+    vm_cache = getattr(engine, "_vm_cache", None)
+    if not isinstance(vm_cache, dict):
+        vm_cache = {}
+        try:
+            engine._vm_cache = vm_cache
+        except Exception:
+            pass
 
     strategies: List[Dict[str, Any]] = []
     for r in rankings:
@@ -536,15 +727,19 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         pid = r.portfolio_id
         tel = engine.strategy_telemetry.get(pid, {})
         mc_st = tel.get("mc_stats", {})
-        in_pos = p.position_qty > Decimal("0")
+        pos_qty_d = p.position_qty if isinstance(p.position_qty, Decimal) and p.position_qty.is_finite() else Decimal("0")
+        avg_ep_d = p.avg_entry_price if isinstance(p.avg_entry_price, Decimal) and p.avg_entry_price.is_finite() else Decimal("0")
+        spot_d = spot if isinstance(spot, Decimal) and spot.is_finite() else Decimal("0")
+        in_pos = pos_qty_d > Decimal("0")
         is_short = p.position_side == PositionSide.SHORT
         upnl_pct = Decimal("0")
-        if in_pos and p.avg_entry_price > Decimal("0") and spot > Decimal("0"):
+        if in_pos and avg_ep_d > Decimal("0") and spot_d > Decimal("0"):
             if is_short:
-                upnl_pct = (p.avg_entry_price - spot) / p.avg_entry_price * Decimal("100")
+                upnl_pct = (avg_ep_d - spot_d) / avg_ep_d * Decimal("100")
             else:
-                upnl_pct = (spot - p.avg_entry_price) / p.avg_entry_price * Decimal("100")
-        tp_txt = f"{fz(g.take_profit_pct) * 100:.1f}%" if g.take_profit_pct else "—"
+                upnl_pct = (spot_d - avg_ep_d) / avg_ep_d * Decimal("100")
+        tp_pct_val = _safe_opt_pct(getattr(g, "take_profit_pct", None))
+        tp_txt = f"{tp_pct_val:.1f}%" if tp_pct_val is not None else "—"
         stop_ord = engine.broker.active_stops.get(pid)
         tp_ord = engine.broker.active_targets.get(pid)
         sl_p = fz(stop_ord.price) if (in_pos and stop_ord and stop_ord.price) else None
@@ -569,7 +764,11 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
                     f"SL {sl_pct_f * 100:.2f}% | TP {tp_txt}"
                 ),
                 "genome_params": _safe_genome_params(g),
-                "equity_history": _downsample_equity_history(getattr(p, "equity_history", None)),
+                "equity_history": _downsample_equity_history(
+                    getattr(p, "equity_history", None),
+                    vm_cache=vm_cache,
+                    cache_key=f"eq_{pid}",
+                ),
                 "equity": fz(r.equity),
                 "cash": fz(p.cash),
                 "margin_locked": fz(p.margin_locked),
@@ -579,8 +778,8 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
                 "realized_pnl": fz(p.realized_pnl),
                 "in_position": in_pos,
                 "position_side": p.position_side.value,
-                "qty": fz(p.position_qty),
-                "entry_price": fz(p.avg_entry_price) if in_pos else None,
+                "qty": fz(pos_qty_d),
+                "entry_price": fz(avg_ep_d) if in_pos else None,
                 "stop_loss": sl_p,
                 "take_profit": tp_p,
                 "win_rate_pct": fz(r.win_rate_pct),
@@ -605,14 +804,6 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
                 "ev_passed": mc_st.get("passed"),
             }
         )
-
-    vm_cache = getattr(engine, "_vm_cache", None)
-    if not isinstance(vm_cache, dict):
-        vm_cache = {}
-        try:
-            engine._vm_cache = vm_cache
-        except Exception:
-            pass
 
     live_start = float(engine.live_start_ts or 0.0)
     fill_recs = engine.fill_records
@@ -790,52 +981,7 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         vm_cache["tv_payloads"] = [dict(item) for item in tv_payloads]
 
     src_candles = engine.published_candles if engine.published_candles else engine.candles
-    candle_tail = src_candles[-150:]
-    n_sc = len(candle_tail)
-    if n_sc >= 2:
-        prefix_key = (
-            id(src_candles),
-            n_sc,
-            candle_tail[0].get("t"),
-            candle_tail[-2].get("t"),
-            candle_tail[-2].get("c"),
-        )
-        if vm_cache.get("candles_prefix_key") == prefix_key:
-            sanitized_candles = [dict(c) for c in vm_cache["candles_prefix"]]
-        else:
-            sanitized_candles = [
-                {
-                    "t": fz(c["t"]),
-                    "o": fz(c["o"]),
-                    "h": fz(c["h"]),
-                    "l": fz(c["l"]),
-                    "c": fz(c["c"]),
-                }
-                for c in candle_tail[:-1]
-            ]
-            vm_cache["candles_prefix_key"] = prefix_key
-            vm_cache["candles_prefix"] = [dict(c) for c in sanitized_candles]
-        last_c = candle_tail[-1]
-        sanitized_candles.append(
-            {
-                "t": fz(last_c["t"]),
-                "o": fz(last_c["o"]),
-                "h": fz(last_c["h"]),
-                "l": fz(last_c["l"]),
-                "c": fz(last_c["c"]),
-            }
-        )
-    else:
-        sanitized_candles = [
-            {
-                "t": fz(c["t"]),
-                "o": fz(c["o"]),
-                "h": fz(c["h"]),
-                "l": fz(c["l"]),
-                "c": fz(c["c"]),
-            }
-            for c in candle_tail
-        ]
+    sanitized_candles = _sanitize_candles_tail_cached(src_candles, vm_cache, "candles")
 
     intel_hub = engine.macro_commander.get_intel_hub_telemetry()
     macro_state_safe = (
@@ -843,12 +989,12 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         if isinstance(intel_hub, dict) and isinstance(intel_hub.get("macro_state"), dict)
         else engine.macro_commander.current_state.to_dict()
     )
-    risk_telemetry = _build_risk_telemetry(engine, spot, strategies, macro_state_safe)
-    candles_5m_view = _sanitize_candles_tail(getattr(engine, "candles_5m", None))
-    candles_15m_view = _sanitize_candles_tail(getattr(engine, "candles_15m", None))
+    risk_telemetry = _build_risk_telemetry(engine, spot, strategies, macro_state_safe, vm_cache=vm_cache)
+    candles_5m_view = _sanitize_candles_tail_cached(getattr(engine, "candles_5m", None), vm_cache, "candles_5m")
+    candles_15m_view = _sanitize_candles_tail_cached(getattr(engine, "candles_15m", None), vm_cache, "candles_15m")
     llm_cli = getattr(engine, "llm_client", None)
     raw_model = getattr(llm_cli, "model_commander", None) or getattr(llm_cli, "model_ingest", None)
-    active_model = raw_model if (isinstance(raw_model, str) and raw_model.strip()) else "gemini-3.1-flash-lite"
+    active_model = raw_model if (isinstance(raw_model, str) and raw_model.strip()) else DEFAULT_GEMINI_MODEL
 
     return {
         "paused": engine.paused,

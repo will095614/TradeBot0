@@ -402,16 +402,16 @@ def test_dashboard_deferred_shutdown_and_reset_seq_carryover():
 
 
 def test_v260_frontend_and_installer_contracts():
-    assert APP_VERSION == "V3.1.0"
+    assert APP_VERSION == "V3.2.0"
     iss = (ROOT / "TradeBot0.iss").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     css = (ROOT / "src" / "gui" / "assets" / "app.css").read_text(encoding="utf-8")
     js = (ROOT / "src" / "gui" / "assets" / "app.js").read_text(encoding="utf-8")
 
-    assert '#define MyAppVersion "V3.1.0"' in iss
-    assert "VersionInfoVersion=3.1.0" in iss
+    assert '#define MyAppVersion "V3.2.0"' in iss
+    assert "VersionInfoVersion=3.2.0" in iss
     assert iss.count('AppUserModelID: "TradeBot0.QuantArena"') == 2
-    assert "TradeBot0Setup-V3.1.0.exe" in readme
+    assert "TradeBot0Setup-V3.2.0.exe" in readme
     assert "nf-is-rolling" not in js
     assert "@keyframes nfRollCurrUp" in css
     assert ".border-beam-ring::before" in css

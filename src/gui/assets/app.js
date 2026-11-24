@@ -32,7 +32,10 @@ let hasCheckedOnboarding = false;
 let isWizardOpen = false;
 let wizardOpenGen = 0;
 let isSavingSetup = false;
-let isCheckingWizardClose = false;
+let wizardPrefsDirty = false;
+let stratDetailCloseTimer = null;
+let activeChartTfUsed = '1m';
+let isExportingJournal = false;
 
 // Global Arena Data & Polling States
 let latestState = null;
@@ -998,7 +1001,7 @@ function createPositionClosedToastElement(strat, fill, prevPos) {
       </div>
       <div class="toast-bracket-row">
         <div class="toast-pnl-pill ${pnlCls}">
-          <span>Realized PnL: <strong>${pnlVal >= 0 ? '+' : '-'}$${Math.abs(pnlVal).toFixed(2)}</strong></span>
+          <span>Realized PnL: <strong class="private-maskable">${pnlVal >= 0 ? '+' : '-'}$${Math.abs(pnlVal).toFixed(2)}</strong></span>
           <span class="toast-pnl-trigger">${trigger}</span>
         </div>
       </div>
@@ -1549,18 +1552,36 @@ let modBayTab = 'gauges';
 let isPrivateBalance = false;
 let activeDetailStratId = null;
 
+function formatChartReadoutLabel() {
+  return chartTimeframe === activeChartTfUsed
+    ? `${chartTimeframe} Candles`
+    : `${chartTimeframe} (Warming -> 1m)`;
+}
+
 function setChartTimeframe(tf) {
   const valid = ['1m', '5m', '15m'];
-  chartTimeframe = valid.indexOf(tf) !== -1 ? tf : '1m';
+  const nextTf = valid.indexOf(tf) !== -1 ? tf : '1m';
+  chartTimeframe = nextTf;
   const grp = document.getElementById('chartTimeframeGroup');
   if (grp) {
     grp.querySelectorAll('.tf-btn').forEach((btn) => btn.classList.remove('is-active'));
   }
   const activeBtn = document.getElementById('btnTf' + chartTimeframe);
   if (activeBtn) activeBtn.classList.add('is-active');
+  priceHoverPos = null;
+  hoveredCandleData = null;
+  lastHoverIdx = -1;
+  lastHoverSnapY = -1;
+  const tip = document.getElementById('priceTooltip');
+  if (tip) tip.style.display = 'none';
+  if (latestState && typeof getActiveChartSeries === 'function') {
+    activeChartTfUsed = getActiveChartSeries(latestState).tfUsed;
+  } else {
+    activeChartTfUsed = chartTimeframe === '1m' ? '1m' : activeChartTfUsed;
+  }
   const readout = document.getElementById('chartScrubReadout');
-  if (readout && !priceHoverPos) {
-    readout.textContent = `${chartTimeframe} Candles`;
+  if (readout) {
+    readout.textContent = formatChartReadoutLabel();
   }
   lastNewestCandleTime = 0;
   animCandles = [];
@@ -1602,6 +1623,9 @@ function setModBayTab(tab) {
     pane.style.display = isAct ? 'flex' : 'none';
   });
   if (latestState) renderModularTelemetryBay(latestState);
+  if (modBayTab === 'evolutions' && typeof updateScrollAreaFades === 'function') {
+    updateScrollAreaFades(document.getElementById('modEvolutionsList'));
+  }
 }
 window.setModBayTab = setModBayTab;
 
@@ -1622,6 +1646,13 @@ function togglePrivateBalance() {
     localStorage.setItem('tb0_private_balance', isPrivateBalance ? '1' : '0');
   } catch (_) { }
   applyPrivateBalanceUi();
+  const curveHover = document.getElementById('stratDetailCurveHover');
+  if (curveHover) {
+    curveHover.textContent = 'Hover curve to inspect';
+  }
+  if (activeDetailStratId && latestState && typeof refreshStrategyDetailModal === 'function') {
+    refreshStrategyDetailModal(latestState);
+  }
   if (typeof showChartToast === 'function') {
     showChartToast({
       action: 'VIEW',
@@ -1633,10 +1664,14 @@ function togglePrivateBalance() {
 window.togglePrivateBalance = togglePrivateBalance;
 
 async function exportTradeJournal(fmt = 'csv') {
+  if (isExportingJournal) return;
   const fmtNorm = (String(fmt || 'csv').toLowerCase() === 'json') ? 'json' : 'csv';
   if (!(window.pywebview && window.pywebview.api && typeof window.pywebview.api.export_trade_journal === 'function')) {
     return;
   }
+  isExportingJournal = true;
+  const exportBtn = document.getElementById('btnExportJournal');
+  if (exportBtn) exportBtn.disabled = true;
   try {
     const res = await window.pywebview.api.export_trade_journal(fmtNorm);
     if (res && res.ok) {
@@ -1656,6 +1691,16 @@ async function exportTradeJournal(fmt = 'csv') {
     }
   } catch (e) {
     console.debug('exportTradeJournal err:', e);
+    if (typeof showChartToast === 'function') {
+      showChartToast({
+        action: 'ERROR',
+        triggerReason: 'Trade journal export failed',
+        timestamp: Date.now(),
+      });
+    }
+  } finally {
+    isExportingJournal = false;
+    if (exportBtn) exportBtn.disabled = false;
   }
 }
 window.exportTradeJournal = exportTradeJournal;
@@ -1713,7 +1758,7 @@ function renderModularTelemetryBay(state) {
     const nextLev = `${lev.toFixed(2)}x`;
     if (levVal && levVal.textContent !== nextLev) levVal.textContent = nextLev;
     if (levMeta) levMeta.classList.add('private-maskable');
-    const nextExp = `$${Math.round(expUsd).toLocaleString()} exp`;
+    const nextExp = `${fmtUsd(expUsd, 0)} exp`;
     if (levMeta && levMeta.textContent !== nextExp) levMeta.textContent = nextExp;
 
     const rMult = Number(rt.macro_risk_mult != null ? rt.macro_risk_mult : (macro.risk_multiplier || 1.0));
@@ -1735,7 +1780,7 @@ function renderModularTelemetryBay(state) {
     const bLabels = Array.isArray(hm.bucket_labels) ? hm.bucket_labels : [];
     const maxCnt = Math.max(1, Number(hm.max_count || 0));
     const totalFills = matrix.reduce((acc, row) => acc + (Array.isArray(row) ? row.reduce((a, b) => a + Number(b || 0), 0) : 0), 0);
-    const hmSig = JSON.stringify({ matrix, bLabels });
+    const hmSig = matrix.map((row) => (Array.isArray(row) ? row.join(',') : '')).join(';') + '|' + bLabels.join(',') + '|' + maxCnt;
     const gridEl = document.getElementById('modHeatmapGrid');
     const sumEl = document.getElementById('modHeatmapSummary');
     if (sumEl) {
@@ -1778,9 +1823,12 @@ function renderModularTelemetryBay(state) {
           listEl.innerHTML = '<div class="mod-evo-empty">No evolution tournaments recorded in this session yet.</div>';
         } else {
           listEl.innerHTML = evts.slice().reverse().slice(0, 12).map((e) => {
-            const fromGen = e.from_gen;
+            const rawFrom = e.from_gen;
+            const fromGen = (rawFrom !== null && rawFrom !== undefined && rawFrom !== '' && Number.isFinite(Number(rawFrom)))
+              ? Number(rawFrom)
+              : null;
             const toGen = Number(e.to_gen || e.generation || 1);
-            const genLbl = fromGen != null ? `Gen #${fromGen} -> #${toGen}` : `Gen #${toGen}`;
+            const genLbl = fromGen !== null ? `Gen #${fromGen} -> #${toGen}` : `Gen #${toGen}`;
             const trig = escapeHtml(String(e.trigger || e.leader || e.champion || 'EVOLVE'));
             const roi = Number(e.leader_roi_pct || 0);
             const tStr = e.time || (e.ts ? new Date(e.ts * 1000).toTimeString().slice(0, 5) : '');
@@ -1789,6 +1837,9 @@ function renderModularTelemetryBay(state) {
             return `<div class="mod-evo-item"><div class="mod-evo-top"><span>${genLbl} · ${trig}</span><span class="${roi >= 0 ? 'up' : 'down'} num">${roiTxt}</span></div><div class="mod-evo-sub num">${escapeHtml(tStr)} · ${note}</div></div>`;
           }).join('');
         }
+        if (typeof updateScrollAreaFades === 'function') {
+          updateScrollAreaFades(listEl);
+        }
       }
     }
   }
@@ -1796,9 +1847,9 @@ function renderModularTelemetryBay(state) {
 
 function renderAll(state) {
   renderHeader(state);
-  renderMacroRibbon(state);
   const inIntel = currentMainView === 'intel';
   if (!hasFirstTableRendered || !inIntel) {
+    renderMacroRibbon(state);
     renderTacticalHud(state);
     renderStrategies(state);
     renderLeaderboard(state);
@@ -3068,7 +3119,7 @@ function renderFills(state) {
         <td style="white-space:nowrap;">${actionBadge}</td>
         <td class="text-right">${qtyStr}</td>
         <td class="text-right">${fmtUsd(f.price, 2)}${priceSubHtml}</td>
-        <td class="text-right ${pnlCls}" style="font-weight:650;">${pnlStr}</td>
+        <td class="text-right ${pnlCls} private-maskable" style="font-weight:650;">${pnlStr}</td>
         <td style="color:var(--ss-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${reasonEsc}">${reasonEsc}</td>
       </tr>
     `;
@@ -3155,24 +3206,28 @@ let targetCandles = [];
 let candleSlideOffset = 0;
 let lastNewestCandleTime = 0;
 
+function getActiveChartSeries(state) {
+  if (!state) return { candles: [], tfUsed: '1m' };
+  if (chartTimeframe === '15m' && Array.isArray(state.candles_15m) && state.candles_15m.length >= 2) {
+    return { candles: state.candles_15m, tfUsed: '15m' };
+  }
+  if (chartTimeframe === '5m' && Array.isArray(state.candles_5m) && state.candles_5m.length >= 2) {
+    return { candles: state.candles_5m, tfUsed: '5m' };
+  }
+  return { candles: state.candles || [], tfUsed: '1m' };
+}
+
 function drawPriceChart(state) {
   if (!state) return;
   latestState = state;
 
-  let rawCandles = state.candles || [];
-  let activeTfUsed = '1m';
-  if (chartTimeframe === '15m' && Array.isArray(state.candles_15m) && state.candles_15m.length >= 2) {
-    rawCandles = state.candles_15m;
-    activeTfUsed = '15m';
-  } else if (chartTimeframe === '5m' && Array.isArray(state.candles_5m) && state.candles_5m.length >= 2) {
-    rawCandles = state.candles_5m;
-    activeTfUsed = '5m';
-  }
+  const activeSeries = getActiveChartSeries(state);
+  const rawCandles = activeSeries.candles;
+  const activeTfUsed = activeSeries.tfUsed;
+  activeChartTfUsed = activeTfUsed;
   const readoutEl = document.getElementById('chartScrubReadout');
   if (readoutEl && !priceHoverPos) {
-    const nextRo = chartTimeframe === activeTfUsed
-      ? `${chartTimeframe} Candles`
-      : `${chartTimeframe} (Warming -> 1m)`;
+    const nextRo = formatChartReadoutLabel();
     if (readoutEl.textContent !== nextRo) readoutEl.textContent = nextRo;
   }
   const rawPrices = state.price_history || [];
@@ -3304,7 +3359,7 @@ function drawPriceChart(state) {
     const lastC = targetCandles.length > 0 ? targetCandles[targetCandles.length - 1] : null;
     const hKey = priceHoverPos ? `${Math.round(priceHoverPos.x)}:${Math.round(priceHoverPos.y)}` : '';
     const sKey = strategies.map(s => `${s.id}:${s.in_position ? 1 : 0}:${s.entry_price || 0}:${s.stop_loss || 0}:${s.take_profit || 0}`).join('|');
-    const pausedSig = `${chartTimeframe}:${targetSpot}:${targetCandles.length}:${lastC ? lastC.t + ':' + lastC.c : ''}:${scaleMode}:${canvasW}:${hKey}:${sKey}`;
+    const pausedSig = `${chartTimeframe}:${activeTfUsed}:${targetSpot}:${targetCandles.length}:${lastC ? lastC.t + ':' + lastC.c : ''}:${scaleMode}:${canvasW}x${canvasH}:${hKey}:${sKey}`;
     if (pausedSig === lastPausedCanvasSig && hasFirstChartDrawn) {
       return;
     }
@@ -3532,20 +3587,40 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     }
     ctx.stroke();
 
-    // Pass 2: Rounded Candle Bodies
+    // Pass 2: Rounded Candle Bodies (batched by direction for minimal canvas state switches)
+    const hasRoundRect = typeof ctx.roundRect === 'function';
+    ctx.fillStyle = '#00E676';
+    ctx.beginPath();
     for (let i = 0; i < n; i++) {
       const c = visibleCandles[i];
       const cx = startX + (i + 0.5) * step + shiftX;
       if (i === n - 1) activeHeadX = cx;
-
-      const isUp = c.c >= c.o;
-      ctx.fillStyle = isUp ? '#00E676' : '#FF334B';
-      const yOpen = toY(c.o);
-      const yClose = toY(c.c);
-      const topY = Math.min(yOpen, yClose);
-      const bHeight = Math.max(2.5, Math.abs(yClose - yOpen));
-      fillRoundRect(ctx, cx - bodyW / 2, topY, bodyW, bHeight, 1.5);
+      if (c.c >= c.o) {
+        const yOpen = toY(c.o);
+        const yClose = toY(c.c);
+        const topY = Math.min(yOpen, yClose);
+        const bHeight = Math.max(2.5, Math.abs(yClose - yOpen));
+        if (hasRoundRect) ctx.roundRect(cx - bodyW / 2, topY, bodyW, bHeight, 1.5);
+        else ctx.rect(cx - bodyW / 2, topY, bodyW, bHeight);
+      }
     }
+    ctx.fill();
+
+    ctx.fillStyle = '#FF334B';
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const c = visibleCandles[i];
+      if (c.c < c.o) {
+        const cx = startX + (i + 0.5) * step + shiftX;
+        const yOpen = toY(c.o);
+        const yClose = toY(c.c);
+        const topY = Math.min(yOpen, yClose);
+        const bHeight = Math.max(2.5, Math.abs(yClose - yOpen));
+        if (hasRoundRect) ctx.roundRect(cx - bodyW / 2, topY, bodyW, bHeight, 1.5);
+        else ctx.rect(cx - bodyW / 2, topY, bodyW, bHeight);
+      }
+    }
+    ctx.fill();
 
 
     // Session High / Low Callout Pills
@@ -4076,28 +4151,42 @@ let lastGlobalPointerY = -1;
 let latestPointerEvent = null;
 let spotlightRaf = null;
 
-function trackLgSpotlight(e) {
+function measureLgSpotlight(e) {
   const evt = e || latestPointerEvent;
-  if (!evt) return;
+  if (!evt) return [];
   let target = (evt.target && typeof evt.target.closest === 'function') ? evt.target : null;
   if (!target && evt.clientX !== undefined && evt.clientY !== undefined) {
     target = document.elementFromPoint(evt.clientX, evt.clientY);
   }
-  if (!target || typeof target.closest !== 'function') return;
+  if (!target || typeof target.closest !== 'function') return [];
 
+  const ops = [];
   const spotTarget = target.closest('.lg-spot-card, .strat-card-mini, .intel-event-card, .metal-fx-cta');
   if (spotTarget) {
     const r = spotTarget.getBoundingClientRect();
-    const lx = Math.round(evt.clientX - r.left);
-    const ly = Math.round(evt.clientY - r.top);
-    spotTarget.style.setProperty('--mx', `${lx}px`);
-    spotTarget.style.setProperty('--my', `${ly}px`);
+    ops.push({
+      el: spotTarget,
+      lx: Math.round(evt.clientX - r.left),
+      ly: Math.round(evt.clientY - r.top),
+    });
   }
   const ctaTarget = target.closest('.metal-fx-cta');
   if (ctaTarget && ctaTarget !== spotTarget) {
     const cr = ctaTarget.getBoundingClientRect();
-    ctaTarget.style.setProperty('--mx', `${Math.round(evt.clientX - cr.left)}px`);
-    ctaTarget.style.setProperty('--my', `${Math.round(evt.clientY - cr.top)}px`);
+    ops.push({
+      el: ctaTarget,
+      lx: Math.round(evt.clientX - cr.left),
+      ly: Math.round(evt.clientY - cr.top),
+    });
+  }
+  return ops;
+}
+
+function trackLgSpotlight(e) {
+  const ops = measureLgSpotlight(e);
+  for (let i = 0; i < ops.length; i++) {
+    ops[i].el.style.setProperty('--mx', `${ops[i].lx}px`);
+    ops[i].el.style.setProperty('--my', `${ops[i].ly}px`);
   }
 }
 
@@ -4110,6 +4199,12 @@ window.addEventListener('pointermove', (e) => {
   if (!spotlightRaf) {
     spotlightRaf = requestAnimationFrame(() => {
       spotlightRaf = null;
+      const evt = latestPointerEvent;
+      if (!evt) return;
+      // Batch DOM geometry reads before style writes to avoid forced layout thrashing.
+      const spotlightOps = (!isViewTransitioning && !isSplashTransitioning)
+        ? measureLgSpotlight(evt)
+        : [];
       // Write --gx/--gy on the backdrop node itself rather than documentElement
       // so pointer moves never invalidate styles across the entire DOM tree.
       if (!cursorBackdropEl) {
@@ -4118,8 +4213,9 @@ window.addEventListener('pointermove', (e) => {
       const gxTarget = cursorBackdropEl || document.documentElement;
       gxTarget.style.setProperty('--gx', `${latestPointerEvent.clientX}px`);
       gxTarget.style.setProperty('--gy', `${latestPointerEvent.clientY}px`);
-      if (!isViewTransitioning && !isSplashTransitioning) {
-        trackLgSpotlight(latestPointerEvent);
+      for (let i = 0; i < spotlightOps.length; i++) {
+        spotlightOps[i].el.style.setProperty('--mx', `${spotlightOps[i].lx}px`);
+        spotlightOps[i].el.style.setProperty('--my', `${spotlightOps[i].ly}px`);
       }
     });
   }
@@ -4142,7 +4238,7 @@ function updateChartMouseHover(clientX, clientY) {
     const mouseY = clientY - rect.top;
     priceHoverPos = { x: mouseX, y: mouseY };
 
-    const candles = (animCandles && animCandles.length > 0) ? animCandles : (latestState.candles || []);
+    const candles = (animCandles && animCandles.length > 0) ? animCandles : getActiveChartSeries(latestState).candles;
     const useCandles = candles.length >= 2;
     const padLeft = 12, padRight = 98;
     const candleRightOffset = 80;
@@ -4173,7 +4269,7 @@ function updateChartMouseHover(clientX, clientY) {
         tip.style.left = Math.min(rect.width - 195, Math.max(10, mouseX + 14)) + 'px';
         tip.style.top = Math.max(10, mouseY - 58) + 'px';
         const tipHtml = `
-            <div style="font-weight:600;color:var(--ss-text);margin-bottom:2px;">${tStr} · 1m Candle</div>
+            <div style="font-weight:600;color:var(--ss-text);margin-bottom:2px;">${tStr} · ${activeChartTfUsed} Candle</div>
             <div>O <strong>$${c.o.toFixed(1)}</strong> · H <strong>$${c.h.toFixed(1)}</strong></div>
             <div>L <strong>$${c.l.toFixed(1)}</strong> · C <strong class="${isUp ? 'up' : 'down'}">$${c.c.toFixed(1)} (${isUp ? '+' : ''}${chg}%)</strong></div>
           `;
@@ -4214,7 +4310,7 @@ function updateChartMouseHover(clientX, clientY) {
     lastHoverSnapY = -1;
     tip.style.display = 'none';
     if (scrubEl) {
-      scrubEl.textContent = '1m Candles';
+      scrubEl.textContent = formatChartReadoutLabel();
     }
   }
   if (needsRedraw) {
@@ -4284,7 +4380,7 @@ function setupChartInteraction() {
     lastHoverSnapY = -1;
     tip.style.display = 'none';
     if (scrubEl) {
-      scrubEl.textContent = '1m Candles';
+      scrubEl.textContent = formatChartReadoutLabel();
     }
     if (latestState) drawPriceChart(latestState);
   });
@@ -4298,6 +4394,9 @@ const triggerSmoothResize = () => {
   resizeRaf = requestAnimationFrame(() => {
     resizeRaf = null;
     if (latestState) drawPriceChart(latestState);
+    if (currentMainView === 'intel' && typeof syncIntelChipSlider === 'function') {
+      syncIntelChipSlider();
+    }
   });
 };
 
@@ -4332,20 +4431,46 @@ function blurActiveFocus() {
   }
 }
 
+const MODAL_INERT_STACK = [
+  { id: 'commandPaletteModal', cls: 'modal-visible' },
+  { id: 'shutdownModal', cls: 'modal-visible' },
+  { id: 'networkOfflineOverlay', cls: 'modal-visible' },
+  { id: 'wizardCloseConfirmModal', cls: 'modal-visible' },
+  { id: 'strategyDetailModal', cls: 'modal-visible' },
+  { id: 'setupWizardModal', cls: 'wizard-visible' },
+  { id: 'resetConfirmModal', cls: 'modal-visible' },
+];
+
 function isAnyModalBlockingShortcuts() {
   if (isWizardOpen) return true;
-  const ids = ['shutdownModal', 'resetConfirmModal', 'wizardCloseConfirmModal', 'strategyDetailModal', 'networkOfflineOverlay', 'commandPaletteModal'];
-  for (let i = 0; i < ids.length; i++) {
-    const el = document.getElementById(ids[i]);
-    if (el && el.classList.contains('modal-visible')) return true;
+  for (let i = 0; i < MODAL_INERT_STACK.length; i++) {
+    const spec = MODAL_INERT_STACK[i];
+    const el = document.getElementById(spec.id);
+    if (el && el.classList.contains(spec.cls)) return true;
   }
   return false;
 }
 
 function syncAppShellInert() {
+  let topActive = null;
+  const openEls = [];
+  for (let i = 0; i < MODAL_INERT_STACK.length; i++) {
+    const spec = MODAL_INERT_STACK[i];
+    const el = document.getElementById(spec.id);
+    if (!el) continue;
+    const isOpen = el.classList.contains(spec.cls) || (spec.id === 'setupWizardModal' && isWizardOpen);
+    if (isOpen && !topActive) {
+      topActive = el;
+    }
+    openEls.push({ el, isOpen });
+  }
+  for (let i = 0; i < openEls.length; i++) {
+    const { el, isOpen } = openEls[i];
+    el.inert = isOpen ? (el !== topActive) : false;
+  }
   const shell = document.querySelector('.app-shell');
   if (shell) {
-    shell.inert = isAnyModalBlockingShortcuts();
+    shell.inert = Boolean(topActive || isWizardOpen);
   }
 }
 
@@ -4436,7 +4561,13 @@ function updateUiClockDisplay() {
     const wasShown = netOverlay.classList.contains('modal-visible');
     const showNetOverlay = isOffline && document.body && document.body.classList.contains('arena-ready');
     netOverlay.classList.toggle('modal-visible', showNetOverlay);
-    if (showNetOverlay && !wasShown) blurActiveFocus();
+    if (showNetOverlay && !wasShown) {
+      const cmdModal = document.getElementById('commandPaletteModal');
+      if (cmdModal && cmdModal.classList.contains('modal-visible') && typeof closeCommandPalette === 'function') {
+        closeCommandPalette();
+      }
+      blurActiveFocus();
+    }
     if (showNetOverlay !== wasShown) syncAppShellInert();
   }
 
@@ -4559,6 +4690,7 @@ function updateUiClockDisplay() {
       if (incoming) incoming.style.display = 'grid';
       if (viewName === 'intel') {
         if (latestState) renderIntelHub(latestState);
+        if (typeof syncIntelChipSlider === 'function') syncIntelChipSlider();
         pumpIntelArticlePreload();
       } else {
         if (latestState) renderAll(latestState);
@@ -4581,6 +4713,7 @@ function updateUiClockDisplay() {
 
     if (viewName === 'intel') {
       if (latestState) renderIntelHub(latestState);
+      if (typeof syncIntelChipSlider === 'function') syncIntelChipSlider();
     } else {
       invalidateCanvasSizeCache();
       if (latestState) {
@@ -4613,6 +4746,7 @@ function updateUiClockDisplay() {
       isViewTransitioning = false;
       if (typeof syncAmbientShaderMotion === 'function') syncAmbientShaderMotion();
       if (viewName === 'intel') {
+        if (typeof syncIntelChipSlider === 'function') syncIntelChipSlider();
         pumpIntelArticlePreload();
       } else {
         triggerSmoothResize();
@@ -5238,9 +5372,12 @@ function updateUiClockDisplay() {
       return;
     }
     const left = activeChip.offsetLeft || 0;
+    const top = activeChip.offsetTop || 0;
     const width = activeChip.offsetWidth || 0;
+    const height = activeChip.offsetHeight || 0;
     slider.style.width = `${width}px`;
-    slider.style.transform = `translateX(${left}px)`;
+    slider.style.height = `${height}px`;
+    slider.style.transform = `translate3d(${left}px, ${top}px, 0)`;
     slider.style.opacity = width > 0 ? '1' : '0';
   }
 
@@ -5514,11 +5651,11 @@ function updateUiClockDisplay() {
     const headEl = document.getElementById('macroHubHeadline');
     const dirRow = document.getElementById('macroHubDirective');
     if (headEl) {
-      const nextHead = macro.active_headline || 'Market in balanced equilibrium.';
+      const nextHead = String(macro.active_headline || 'Market in balanced equilibrium.').replace(/\s+/g, ' ').trim();
       if (headEl.textContent !== nextHead) {
         headEl.textContent = nextHead;
         if (dirRow && !isReducedMotionPreferred() && !(document.body && document.body.classList.contains('window-hidden'))) {
-          const words = String(nextHead).split(' ');
+          const words = nextHead.split(' ');
           headEl.innerHTML = words.map((w, idx) => `<span class="directive-word" style="--dw-i:${Math.min(idx, 18)}">${escapeHtml(w)}</span>`).join(' ');
         }
       }
@@ -5526,11 +5663,6 @@ function updateUiClockDisplay() {
 
     // 3. Curated Event Cards
     const countLbl = document.getElementById('intelEventCountLabel');
-    if (countLbl) {
-      const nextCount = `${events.length} Curated Events`;
-      if (countLbl.textContent !== nextCount) countLbl.textContent = nextCount;
-    }
-
     const emptyStateEl = document.getElementById('intelEmptyState');
     const listContainer = document.getElementById('intelEventsList');
     if (listContainer) {
@@ -5556,6 +5688,7 @@ function updateUiClockDisplay() {
         intelArticlePreloadQueue.length = 0;
         listContainer._intelOrder = '';
         listContainer._intelListSig = '';
+        listContainer._lastVisibleCount = 0;
         const sync = intel.sync || {};
         const stage = typeof sync.stage === 'string' ? sync.stage : 'idle';
         const rawPct = Number(sync.percent);
@@ -5600,12 +5733,17 @@ function updateUiClockDisplay() {
         ];
         for (let i = 0; i < events.length; i++) {
           const ev = events[i];
-          sigParts.push(`${intelEventKey(ev)}:${ev.urgency || 0}:${ev.sentiment || ''}:${ev.headline || ''}`);
+          const acts = ev.strategy_actions ? Object.values(ev.strategy_actions).join(',') : '';
+          const tks = Array.isArray(ev.tickers) ? ev.tickers.join(',') : '';
+          const sumLen = ev.summary ? String(ev.summary).length : 0;
+          sigParts.push(`${intelEventKey(ev)}:${ev.urgency || 0}:${ev.sentiment || ''}:${ev.headline || ''}:${sumLen}:${tks}:${acts}:${ev.article_state || ''}:${ev.article_progress || 0}`);
         }
         const nextListSig = sigParts.join('|');
-        const hasStaleLoad = Boolean(listContainer.querySelector('.intel-stream-loading'));
-        if (!intelSortTransitionPending && !hasStaleLoad && listContainer._intelListSig === nextListSig) {
+        if (!intelSortTransitionPending && listContainer._intelListSig === nextListSig) {
           // Events, filters, sort mode, and macro stance unchanged; skip redundant DOM work
+          if (currentMainView === 'intel' && intel && intel.ai && intel.ai.status === 'ONLINE') {
+            pumpIntelArticlePreload();
+          }
         } else {
           listContainer._intelListSig = nextListSig;
           const sorted = sortIntelEvents(events);
@@ -5625,6 +5763,7 @@ function updateUiClockDisplay() {
             card.style.display = matches ? '' : 'none';
             if (matches) visibleCount += 1;
           });
+          listContainer._lastVisibleCount = visibleCount;
           Object.keys(intelEventNodes).forEach(function (key) {
             if (!seenKeys.has(key)) {
               const stale = intelEventNodes[key];
@@ -5646,14 +5785,6 @@ function updateUiClockDisplay() {
             listContainer.style.display = '';
             if (emptyStateEl) emptyStateEl.style.display = 'none';
           }
-          syncIntelChipSlider();
-          if (countLbl) {
-            const isFiltered = (intelDomainFilter !== 'all') || (intelSearchQuery.length > 0);
-            const nextFilteredCount = isFiltered
-              ? `${visibleCount} / ${events.length} Filtered`
-              : `${events.length} Curated Events`;
-            if (countLbl.textContent !== nextFilteredCount) countLbl.textContent = nextFilteredCount;
-          }
           const nextOrder = sorted.map(intelEventKey).join('|');
           if (!intelSortTransitionPending && listContainer._intelOrder !== nextOrder) {
             reorderIntelEventCards(listContainer, sorted);
@@ -5666,6 +5797,16 @@ function updateUiClockDisplay() {
           if (typeof refreshScrollAreaFades === 'function') refreshScrollAreaFades();
         }
       }
+    }
+    if (countLbl) {
+      const isFiltered = (intelDomainFilter !== 'all') || (intelSearchQuery.length > 0);
+      const vis = (listContainer && typeof listContainer._lastVisibleCount === 'number')
+        ? listContainer._lastVisibleCount
+        : events.length;
+      const nextCount = (events.length > 0 && isFiltered)
+        ? `${vis} / ${events.length} Filtered`
+        : `${events.length} Curated Events`;
+      if (countLbl.textContent !== nextCount) countLbl.textContent = nextCount;
     }
   }
 
@@ -5785,14 +5926,25 @@ function updateUiClockDisplay() {
     }
     if (uiClockInterval) { clearInterval(uiClockInterval); uiClockInterval = null; }
     if (toastWatchdogInterval) { clearInterval(toastWatchdogInterval); toastWatchdogInterval = null; }
+    if (toastStaggerTimer) { clearTimeout(toastStaggerTimer); toastStaggerTimer = null; }
+    clearSplashTimers();
     if (splashLoop) { clearInterval(splashLoop); splashLoop = null; }
     if (splashSafetyTimer) { clearTimeout(splashSafetyTimer); splashSafetyTimer = null; }
     if (viewSwitchTimer) { clearTimeout(viewSwitchTimer); viewSwitchTimer = null; }
     if (wizardCloseTimer) { clearTimeout(wizardCloseTimer); wizardCloseTimer = null; }
+    if (shutdownCloseTimer) { clearTimeout(shutdownCloseTimer); shutdownCloseTimer = null; }
+    if (wizardCloseConfirmCloseTimer) { clearTimeout(wizardCloseConfirmCloseTimer); wizardCloseConfirmCloseTimer = null; }
+    if (stratDetailCloseTimer) { clearTimeout(stratDetailCloseTimer); stratDetailCloseTimer = null; }
     if (cmdPaletteCloseTimer) { clearTimeout(cmdPaletteCloseTimer); cmdPaletteCloseTimer = null; }
     if (viewSwitchRaf) { cancelAnimationFrame(viewSwitchRaf); viewSwitchRaf = 0; }
+    if (resizeRaf) { cancelAnimationFrame(resizeRaf); resizeRaf = null; }
     if (spotlightRaf) { cancelAnimationFrame(spotlightRaf); spotlightRaf = null; }
     if (typeof chartAnimRaf === 'number' && chartAnimRaf > 0) { cancelAnimationFrame(chartAnimRaf); chartAnimRaf = null; }
+    const resetTrackEl = document.getElementById('resetSlideTrack');
+    if (resetTrackEl && resetTrackEl._commitTimer) {
+      clearTimeout(resetTrackEl._commitTimer);
+      resetTrackEl._commitTimer = null;
+    }
     Object.keys(intelArticleProgressTimers).forEach((k) => stopIntelArticleProgressPoll(k));
     stopSaveLaunchPoll();
     if (typeof destroyAmbientBackdrop === 'function') destroyAmbientBackdrop();
@@ -5836,6 +5988,7 @@ function updateUiClockDisplay() {
       if (splashSafetyTimer) { clearTimeout(splashSafetyTimer); splashSafetyTimer = null; }
     }
     const openGen = ++wizardOpenGen;
+    wizardPrefsDirty = false;
     const modal = document.getElementById('setupWizardModal');
     const closeBtn = document.getElementById('btnWizardClose');
     if (closeBtn) {
@@ -5891,7 +6044,7 @@ function updateUiClockDisplay() {
 
   function closeSetupWizardModal() {
     wizardOpenGen += 1;
-    isCheckingWizardClose = false;
+    wizardPrefsDirty = false;
     const keyGeminiInput = document.getElementById('keyGemini');
     if (keyGeminiInput) keyGeminiInput.value = '';
     const modal = document.getElementById('setupWizardModal');
@@ -5950,9 +6103,14 @@ function updateUiClockDisplay() {
   // Wizard dismiss paths (X button / overlay click / Escape) warn that
   // any typed API key has not been saved yet.
   function requestCloseSetupWizardModal() {
-    if (isSavingSetup || !isWizardOpen || isCheckingWizardClose) return;
+    if (isSavingSetup || !isWizardOpen) return;
     const closeBtn = document.getElementById('btnWizardClose');
     if (closeBtn && closeBtn.style.display === 'none') return;
+    const typedKey = (document.getElementById('keyGemini')?.value || '').trim();
+    if (!typedKey && !wizardPrefsDirty) {
+      closeSetupWizardModal();
+      return;
+    }
     openWizardCloseConfirm();
   }
 
@@ -6140,15 +6298,24 @@ function updateUiClockDisplay() {
       }
     }, 500);
 
+    let keepLockedUntilClose = false;
     try {
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.save_and_launch === 'function') {
         const res = await window.pywebview.api.save_and_launch(keys);
         if (res && res.ok) {
           stopSaveLaunchPoll();
+          keepLockedUntilClose = true;
+          wizardPrefsDirty = false;
           updateSaveLaunchProgress({ status: 'done', message: res.message || 'Credentials saved successfully!', progress: 100, phase: '' });
           hasCompletedSetup = true;
           setWizardBanner(res.message || 'Credentials saved successfully!', 'success');
+          if (typeof pollBackend === 'function') pollBackend();
           setTimeout(() => {
+            isSavingSetup = false;
+            if (saveBtn) {
+              saveBtn.disabled = false;
+              saveBtn.innerHTML = '<span>Save &amp; Launch Arena</span>';
+            }
             closeSetupWizardModal();
             if (!splashCompleted) {
               startSplashSequence(false);
@@ -6173,10 +6340,17 @@ function updateUiClockDisplay() {
         }
       } else {
         stopSaveLaunchPoll();
+        keepLockedUntilClose = true;
+        wizardPrefsDirty = false;
         updateSaveLaunchProgress({ status: 'done', message: 'Configured in mock mode. Launching arena...', progress: 100, phase: '' });
         hasCompletedSetup = true;
         setWizardBanner('Configured in mock mode. Launching arena...', 'success');
         setTimeout(() => {
+          isSavingSetup = false;
+          if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = '<span>Save &amp; Launch Arena</span>';
+          }
           closeSetupWizardModal();
           if (!splashCompleted) {
             startSplashSequence(false);
@@ -6188,11 +6362,13 @@ function updateUiClockDisplay() {
       updateSaveLaunchProgress({ status: 'failed', message: `Encountered error: ${err}`, progress: null, phase: '' });
       setWizardBanner(`Encountered error: ${err}`, 'error');
     } finally {
-      isSavingSetup = false;
       stopSaveLaunchPoll();
-      if (saveBtn) {
-        saveBtn.disabled = false;
-        saveBtn.innerHTML = '<span>Save &amp; Launch Arena</span>';
+      if (!keepLockedUntilClose) {
+        isSavingSetup = false;
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = '<span>Save &amp; Launch Arena</span>';
+        }
       }
     }
   }
@@ -6235,16 +6411,16 @@ function updateUiClockDisplay() {
         closeWizardCloseConfirm();
         return;
       }
+      const stratDetailModal = document.getElementById('strategyDetailModal');
+      if (stratDetailModal && stratDetailModal.classList.contains('modal-visible')) {
+        closeStrategyDetailModal();
+        return;
+      }
       if (isWizardOpen) {
         const closeBtn = document.getElementById('btnWizardClose');
         if (closeBtn && closeBtn.style.display !== 'none') {
           requestCloseSetupWizardModal();
         }
-        return;
-      }
-      const stratDetailModal = document.getElementById('strategyDetailModal');
-      if (stratDetailModal && stratDetailModal.classList.contains('modal-visible')) {
-        closeStrategyDetailModal();
         return;
       }
       const resetModal = document.getElementById('resetConfirmModal');
@@ -6362,7 +6538,14 @@ function updateUiClockDisplay() {
         })
       : null;
     els.forEach((el) => {
-      el.addEventListener('scroll', () => updateScrollAreaFades(el), { passive: true });
+      let fadeRaf = null;
+      el.addEventListener('scroll', () => {
+        if (fadeRaf) return;
+        fadeRaf = requestAnimationFrame(() => {
+          fadeRaf = null;
+          updateScrollAreaFades(el);
+        });
+      }, { passive: true });
       if (ro) ro.observe(el);
       updateScrollAreaFades(el);
     });
@@ -6378,6 +6561,7 @@ function updateUiClockDisplay() {
       clearTimeout(track._commitTimer);
       track._commitTimer = null;
     }
+    track._cachedBounds = null;
     track._slideCommitted = false;
     track._dragging = false;
     track._startRatio = 0;
@@ -6405,7 +6589,7 @@ function updateUiClockDisplay() {
 
     const renderRatio = (ratio) => {
       const clamped = Math.max(0, Math.min(1, ratio));
-      const { maxOffset, pad, hw } = getBounds();
+      const { maxOffset, pad, hw } = track._cachedBounds || getBounds();
       const x = clamped * maxOffset;
       thumb.style.transform = `translateX(${x.toFixed(1)}px)`;
       fill.style.width = `${(x + hw * 0.5 + pad).toFixed(1)}px`;
@@ -6418,6 +6602,7 @@ function updateUiClockDisplay() {
       if (track._slideCommitted) return;
       track._slideCommitted = true;
       track._dragging = false;
+      track._cachedBounds = null;
       track.classList.remove('is-dragging');
       track.classList.add('is-committed');
       renderRatio(1);
@@ -6433,10 +6618,12 @@ function updateUiClockDisplay() {
     track.addEventListener('pointerdown', (e) => {
       if (track._slideCommitted || e.button !== 0) return;
       const rect = track.getBoundingClientRect();
-      const { maxOffset, pad, hw } = getBounds();
+      const bounds = getBounds();
+      const { maxOffset, pad, hw } = bounds;
       const curRatio = Number(track.getAttribute('aria-valuenow') || 0) / 100;
       const thumbCenterX = rect.left + pad + curRatio * maxOffset + hw * 0.5;
       if (Math.abs(e.clientX - thumbCenterX) > hw + 20) return;
+      track._cachedBounds = bounds;
       track._dragging = true;
       track._dragOriginX = e.clientX;
       track._startRatio = curRatio;
@@ -6448,7 +6635,7 @@ function updateUiClockDisplay() {
 
     track.addEventListener('pointermove', (e) => {
       if (!track._dragging || track._slideCommitted) return;
-      const { maxOffset } = getBounds();
+      const { maxOffset } = track._cachedBounds || getBounds();
       const delta = e.clientX - (track._dragOriginX || e.clientX);
       const ratio = renderRatio((track._startRatio || 0) + delta / maxOffset);
       if (ratio >= 0.85) {
@@ -6459,6 +6646,7 @@ function updateUiClockDisplay() {
     const releaseSlide = () => {
       if (!track._dragging || track._slideCommitted) return;
       track._dragging = false;
+      track._cachedBounds = null;
       track.classList.remove('is-dragging');
       const nowPct = Number(track.getAttribute('aria-valuenow') || 0) / 100;
       if (nowPct >= 0.85) {
@@ -6503,7 +6691,7 @@ function updateUiClockDisplay() {
       { id: 'scale', group: 'Chart', title: 'Toggle Chart Scale Mode (Focus / Full)', sub: 'Zoom on candle range or include distant brackets', kbd: 'F', run: () => setScaleMode(scaleMode === 'auto' ? 'full' : 'auto') },
       { id: 'refresh_intel', group: 'Intelligence', title: 'Refresh News Analysis', sub: 'Synthesize latest multi-domain macro digest', kbd: '', run: () => requestAiIntelDigest() },
       { id: 'backdrop', group: 'Appearance', title: `Cycle Backdrop Mode (${modeLabel})`, sub: 'Switch between HorizonX WebGL Shader, Grainient WebP, and Minimal Obsidian', kbd: '', run: () => cycleBackdropMode() },
-      { id: 'privacy', group: 'Appearance', title: isPrivateBalance ? 'Show Account Balances' : 'Hide Account Balances (Private Mode)', sub: 'Mask dollar values across header, cards, leaderboard & chart', kbd: 'Shift+P', run: () => togglePrivateBalance() },
+      { id: 'privacy', group: 'Appearance', title: isPrivateBalance ? 'Show Account Balances' : 'Hide Account Balances (Private Mode)', sub: 'Mask dollar values across header, telemetry cards, leaderboard, fills & modal', kbd: 'Shift+P', run: () => togglePrivateBalance() },
       { id: 'export_csv', group: 'Journal', title: 'Export Trade Journal (CSV)', sub: 'Save live arena fills to a CSV spreadsheet', kbd: '', run: () => { exportTradeJournal('csv'); } },
       { id: 'export_json', group: 'Journal', title: 'Export Trade Journal (JSON)', sub: 'Save live arena fills and telemetry to JSON', kbd: '', run: () => { exportTradeJournal('json'); } },
       { id: 'settings', group: 'System', title: 'Open AI Services Setup', sub: 'Configure Google Gemini API key, model & appearance', kbd: '', run: () => openSetupWizardModal(true) },
@@ -6710,6 +6898,17 @@ function updateUiClockDisplay() {
   function applyBackdropMode(mode) {
     const valid = ['shader', 'grainient', 'minimal'];
     backdropMode = valid.indexOf(mode) !== -1 ? mode : 'shader';
+    const canvasEl = document.getElementById('lgAmbientShaderCanvas');
+    if (backdropMode === 'shader') {
+      if (!ambientShaderHandle && canvasEl && typeof mountSilverStreamAmbient === 'function') {
+        ambientShaderHandle = mountSilverStreamAmbient(canvasEl);
+      }
+      if (!ambientShaderHandle) {
+        backdropMode = 'grainient';
+      }
+    } else {
+      destroyAmbientBackdrop();
+    }
     if (document.body) {
       document.body.setAttribute('data-backdrop-mode', backdropMode);
     }
@@ -6717,7 +6916,6 @@ function updateUiClockDisplay() {
       localStorage.setItem('tb0_backdrop_mode', backdropMode);
     } catch (_) { }
     const grainEl = document.getElementById('lgAmbientGrainient');
-    const canvasEl = document.getElementById('lgAmbientShaderCanvas');
     if (grainEl) grainEl.setAttribute('data-mode', backdropMode);
     if (canvasEl) canvasEl.setAttribute('data-mode', backdropMode);
     syncBackdropCards(backdropMode);
@@ -7128,24 +7326,36 @@ void main() {
     const preloadEl = document.getElementById('setupPreloadToggle');
     const model = modelSel ? String(modelSel.value || '').trim() : null;
     const preloadArticles = preloadEl ? Boolean(preloadEl.checked) : true;
+    const wasEnabled = intelArticlePreloadEnabled;
     intelArticlePreloadEnabled = preloadArticles;
+    wizardPrefsDirty = true;
     if (!preloadArticles && Array.isArray(intelArticlePreloadQueue)) {
       intelArticlePreloadQueue.length = 0;
+    } else if (preloadArticles && !wasEnabled && typeof preloadIntelArticles === 'function') {
+      preloadIntelArticles(Object.keys(intelEventNodes));
     }
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.update_ai_preferences === 'function') {
       try {
         const res = await window.pywebview.api.update_ai_preferences(model, preloadArticles);
         if (res && (res.ok || res.status === 'ok')) {
+          wizardPrefsDirty = false;
+          setWizardBanner('');
           if (modelSel && res.gemini_model) {
             modelSel.value = res.gemini_model;
           }
           if (typeof res.preload_intel_articles === 'boolean') {
             intelArticlePreloadEnabled = res.preload_intel_articles;
             if (preloadEl) preloadEl.checked = res.preload_intel_articles;
+            if (intelArticlePreloadEnabled && !wasEnabled && typeof preloadIntelArticles === 'function') {
+              preloadIntelArticles(Object.keys(intelEventNodes));
+            }
           }
+        } else {
+          setWizardBanner((res && res.error) || 'Failed to save AI preferences', 'error');
         }
       } catch (err) {
         console.debug('update_ai_preferences failed:', err);
+        setWizardBanner('Failed to update AI preferences', 'error');
       }
     }
   }
@@ -7207,6 +7417,45 @@ void main() {
     return String(rawT);
   }
 
+  function applyStratCurveHover(svg, hoverEl, clientX) {
+    const coords = svg && svg._coords;
+    if (!svg || !Array.isArray(coords) || coords.length === 0) return;
+    const rect = svg.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    const relX = ((clientX - rect.left) / rect.width) * 460;
+    let best = coords[0];
+    let bestDist = Infinity;
+    for (let i = 0; i < coords.length; i++) {
+      const d = Math.abs(coords[i].x - relX);
+      if (d < bestDist) {
+        bestDist = d;
+        best = coords[i];
+      }
+    }
+    const lineEl = svg.querySelector('[data-role="strat-curve-crosshair-x"]');
+    const dotEl = svg.querySelector('[data-role="strat-curve-crosshair-dot"]');
+    if (lineEl) {
+      const bx = best.x.toFixed(1);
+      if (lineEl.getAttribute('x1') !== bx) {
+        lineEl.setAttribute('x1', bx);
+        lineEl.setAttribute('x2', bx);
+      }
+      if (lineEl.style.display !== 'block') lineEl.style.display = 'block';
+    }
+    if (dotEl) {
+      const bx = best.x.toFixed(1);
+      const by = best.y.toFixed(1);
+      if (dotEl.getAttribute('cx') !== bx) dotEl.setAttribute('cx', bx);
+      if (dotEl.getAttribute('cy') !== by) dotEl.setAttribute('cy', by);
+      if (dotEl.style.display !== 'block') dotEl.style.display = 'block';
+    }
+    if (hoverEl) {
+      const eqStr = isPrivateBalance ? '$••••••' : fmtUsd(best.eq, 2);
+      const nextText = best.t ? `${best.t} · ${eqStr}` : eqStr;
+      if (hoverEl.textContent !== nextText) hoverEl.textContent = nextText;
+    }
+  }
+
   function renderStratDetailCurve(rawHistory, fallbackEquity) {
     const svg = document.getElementById('stratDetailCurveSvg');
     const hoverEl = document.getElementById('stratDetailCurveHover');
@@ -7250,6 +7499,46 @@ void main() {
       return { x, y, t: p.t, eq: p.eq };
     });
 
+    const curveSig = pts.map((p) => `${p.t}:${p.eq.toFixed(2)}`).join('|');
+    svg._coords = coords;
+
+    if (!svg._hoverBound) {
+      svg._hoverBound = true;
+      svg.onmousemove = (ev) => {
+        svg._lastClientX = ev.clientX;
+        if (svg._hoverRaf) return;
+        svg._hoverRaf = requestAnimationFrame(() => {
+          svg._hoverRaf = null;
+          if (typeof svg._lastClientX === 'number') {
+            applyStratCurveHover(svg, document.getElementById('stratDetailCurveHover'), svg._lastClientX);
+          }
+        });
+      };
+      svg.onmouseleave = () => {
+        svg._lastClientX = null;
+        if (svg._hoverRaf) {
+          cancelAnimationFrame(svg._hoverRaf);
+          svg._hoverRaf = null;
+        }
+        const lineEl = svg.querySelector('[data-role="strat-curve-crosshair-x"]');
+        const dotEl = svg.querySelector('[data-role="strat-curve-crosshair-dot"]');
+        if (lineEl) lineEl.style.display = 'none';
+        if (dotEl) dotEl.style.display = 'none';
+        const hEl = document.getElementById('stratDetailCurveHover');
+        if (hEl && hEl.textContent !== 'Hover curve to inspect') {
+          hEl.textContent = 'Hover curve to inspect';
+        }
+      };
+    }
+
+    if (svg._curveSig === curveSig) {
+      if (typeof svg._lastClientX === 'number') {
+        applyStratCurveHover(svg, hoverEl, svg._lastClientX);
+      }
+      return;
+    }
+    svg._curveSig = curveSig;
+
     const lineD = coords.map((c, i) => `${i === 0 ? 'M' : 'L'}${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
     const areaD = `${lineD} L${coords[coords.length - 1].x.toFixed(1)},${(H - padY).toFixed(1)} L${coords[0].x.toFixed(1)},${(H - padY).toFixed(1)} Z`;
     const isUp = coords[coords.length - 1].eq >= coords[0].eq;
@@ -7263,58 +7552,35 @@ void main() {
       + `<line data-role="strat-curve-crosshair-x" x1="0" y1="${padY}" x2="0" y2="${H - padY}" stroke="rgba(148,163,184,0.45)" stroke-width="1" stroke-dasharray="3 3" style="display:none;" />`
       + `<circle data-role="strat-curve-crosshair-dot" cx="0" cy="0" r="3.5" fill="${stroke}" stroke="#0F172A" stroke-width="1.5" style="display:none;" />`;
 
-    svg.onmousemove = (ev) => {
-      const rect = svg.getBoundingClientRect();
-      if (!rect || rect.width <= 0) return;
-      const relX = ((ev.clientX - rect.left) / rect.width) * W;
-      let best = coords[0];
-      let bestDist = Infinity;
-      for (let i = 0; i < coords.length; i++) {
-        const d = Math.abs(coords[i].x - relX);
-        if (d < bestDist) {
-          bestDist = d;
-          best = coords[i];
-        }
-      }
-      const lineEl = svg.querySelector('[data-role="strat-curve-crosshair-x"]');
-      const dotEl = svg.querySelector('[data-role="strat-curve-crosshair-dot"]');
-      if (lineEl) {
-        lineEl.setAttribute('x1', best.x.toFixed(1));
-        lineEl.setAttribute('x2', best.x.toFixed(1));
-        lineEl.style.display = 'block';
-      }
-      if (dotEl) {
-        dotEl.setAttribute('cx', best.x.toFixed(1));
-        dotEl.setAttribute('cy', best.y.toFixed(1));
-        dotEl.style.display = 'block';
-      }
-      if (hoverEl) {
-        const eqStr = isPrivateBalance ? '$••••••' : fmtUsd(best.eq, 2);
-        hoverEl.textContent = best.t ? `${best.t} · ${eqStr}` : eqStr;
-      }
-    };
-    svg.onmouseleave = () => {
-      const lineEl = svg.querySelector('[data-role="strat-curve-crosshair-x"]');
-      const dotEl = svg.querySelector('[data-role="strat-curve-crosshair-dot"]');
-      if (lineEl) lineEl.style.display = 'none';
-      if (dotEl) dotEl.style.display = 'none';
-      if (hoverEl) hoverEl.textContent = 'Hover curve to inspect';
-    };
+    if (typeof svg._lastClientX === 'number') {
+      applyStratCurveHover(svg, hoverEl, svg._lastClientX);
+    }
+  }
+
+  function canonicalStrategyKey(raw) {
+    const v = String(raw || '').toLowerCase().trim();
+    if (!v) return '';
+    if (v === 'comp_agg' || v === 'agg' || v === 'aggressive') return 'comp_agg';
+    if (v === 'comp_cons' || v === 'cons' || v === 'conservative') return 'comp_cons';
+    if (v === 'comp_trail' || v === 'trail' || v === 'trailing') return 'comp_trail';
+    if (v === 'comp_orb' || v === 'orb') return 'comp_orb';
+    if (v === 'comp_vwap' || v === 'vwap' || v === 'institutional' || v === 'session mean' || v === 'mean') return 'comp_vwap';
+    return v.replace(/^comp_/, '');
   }
 
   function fillMatchesStrategy(f, s) {
     if (!f || !s) return false;
     if (f.portfolio_id && f.portfolio_id === s.id) return true;
     if (f.strategy_id && f.strategy_id === s.id) return true;
+    const fKey = canonicalStrategyKey(f.strategy);
+    if (!fKey) return false;
+    const sIdKey = canonicalStrategyKey(s.id);
+    const sNameKey = canonicalStrategyKey(s.name);
+    if (fKey === sIdKey || (sNameKey && fKey === sNameKey)) return true;
     const fStrat = String(f.strategy || '').toLowerCase().trim();
-    if (!fStrat) return false;
     const sName = String(s.name || '').toLowerCase().trim();
     const sIdRaw = String(s.id || '').toLowerCase().replace(/^comp_/, '').trim();
-    const sIdSpaced = sIdRaw.replace(/_/g, ' ');
-    return fStrat === sName
-      || (sIdRaw && fStrat.includes(sIdRaw))
-      || (sIdSpaced && fStrat.includes(sIdSpaced))
-      || (sName && sName.includes(fStrat));
+    return fStrat === sName || (sIdRaw && fStrat === sIdRaw);
   }
 
   function refreshStrategyDetailModal(state) {
@@ -7336,31 +7602,45 @@ void main() {
 
     const rankNum = Number(s.rank) || 1;
     if (rankEl) {
-      rankEl.textContent = `#${rankNum}`;
-      rankEl.className = 'rank-badge num';
+      const nextRank = `#${rankNum}`;
+      if (rankEl.textContent !== nextRank) rankEl.textContent = nextRank;
+      if (rankEl.className !== 'rank-badge num') rankEl.className = 'rank-badge num';
     }
-    if (titleEl) titleEl.textContent = s.name || s.id;
+    if (titleEl) {
+      const nextTitle = s.name || s.id;
+      if (titleEl.textContent !== nextTitle) titleEl.textContent = nextTitle;
+    }
     if (levEl) {
       const levMult = Number(s.leverage) || 2;
-      levEl.textContent = s.leverage_enabled ? `Margin ${levMult.toFixed(0)}x` : 'Spot 1x';
-      levEl.className = `lev-pill ${s.leverage_enabled ? 'lev-active' : 'lev-spot'} num`;
+      const nextLevTxt = s.leverage_enabled ? `Margin ${levMult.toFixed(0)}x` : 'Spot 1x';
+      const nextLevCls = `lev-pill ${s.leverage_enabled ? 'lev-active' : 'lev-spot'} num`;
+      if (levEl.textContent !== nextLevTxt) levEl.textContent = nextLevTxt;
+      if (levEl.className !== nextLevCls) levEl.className = nextLevCls;
     }
-    if (subEl) subEl.textContent = `Gen #${s.generation || 1} · ${s.genome || 'Adaptive Genome'}`;
+    if (subEl) {
+      const nextSub = `Gen #${s.generation || 1} · ${s.genome || 'Adaptive Genome'}`;
+      if (subEl.textContent !== nextSub) subEl.textContent = nextSub;
+    }
     if (eqEl) {
       eqEl.classList.add('private-maskable');
-      eqEl.textContent = fmtUsd(s.equity, 2);
+      const nextEq = fmtUsd(s.equity, 2);
+      if (eqEl.textContent !== nextEq) eqEl.textContent = nextEq;
     }
     if (roiEl) {
       const roiNum = Number(s.roi_pct) || 0;
-      roiEl.textContent = fmtPct(roiNum);
-      roiEl.style.color = roiNum >= 0 ? 'var(--ss-pos)' : 'var(--ss-neg)';
+      const nextRoi = fmtPct(roiNum);
+      const nextColor = roiNum >= 0 ? 'var(--ss-up)' : 'var(--ss-down)';
+      if (roiEl.textContent !== nextRoi) roiEl.textContent = nextRoi;
+      if (roiEl.style.color !== nextColor) roiEl.style.color = nextColor;
     }
     if (wrDdEl) {
-      wrDdEl.textContent = `${(Number(s.win_rate_pct) || 0).toFixed(1)}% / ${(Number(s.max_dd_pct) || 0).toFixed(1)}%`;
+      const nextWrDd = `${(Number(s.win_rate_pct) || 0).toFixed(1)}% / ${(Number(s.max_dd_pct) || 0).toFixed(1)}%`;
+      if (wrDdEl.textContent !== nextWrDd) wrDdEl.textContent = nextWrDd;
     }
     if (sharpeEl) {
       const fit = Number(s.fitness) || 0;
-      sharpeEl.textContent = `${(Number(s.sharpe) || 0).toFixed(2)} / ${fit >= 0 ? '+' : ''}${fit.toFixed(1)}`;
+      const nextSharpe = `${(Number(s.sharpe) || 0).toFixed(2)} / ${fit >= 0 ? '+' : ''}${fit.toFixed(1)}`;
+      if (sharpeEl.textContent !== nextSharpe) sharpeEl.textContent = nextSharpe;
     }
 
     renderStratDetailCurve(s.equity_history, s.equity);
@@ -7368,43 +7648,69 @@ void main() {
     if (gridEl) {
       const gp = (s.genome_params && typeof s.genome_params === 'object') ? s.genome_params : {};
       const entries = Object.entries(gp);
-      if (entries.length === 0) {
-        gridEl.innerHTML = '<div class="strat-gene-pill"><span class="strat-gene-key">Parameters</span><span class="strat-gene-val">Unavailable</span></div>';
-      } else {
-        gridEl.innerHTML = entries.map(([k, v]) => {
-          const valStr = formatStratGeneValue(k, v);
-          return `<div class="strat-gene-pill"><span class="strat-gene-key">${escapeHtml(formatStratGeneLabel(k))}</span><span class="strat-gene-val">${escapeHtml(valStr)}</span></div>`;
-        }).join('');
+      const genomeSig = `${s.id}:${entries.map(([k, v]) => `${k}=${v === null ? 'null' : v}`).join('|')}`;
+      if (gridEl._genomeSig !== genomeSig) {
+        gridEl._genomeSig = genomeSig;
+        if (entries.length === 0) {
+          gridEl.innerHTML = '<div class="strat-gene-pill"><span class="strat-gene-key">Parameters</span><span class="strat-gene-val">Unavailable</span></div>';
+        } else {
+          gridEl.innerHTML = entries.map(([k, v]) => {
+            const valStr = formatStratGeneValue(k, v);
+            return `<div class="strat-gene-pill"><span class="strat-gene-key">${escapeHtml(formatStratGeneLabel(k))}</span><span class="strat-gene-val">${escapeHtml(valStr)}</span></div>`;
+          }).join('');
+        }
       }
     }
 
     if (fillsEl) {
       const allFills = Array.isArray(state.fills) ? state.fills : [];
       const matching = allFills.filter((f) => fillMatchesStrategy(f, s)).slice(0, 25);
-      if (matching.length === 0) {
-        fillsEl.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--ss-ink-4);padding:12px;">No fills recorded for this strategy yet.</td></tr>';
-      } else {
-        fillsEl.innerHTML = matching.map((f) => {
-          const actionText = f.action_label || f.side || 'FILL';
-          const pnlVal = (f.pnl !== null && f.pnl !== undefined) ? Number(f.pnl) : null;
-          const pnlCls = pnlVal === null ? '' : (pnlVal >= 0 ? 'var(--ss-pos)' : 'var(--ss-neg)');
-          const pnlStr = pnlVal === null ? '—' : `<span class="private-maskable" style="color:${pnlCls};">${escapeHtml(fmtSignedUsd(pnlVal))}</span>`;
-          return `<tr>`
-            + `<td>${escapeHtml(f.time || '')}</td>`
-            + `<td>${escapeHtml(actionText)}</td>`
-            + `<td class="text-right">${(Number(f.qty) || 0).toFixed(2)}</td>`
-            + `<td class="text-right">${escapeHtml(fmtUsd(f.price, 2))}</td>`
-            + `<td class="text-right">${pnlStr}</td>`
-            + `<td>${escapeHtml(f.trigger || f.reason || '—')}</td>`
-            + `</tr>`;
-        }).join('');
+      const fillsSig = `${s.id}:${matching.map((f) => `${f.seq || ''}:${f.time || ''}:${f.action_label || f.side || ''}:${f.qty || ''}:${f.price || ''}:${f.pnl ?? ''}`).join('|')}`;
+      if (fillsEl._fillsSig !== fillsSig) {
+        fillsEl._fillsSig = fillsSig;
+        if (matching.length === 0) {
+          fillsEl.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--ss-ink-4);padding:12px;">No fills recorded for this strategy yet.</td></tr>';
+        } else {
+          fillsEl.innerHTML = matching.map((f) => {
+            const actionText = f.action_label || f.side || 'FILL';
+            const pnlVal = (f.pnl !== null && f.pnl !== undefined) ? Number(f.pnl) : null;
+            const pnlCls = pnlVal === null ? '' : (pnlVal >= 0 ? 'var(--ss-up)' : 'var(--ss-down)');
+            const pnlStr = pnlVal === null ? '—' : `<span class="private-maskable" style="color:${pnlCls};">${escapeHtml(fmtSignedUsd(pnlVal))}</span>`;
+            return `<tr>`
+              + `<td>${escapeHtml(f.time || '')}</td>`
+              + `<td>${escapeHtml(actionText)}</td>`
+              + `<td class="text-right">${(Number(f.qty) || 0).toFixed(2)}</td>`
+              + `<td class="text-right">${escapeHtml(fmtUsd(f.price, 2))}</td>`
+              + `<td class="text-right">${pnlStr}</td>`
+              + `<td>${escapeHtml(f.trigger || f.reason || '—')}</td>`
+              + `</tr>`;
+          }).join('');
+        }
+        if (typeof updateScrollAreaFades === 'function') {
+          updateScrollAreaFades(fillsEl.closest('.scroll-area-faded'));
+        }
       }
     }
   }
 
   function openStrategyDetailModal(stratId) {
     if (!stratId) return;
+    if (stratDetailCloseTimer) {
+      clearTimeout(stratDetailCloseTimer);
+      stratDetailCloseTimer = null;
+    }
+    blurActiveFocus();
     activeDetailStratId = stratId;
+    const svg = document.getElementById('stratDetailCurveSvg');
+    if (svg) {
+      svg._lastClientX = null;
+      if (svg._hoverRaf) {
+        cancelAnimationFrame(svg._hoverRaf);
+        svg._hoverRaf = null;
+      }
+    }
+    const hoverEl = document.getElementById('stratDetailCurveHover');
+    if (hoverEl) hoverEl.textContent = 'Hover curve to inspect';
     const modal = document.getElementById('strategyDetailModal');
     if (!modal) return;
     if (latestState) refreshStrategyDetailModal(latestState);
@@ -7413,21 +7719,34 @@ void main() {
     void modal.offsetWidth;
     modal.classList.add('modal-visible');
     syncAppShellInert();
+    if (typeof updateScrollAreaFades === 'function') {
+      modal.querySelectorAll('.scroll-area-faded').forEach((el) => updateScrollAreaFades(el));
+    }
   }
 
   function closeStrategyDetailModal() {
     activeDetailStratId = null;
+    const svg = document.getElementById('stratDetailCurveSvg');
+    if (svg) {
+      svg._lastClientX = null;
+      if (svg._hoverRaf) {
+        cancelAnimationFrame(svg._hoverRaf);
+        svg._hoverRaf = null;
+      }
+    }
     const modal = document.getElementById('strategyDetailModal');
     if (!modal) return;
     modal.classList.add('modal-closing');
     modal.classList.remove('modal-visible');
     syncAppShellInert();
-    setTimeout(() => {
-      if (!activeDetailStratId) {
+    if (stratDetailCloseTimer) clearTimeout(stratDetailCloseTimer);
+    stratDetailCloseTimer = setTimeout(() => {
+      stratDetailCloseTimer = null;
+      if (!activeDetailStratId && !modal.classList.contains('modal-visible')) {
         modal.style.display = 'none';
         modal.classList.remove('modal-closing');
       }
-    }, 200);
+    }, 220);
   }
 
   function handleStrategyDetailOverlayClick(e) {
@@ -7450,16 +7769,7 @@ void main() {
     } catch (_) {
       savedMode = 'shader';
     }
-    const canvas = document.getElementById('lgAmbientShaderCanvas');
-    ambientShaderHandle = mountSilverStreamAmbient(canvas);
-    if (!ambientShaderHandle && savedMode === 'shader') {
-      savedMode = 'grainient';
-    }
     applyBackdropMode(savedMode);
-    syncBackdropCards(backdropMode);
-    window.addEventListener('resize', () => {
-      if (currentMainView === 'intel') syncIntelChipSlider();
-    }, { passive: true });
   }
 
   window.switchSetupTab = switchSetupTab;
