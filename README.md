@@ -1,25 +1,9 @@
-# TradeBot0 — ETH/USD Multi-Strategy Simulated Trading System
+# TradeBot0 for Windows — ETH/USD Multi-Strategy Simulated Trading System
 
 
-TradeBot0 is a simulated trading app that runs on your own computer. It trades ETH/USD with 5 quantitative strategies running in parallel, each funded with $100,000 in virtual money ($500,000 total), matching virtual orders against live market prices and tuning strategy parameters automatically over time. A built-in AI reads the news and judges market direction, filtering out trade signals that go against the trend.
+TradeBot0 for Windows is a simulated trading app that runs on your own Windows computer. It trades ETH/USD with 5 quantitative strategies running in parallel, each funded with $100,000 in virtual money ($500,000 total), matching virtual orders against live market prices and tuning strategy parameters automatically over time. A built-in AI reads the news and judges market direction, filtering out trade signals that go against the trend.
 
 > This is a simulation tool. It does not connect to any real exchange account and never executes real-money trades.
-
----
-
-## About the Project
-
-![01 — Cover](docs/intro/slide-01.jpg)
-![02 — What Is It](docs/intro/slide-02.jpg)
-![03 — Three Pain Points](docs/intro/slide-03.jpg)
-![04 — How It Works](docs/intro/slide-04.jpg)
-![05 — Five Strategies](docs/intro/slide-05.jpg)
-![06 — Four Entry Filters](docs/intro/slide-06.jpg)
-![07 — How Capital Is Split](docs/intro/slide-07.jpg)
-![08 — AI Intelligence Hub](docs/intro/slide-08.jpg)
-![09 — Self-Evolution](docs/intro/slide-09.jpg)
-![10 — Three Steps to Start](docs/intro/slide-10.jpg)
-![11 — Let's Go](docs/intro/slide-11.jpg)
 
 ---
 
