@@ -28,13 +28,13 @@ TradeBot0 is a locally run ETH/USD multi-strategy simulated trading app. It runs
 
 Available now, for Windows 10 / Windows 11 (64-bit). Download the installer, install it, and enter your Google Gemini API key to start.
 
-Source code and development live on the [TradeBot0-For-Windows](https://github.com/will095614/TradeBot0/tree/TradeBot0-For-Windows) branch.
+Source code and development: [TradeBot0-For-Windows](https://github.com/will095614/TradeBot0/tree/TradeBot0-For-Windows) .
 
 ### Android
 
 In development, not released yet. A download will be provided here once it is ready.
 
-Development lives on the [TradeBot0-For-Android](https://github.com/will095614/TradeBot0/tree/TradeBot0-For-Android) branch.
+Development: [TradeBot0-For-Android](https://github.com/will095614/TradeBot0/tree/TradeBot0-For-Android) .
 
 ---
 
