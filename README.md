@@ -10,17 +10,16 @@ TradeBot0 是一套在本機運行的 ETH/USD 多策略模擬交易軟體。系�
 ## 專案介紹
 
 ![01 — 封面](docs/intro/slide-01.jpg)
-![02 — 目錄](docs/intro/slide-02.jpg)
-![03 — 這是什麼](docs/intro/slide-03.jpg)
-![04 — 三個痛點](docs/intro/slide-04.jpg)
-![05 — 怎麼做](docs/intro/slide-05.jpg)
-![06 — 五大策略](docs/intro/slide-06.jpg)
-![07 — 四層進場過濾](docs/intro/slide-07.jpg)
-![08 — 資金怎麼分](docs/intro/slide-08.jpg)
-![09 — AI 情報中心](docs/intro/slide-09.jpg)
-![10 — 自我演化](docs/intro/slide-10.jpg)
-![11 — 三步開始](docs/intro/slide-11.jpg)
-![12 — 開始吧](docs/intro/slide-12.jpg)
+![02 — 這是什麼](docs/intro/slide-02.jpg)
+![03 — 三個痛點](docs/intro/slide-03.jpg)
+![04 — 怎麼做](docs/intro/slide-04.jpg)
+![05 — 五大策略](docs/intro/slide-05.jpg)
+![06 — 四層進場過濾](docs/intro/slide-06.jpg)
+![07 — 資金怎麼分](docs/intro/slide-07.jpg)
+![08 — AI 情報中心](docs/intro/slide-08.jpg)
+![09 — 自我演化](docs/intro/slide-09.jpg)
+![10 — 三步開始](docs/intro/slide-10.jpg)
+![11 — 開始吧](docs/intro/slide-11.jpg)
 
 ---
 
