@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""TradeBot0 外部連線冒煙測試（獨立腳本，不進 pytest 全量）。
+"""TradeBot0 external-connection smoke test (standalone script, not part of the full pytest run).
 
-唯讀：只發 GET／訂閱公開行情，不下單、不寫入任何狀態、不改任何檔案。
-按需跑：``python scripts/smoke_external.py``（從專案根目錄），加 ``--quick``
-只跑 30 秒內項目（跳過 WS、Yahoo、CCXT 與 FEED_REGISTRY 全掃）。
+Read-only: only sends GET requests / subscribes to public market data. No orders, no state writes, no file changes.
+Run on demand: ``python scripts/smoke_external.py`` (from the project root), with ``--quick``
+to run only the sub-30-second items (skips WS, Yahoo, CCXT, and the full FEED_REGISTRY sweep).
 
-覆蓋（見稽核報告 §4.4）：
-  Binance REST / Kraken REST / Coinbase REST（各 1 次，欄位齊全）
-  Binance WS（連上、3 秒內 ≥1 則 ticker、斷線重連 1 次）
-  Yahoo yfinance.download("ETH-USD", period="1d", interval="1m") 非空
-  CCXT Kraken fetch_ohlcv 非空
-  FEED_REGISTRY 18 項逐一 GET（timeout 5 秒；任一非 200 只警告，不讓整體失敗）
-  StockTwits ETH.X／BTC.X 200 且含 messages
-  Google Gemini /v1beta/models（未設定 GEMINI_API_KEY 時跳過、不算失敗）
+Coverage (see audit report §4.4):
+  Binance REST / Kraken REST / Coinbase REST (1 call each, all fields present)
+  Binance WS (connects, ≥1 ticker within 3 seconds, 1 reconnect after disconnect)
+  Yahoo yfinance.download("ETH-USD", period="1d", interval="1m") is non-empty
+  CCXT Kraken fetch_ohlcv is non-empty
+  FEED_REGISTRY: all 18 items GET one by one (timeout 5s; any non-200 only warns, never fails the whole run)
+  StockTwits ETH.X / BTC.X returns 200 and contains messages
+  Google Gemini /v1beta/models (skipped, not a failure, when GEMINI_API_KEY is not set)
 
-結束碼：0＝核心報價路徑暢通（Binance REST、Kraken REST、Binance WS 至少一項 PASS）；1＝核心路徑全滅。個別來源 FAIL 只列在結果中，不影響結束碼——使用者政策（2026-11-13）：外部來源皆為 best-effort，不同使用者的網路過濾不同，連不到也沒關係。
+Exit code: 0 = at least one core price path works (Binance REST, Kraken REST, or Binance WS passes); 1 = all core paths fail. A single source failing is only listed in the results and does not change the exit code — user policy (2026-11-13): external sources are all best-effort; different users have different network filters, and failing to reach one is fine.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import os
 import sys
 import time
 
-# 讓 `python scripts/smoke_external.py` 從任何 cwd 都找得到專案的 src。
+# Make `python scripts/smoke_external.py` find the project's src from any working directory.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
@@ -34,7 +34,7 @@ except ImportError:
     print("FAIL requests is not installed; cannot run smoke checks.")
     sys.exit(2)
 
-# FEED_REGISTRY 與 Node URL 以專案程式碼為準；import 失敗時用內嵌副本。
+# FEED_REGISTRY and the Node URL follow the project code; if the import fails, use the embedded copy.
 _FALLBACK_REGISTRY = [
     ("polymarket_gamma", "https://gamma-api.polymarket.com/events?limit=25&active=true"),
     ("sec_edgar_8k", "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&CIK=&type=8-K&company=&dateb=&owner=include&start=0&count=40&output=atom"),

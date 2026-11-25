@@ -1,5 +1,5 @@
-# TradeBot0 直接依賴
-# 版本以 2026-11-13 實測可用的 .venv 為準；.venv 內另有 graphify 等工具依賴，不列在此
+# TradeBot0 direct dependencies
+# Versions pinned to the .venv verified working on 2026-11-13; the .venv also has tool dependencies such as graphify, not listed here
 aiohttp==3.14.5
 ccxt==4.5.91
 numpy==2.5.4
@@ -9,7 +9,7 @@ requests==2.34.2
 websockets==17.4
 yfinance==1.7.0
 
-# 開發與建置
+# Development & build
 pytest==9.2.0
 pytest-asyncio==1.4.1
 pyinstaller==6.22.3
