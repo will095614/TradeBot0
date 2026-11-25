@@ -8,8 +8,6 @@ TradeBot0 is a locally run ETH/USD multi-strategy simulated trading app. It runs
 
 ---
 
-## What Is It
-
 ![02 — What Is It](docs/intro/slide-02.jpg)
 
 TradeBot0 is a simulated trading app for ETH/USD. Five quantitative strategies compete side by side in one arena, each trading with $100,000 in virtual funds ($500,000 total) against live market prices. Orders are matched virtually, so every trade feels real — except no real money is ever at stake.
@@ -17,8 +15,6 @@ TradeBot0 is a simulated trading app for ETH/USD. Five quantitative strategies c
 No real money, no fear of losses. It is made for anyone who wants to learn trading or try out strategies without risking a cent.
 
 ---
-
-## Three Pain Points
 
 ![03 — Three Pain Points](docs/intro/slide-03.jpg)
 
@@ -32,8 +28,6 @@ TradeBot0 is built to answer all three. Every trade follows a written, testable 
 
 ---
 
-## How It Works
-
 ![04 — How It Works](docs/intro/slide-04.jpg)
 
 Everything runs on virtual funds — no real money, so wins and losses are just practice. Three things make it work:
@@ -43,8 +37,6 @@ Everything runs on virtual funds — no real money, so wins and losses are just 
 - **AI intelligence reads the direction.** The built-in AI reads market news every day, judges the big direction, and only lets the strategies trade with the trend.
 
 ---
-
-## Five Strategies
 
 ![05 — Five Strategies](docs/intro/slide-05.jpg)
 
@@ -62,8 +54,6 @@ The leaderboard ranks accounts by total equity (equity = cash + margin + unreali
 
 ---
 
-## Four Entry Filters
-
 ![06 — Four Entry Filters](docs/intro/slide-06.jpg)
 
 Before a trade signal reaches the matching engine, it passes through four filters in order. A signal has to clear all of them before any order is placed:
@@ -74,8 +64,6 @@ Before a trade signal reaches the matching engine, it passes through four filter
 4. **Win-rate check**: Simulates many possible price paths from historical returns to judge whether the trade is worth taking and how likely it is to hit the stop-loss or take-profit.
 
 ---
-
-## How Capital Is Split
 
 ![07 — How Capital Is Split](docs/intro/slide-07.jpg)
 
@@ -91,8 +79,6 @@ Because the money is split across five independent accounts, one loss never wipe
 
 ---
 
-## AI Intelligence Hub
-
 ![08 — AI Intelligence Hub](docs/intro/slide-08.jpg)
 
 TradeBot0's built-in AI reads market news and judges market direction for you:
@@ -105,8 +91,6 @@ TradeBot0's built-in AI reads market news and judges market direction for you:
 
 ---
 
-## Self-Evolution
-
 ![09 — Self-Evolution](docs/intro/slide-09.jpg)
 
 The strategies don't stay fixed — they evolve while the app runs:
@@ -118,8 +102,6 @@ The strategies don't stay fixed — they evolve while the app runs:
 Over time, the arena keeps the approaches that actually work and discards the ones that don't — so the system gets better the longer it runs.
 
 ---
-
-## Three Steps to Start
 
 ![10 — Three Steps to Start](docs/intro/slide-10.jpg)
 
