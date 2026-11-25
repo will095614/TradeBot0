@@ -1,9 +1,0 @@
-# Exclude IDE/agent skill templates, scratch helpers, and build artifacts from code graph
-.agent/**
-.agents/**
-scratch/**
-dist/**
-build/**
-installer-output/**
-logs/**
-.venv/**
