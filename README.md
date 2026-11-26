@@ -11,7 +11,7 @@ TradeBot0 for Windows is a simulated trading app that runs on your own Windows c
 
 ### 1. Using the Installer (Most Users)
 
-1. Download [TradeBot0Setup-V3.2.0.exe](https://github.com/will095614/TradeBot0/releases/download/v3.2.0/TradeBot0Setup-V3.2.0.exe) and run the installer.
+1. Download [TradeBot0Setup-V3.2.1.exe](https://github.com/will095614/TradeBot0/releases/download/v3.2.1/TradeBot0Setup-V3.2.1.exe) and run the installer.
 2. The installer is not commercially code-signed, so Windows SmartScreen may show a prompt. Click "More info" and choose "Run anyway" to continue.
 3. On first launch, a setup wizard appears:
    - Enter your Google Gemini API key, click test and launch, and you are ready to go.
@@ -40,7 +40,7 @@ TradeBot0's built-in AI reads market news and judges market direction for you.
 
 ### What It Does
 
-- **News summaries**: Collects market news from multiple public sources and condenses it into concise Traditional Chinese summaries.
+- **News summaries**: Collects market news from multiple public sources and condenses it into concise English summaries.
 - **Market direction**: Analyzes news and market events to judge whether the market favors going long, going short, or staying out. Entry signals that disagree with the AI's direction are blocked outright, and position sizes are adjusted to current conditions.
 - **Intelligence Hub**: A live intelligence stream. Open any item to read the AI's in-depth analysis.
 
@@ -112,4 +112,4 @@ Before a trade signal reaches the matching engine, it passes through these filte
 
 ## Download
 
-[TradeBot0Setup-V3.2.0.exe](https://github.com/will095614/TradeBot0/releases/download/v3.2.0/TradeBot0Setup-V3.2.0.exe) (single download link on GitHub Releases).
+[TradeBot0Setup-V3.2.1.exe](https://github.com/will095614/TradeBot0/releases/download/v3.2.1/TradeBot0Setup-V3.2.1.exe) (single download link on GitHub Releases).

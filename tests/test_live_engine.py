@@ -1598,8 +1598,8 @@ def test_next_evolve_sec_counts_trades_not_only_hours():
     assert state["next_evolve_sec"] < state["next_evolve_sec_latest"] / 10
     # The "latest" bound is still the pure 6h countdown, labelled as such.
     assert 21000 < state["next_evolve_sec_latest"] <= 21600
-    assert "\u6700\u665a" in state["next_evolve_sec_note"]
-    assert "1 \u7b46\u5e73\u5009" in state["next_evolve_sec_note"]
+    assert "Latest in" in state["next_evolve_sec_note"]
+    assert "1 closed trade remaining" in state["next_evolve_sec_note"]
 
 
 def test_toggle_auto_evolve_reenable_compensates_disabled_time(monkeypatch):

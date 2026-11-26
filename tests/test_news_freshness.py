@@ -174,7 +174,7 @@ def test_macro_commander_curated_events_uses_real_publish_time_and_sorts():
             "regime": "NORMAL",
             "directional_bias": "BIDIRECTIONAL",
             "risk_multiplier": 1.0,
-            "active_headline": "市場觀望宏觀數據",
+            "active_headline": "Markets await key macroeconomic data",
             "confidence": 0.72,
         })
         commander = MacroCommander(mock_client)
@@ -190,9 +190,9 @@ def test_macro_commander_curated_events_uses_real_publish_time_and_sorts():
             entities_tickers=["MACRO"],
             urgency_score=5,
             sentiment_score=0.0,
-            summary="昨日地緣快訊摘要",
+            summary="Yesterday geopolitical wire summary",
             raw_title="Yesterday Story",
-            headline_zh="昨日地緣快訊",
+            headline_zh="Yesterday Geopolitical Wire",
         )
         ev_new = StructuredEvent(
             timestamp=recent_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -201,9 +201,9 @@ def test_macro_commander_curated_events_uses_real_publish_time_and_sorts():
             entities_tickers=["ETH"],
             urgency_score=6,
             sentiment_score=0.4,
-            summary="今日以太坊快訊摘要",
+            summary="Today Ethereum wire summary",
             raw_title="Fresh ETH Story",
-            headline_zh="今日以太坊快訊",
+            headline_zh="Today Ethereum Wire",
         )
 
         # Pass old first intentionally; commander must store curated_events newest-first

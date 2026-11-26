@@ -14,15 +14,15 @@ from src.intelligence.macro_commander import (
     build_event_article_prompts,
 )
 
-_SNIPPET = "美國證券交易委員會批准現貨以太幣 ETF，資金流入創單日新高，機構買盤持續。"
+_SNIPPET = "The US SEC approved spot Ethereum ETFs with record single-day institutional inflows."
 
 
 def _event_dict(snippet=_SNIPPET):
     evt = {
         "source": "CoinDesk",
         "raw_title": "ETH ETF approval drives inflows",
-        "headline": "以太幣 ETF 獲批",
-        "summary": "測試摘要：以太幣 ETF 獲批。",
+        "headline": "Spot Ethereum ETF Approved",
+        "summary": "Test summary: Spot Ethereum ETF approved.",
     }
     if snippet is not None:
         evt["raw_snippet"] = snippet
@@ -32,12 +32,12 @@ def _event_dict(snippet=_SNIPPET):
 def test_prompt_includes_raw_snippet():
     _, user_prompt = build_event_article_prompts(_event_dict())
     assert _SNIPPET in user_prompt
-    assert "原文片段：" in user_prompt
+    assert "Raw Snippet:" in user_prompt
 
 
 def test_prompt_without_snippet_omits_line():
     _, user_prompt = build_event_article_prompts(_event_dict(snippet=None))
-    assert "原文片段" not in user_prompt
+    assert "Raw Snippet:" not in user_prompt
 
 
 def test_synthesize_plumbs_raw_snippet():
@@ -55,9 +55,9 @@ def test_synthesize_plumbs_raw_snippet():
             entities_tickers=["ETH"],
             urgency_score=6,
             sentiment_score=0.2,
-            summary="測試摘要：以太幣 ETF 獲批。",
+            summary="Test summary: Spot Ethereum ETF approved.",
             raw_title="ETH ETF approval drives inflows",
-            headline_zh="以太幣 ETF 獲批",
+            headline_zh="Spot Ethereum ETF Approved",
             raw_content=_SNIPPET,
         )
     ]))
@@ -72,4 +72,4 @@ def test_telemetry_strips_raw_snippet():
     tele = MacroCommander._telemetry_event(evt)
     assert "raw_snippet" not in tele
     assert "article" not in tele
-    assert tele["headline"] == "以太幣 ETF 獲批"
+    assert tele["headline"] == "Spot Ethereum ETF Approved"

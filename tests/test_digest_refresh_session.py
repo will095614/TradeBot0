@@ -25,13 +25,16 @@ from src.intelligence.gemini_client import GeminiClient
 # Six-section mock article, ~1400 chars: long enough to count as an
 # article, never the one-line summary.
 ARTICLE_TEXT = (
-    "事件經過：這是一段用於測試的文章內容，描述情報事件的經過與發展。"
-    "背景脈絡：這是一段用於測試的文章內容，描述事件的背景與脈絡。"
-    "市場含義：這是一段用於測試的文章內容，描述事件對市場的含義。"
-    "風險因素：這是一段用於測試的文章內容，描述事件帶來的風險。"
-    "後續觀察：這是一段用於測試的文章內容，描述後續需要觀察的重點。"
-    "總結：這是一段用於測試的文章內容，總結事件的整體影響。"
-) * 8
+    (
+        "What Happened: This test paragraph describes the event timeline and key developments. "
+        "Background & Context: This test paragraph outlines the broader market backdrop and catalysts. "
+        "Market Implications: This test paragraph analyzes price action, liquidity, and cross-asset impact. "
+        "Risk Factors: This test paragraph highlights downside risks and volatility drivers. "
+        "What to Watch: This test paragraph lists upcoming macro and on-chain indicators to monitor. "
+        "Summary: This test paragraph summarizes the overall market takeaway. "
+    )
+    * 5
+).strip()
 
 # One response body serves both the digest synthesis and the article
 # generation: the digest reads directional_bias/confidence, the
@@ -100,7 +103,7 @@ class _FakeSession:
             text = " ".join(parts)
         except Exception:
             return False
-        return "整理一篇繁體中文文章" in text
+        return "Write an English intelligence article" in text
 
     def post(self, url, json=None, headers=None, timeout=None):
         resp = _FakeResp(
@@ -143,9 +146,9 @@ class _FakeHarvester:
             entities_tickers=["BTC"],
             urgency_score=6,
             sentiment_score=0.2,
-            summary="測試摘要：比特幣買盤動能轉強。",
+            summary="Test summary: Bitcoin buying momentum strengthens.",
             raw_title="BTC rallies on strong inflows",
-            headline_zh="比特幣買盤動能轉強",
+            headline_zh="Bitcoin Buying Momentum Strengthens",
         )]
 
     def get_latest_events(self, n):

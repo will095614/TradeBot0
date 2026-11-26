@@ -431,7 +431,7 @@ def test_macro_commander_veto_expires_stale_fallback_and_raw_title_dedup():
     assert cmd.current_state.regime == "NORMAL"
     assert cmd.current_state.directional_bias == "BIDIRECTIONAL"
 
-    # raw_title deduplication prevents duplicate curated events even when translated headlines vary
+    # raw_title deduplication prevents duplicate curated events even when headlines vary
     ev1 = StructuredEvent(
         timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         entities_tickers=["ETH"],
@@ -440,8 +440,8 @@ def test_macro_commander_veto_expires_stale_fallback_and_raw_title_dedup():
         domain="crypto",
         urgency_score=7,
         sentiment_score=0.6,
-        headline_zh="以太幣 ETF 資金流入創新高",
-        summary="以太幣現貨 ETF 資金流入創紀錄。",
+        headline_zh="Spot ETH ETF Inflows Reach Record High",
+        summary="Spot Ethereum ETF inflows surged to a new daily record.",
     )
     ev2 = StructuredEvent(
         timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -451,8 +451,8 @@ def test_macro_commander_veto_expires_stale_fallback_and_raw_title_dedup():
         domain="crypto",
         urgency_score=7,
         sentiment_score=0.6,
-        headline_zh="以太坊 ETF 單日流入破紀錄",
-        summary="以太坊 ETF 單日流入破紀錄。",
+        headline_zh="Ethereum ETF Posts Record Single-Day Inflow",
+        summary="Ethereum ETF single-day inflows reached a fresh record.",
     )
     asyncio.run(cmd.synthesize_regime([ev1]))
     asyncio.run(cmd.synthesize_regime([ev2]))
@@ -474,7 +474,7 @@ def test_ingestion_clean_html_strips_script_style_and_dedup_forget():
 
 
 def test_update_checker_semver_prerelease_and_non_string_version():
-    assert APP_VERSION == "V3.2.0"
+    assert APP_VERSION == "V3.2.1"
     assert compare_versions("V2.5.0-rc.1", "V2.5.0") == -1
     assert compare_versions("V2.5.0", "V2.5.0-rc.1") == 1
     assert compare_versions("V2.5.0-alpha.1", "V2.5.0-beta.1") == -1

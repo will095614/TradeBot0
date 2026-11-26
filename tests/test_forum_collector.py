@@ -241,8 +241,8 @@ def test_process_batch_carries_tier_thread_and_consensus():
                 "entities_tickers": ["ETH"],
                 "urgency_score": 6,
                 "sentiment_score": 0.4,
-                "headline_zh": "測試標題",
-                "summary": "測試摘要內容",
+                "headline_zh": "Test Headline",
+                "summary": "Test summary content",
                 "consensus": {"bullish": 6, "bearish": 2, "neutral": 2},
             }]
         })

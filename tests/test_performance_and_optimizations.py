@@ -223,13 +223,18 @@ def test_newly_fetched_news_always_summarized_in_traditional_chinese():
         structured = await harvester.process_batch(raw_items)
         assert len(structured) == 2
         for se in structured:
-            assert re.search(r"[\u4e00-\u9fff]", se.headline_zh), f"headline_zh must be Chinese: {se.headline_zh}"
-            assert re.search(r"[\u4e00-\u9fff]", se.summary), f"summary must be Chinese: {se.summary}"
+            assert se.headline.strip(), "headline must be non-empty"
+            assert se.summary.strip(), "summary must be non-empty"
+            assert not re.search(r"[\u4e00-\u9fff]", se.headline), f"headline must be English: {se.headline}"
+            assert not re.search(r"[\u4e00-\u9fff]", se.headline_zh), f"headline_zh must be English: {se.headline_zh}"
+            assert not re.search(r"[\u4e00-\u9fff]", se.summary), f"summary must be English: {se.summary}"
 
         await commander.synthesize_regime(structured)
         top_event = commander.curated_events[0]
-        assert re.search(r"[\u4e00-\u9fff]", top_event["headline"]), f"Curated headline must be Chinese: {top_event['headline']}"
-        assert re.search(r"[\u4e00-\u9fff]", top_event["summary"]), f"Curated summary must be Chinese: {top_event['summary']}"
+        assert top_event["headline"].strip(), "Curated headline must be non-empty"
+        assert top_event["summary"].strip(), "Curated summary must be non-empty"
+        assert not re.search(r"[\u4e00-\u9fff]", top_event["headline"]), f"Curated headline must be English: {top_event['headline']}"
+        assert not re.search(r"[\u4e00-\u9fff]", top_event["summary"]), f"Curated summary must be English: {top_event['summary']}"
 
     asyncio.run(_run())
 

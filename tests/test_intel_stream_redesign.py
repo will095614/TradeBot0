@@ -67,16 +67,11 @@ def test_summary_cleaned_splitbody_way():
     js = _js()
     assert "function cleanIntelSummary" in js
     body = _fn_body(js, "cleanIntelSummary")
-    # The harvester prefix, as unicode escapes (the assets stay zero-CJK).
-    # 導 is U+5C0E -- the character the backend actually emits; U+9053
-    # (道) was a one-character slip that silently disabled the strip.
-    assert r"\u7D9C\u5408\u5916\u96FB\u5831\u5C0E\uFF1A" in js
-    # The trailing parenthetical tail, matched by its full-width paren
-    # plus the two markers it always carries.
-    assert r"\uFF08" in body
-    assert r"\u95DC\u806F\u6A19\u7684" in js
-    assert r"\u539F\u6587\u6A19\u984C" in js
     assert "INTEL_SUMMARY_PREFIX" in body
+    assert "'Wire Digest: '" in js
+    assert "'Tickers:'" in js
+    assert "'Headline:'" in js
+    assert "lastIndexOf('(')" in body
     assert "INTEL_TAIL_MARK_A" in body or "INTEL_TAIL_MARK_B" in body
     # The rendered summary goes through the cleaner, never raw.
     assert "cleanIntelSummary(evt.summary" in js or "cleanIntelSummary(summary" in js
@@ -242,19 +237,16 @@ def test_urgency_badge_lookup_survives_rerender():
 
 
 def test_summary_prefix_matches_backend():
-    """The frontend cleaner must strip the exact prefix the backend
-    emits. The backend writes "綜合外電報導：" with 導 (U+5C0E); a
-    one-character slip (道 U+9053) silently disables the strip for
-    every real summary, which only a live render can see."""
+    """The frontend cleaner must strip the exact English prefix the backend emits."""
     js = _js()
-    m = re.search(r"INTEL_SUMMARY_PREFIX\s*=\s*'((?:\\u[0-9A-Fa-f]{4})+)'", js)
+    m = re.search(r"INTEL_SUMMARY_PREFIX\s*=\s*'([^']+)'", js)
     assert m, "INTEL_SUMMARY_PREFIX not found in app.js"
-    front = m.group(1).encode("utf-8").decode("unicode_escape")
+    front = m.group(1)
     backend = (_TESTS.parent / "src" / "intelligence" / "ingestion.py").read_text(encoding="utf-8")
-    mb = re.search(r"綜合外電報[導道]：", backend)
-    assert mb, "backend prefix literal not found in ingestion.py"
-    assert front == mb.group(0), (
-        "frontend prefix %r != backend prefix %r" % (front, mb.group(0))
+    mb = re.search(r'Wire Digest:\s*', backend)
+    assert mb, "backend prefix literal 'Wire Digest: ' not found in ingestion.py"
+    assert front == "Wire Digest: ", (
+        "frontend prefix %r != 'Wire Digest: '" % (front,)
     )
 
 

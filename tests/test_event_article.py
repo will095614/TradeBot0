@@ -23,13 +23,16 @@ from src.intelligence.macro_commander import (
 # Six-section mock article, ~1400 chars: long enough to count as an
 # article, never the one-line summary.
 ARTICLE_TEXT = (
-    "事件經過：這是一段用於測試的文章內容，描述情報事件的經過與發展。"
-    "背景脈絡：這是一段用於測試的文章內容，描述事件的背景與脈絡。"
-    "市場含義：這是一段用於測試的文章內容，描述事件對市場的含義。"
-    "風險因素：這是一段用於測試的文章內容，描述事件帶來的風險。"
-    "後續觀察：這是一段用於測試的文章內容，描述後續需要觀察的重點。"
-    "總結：這是一段用於測試的文章內容，總結事件的整體影響。"
-) * 8
+    (
+        "What Happened: This test paragraph describes the event timeline and key developments. "
+        "Background & Context: This test paragraph outlines the broader market backdrop and catalysts. "
+        "Market Implications: This test paragraph analyzes price action, liquidity, and cross-asset impact. "
+        "Risk Factors: This test paragraph highlights downside risks and volatility drivers. "
+        "What to Watch: This test paragraph lists upcoming macro and on-chain indicators to monitor. "
+        "Summary: This test paragraph summarizes the overall market takeaway. "
+    )
+    * 5
+).strip()
 
 
 def _make_commander(chat_result=None, online=True, tickers=("eth", "BTC", "eth")):
@@ -49,9 +52,9 @@ def _make_commander(chat_result=None, online=True, tickers=("eth", "BTC", "eth")
             entities_tickers=list(tickers),
             urgency_score=6,
             sentiment_score=0.2,
-            summary="測試摘要：比特幣買盤動能轉強。",
+            summary="Test summary: Bitcoin buying momentum strengthens.",
             raw_title="BTC rallies on strong inflows",
-            headline_zh="比特幣買盤動能轉強",
+            headline_zh="Bitcoin Buying Momentum Strengthens",
         )
     ]))
     client.chat_json.reset_mock()
@@ -127,9 +130,9 @@ def test_concurrent_expands_merge_into_one_llm_call():
             entities_tickers=["BTC"],
             urgency_score=6,
             sentiment_score=0.2,
-            summary="測試摘要：比特幣買盤動能轉強。",
+            summary="Test summary: Bitcoin buying momentum strengthens.",
             raw_title="BTC rallies on strong inflows",
-            headline_zh="比特幣買盤動能轉強",
+            headline_zh="Bitcoin Buying Momentum Strengthens",
         )
     ]))
     client.chat_json.reset_mock()
@@ -162,7 +165,7 @@ def test_ai_offline_returns_failure_without_llm():
     assert evt["article"] is None
     assert evt["article_state"] == "failed"
     # The one-line summary is never passed off as the article.
-    assert evt["summary"].startswith("測試摘要")
+    assert evt["summary"].startswith("Test summary:")
 
 
 def test_llm_failure_returns_failure_honestly():
@@ -176,7 +179,7 @@ def test_llm_failure_returns_failure_honestly():
 
 
 def test_too_short_article_is_rejected():
-    commander, client = _make_commander(chat_result={"article": "太短"})
+    commander, client = _make_commander(chat_result={"article": "Too short"})
     res = commander.get_event_article(_event_id(commander))
     assert res["ok"] is False
     assert res["state"] == "failed"
@@ -187,8 +190,8 @@ def test_article_prompt_asks_for_1000_words_and_six_paragraphs():
     evt = {
         "source": "CoinDesk",
         "raw_title": "BTC rallies on strong inflows",
-        "headline": "比特幣買盤動能轉強",
-        "summary": "測試摘要：比特幣買盤動能轉強。",
+        "headline": "Bitcoin Buying Momentum Strengthens",
+        "summary": "Test summary: Bitcoin buying momentum strengthens.",
     }
     system_prompt, user_prompt = build_event_article_prompts(evt)
     combined = system_prompt + "\n" + user_prompt

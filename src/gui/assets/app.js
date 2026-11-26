@@ -62,7 +62,7 @@ const initialSplashSteps = [
   { threshold: 15, text: "Initializing 5 Strategy Ledgers ($100,000 U x 5)..." },
   { threshold: 35, text: "Connecting to Real-Time Multi-Exchange Orderflow..." },
   { threshold: 55, text: "Replaying 120m Intraday Historical Simulation..." },
-  { threshold: 75, text: "Translating & Synthesizing Global Macro Intelligence Digest (\u7e41\u9ad4\u4e2d\u6587)..." },
+  { threshold: 75, text: "Synthesizing Global Macro Intelligence Digest..." },
   { threshold: 90, text: "Pre-rendering Left K-Line Chart & Right Tactical Tables..." },
   { threshold: 100, text: "Arena Fully Loaded. Launching Live Arena..." }
 ];
@@ -71,7 +71,7 @@ const resetSplashSteps = [
   { threshold: 15, text: "Resetting 5 Strategy Portfolios ($100,000 U x 5)..." },
   { threshold: 35, text: "Purging Order Tape & Active Bracket Orders..." },
   { threshold: 55, text: "Replaying 120m Intraday Historical Simulation..." },
-  { threshold: 75, text: "Translating & Synthesizing Macro News Digest (\u7e41\u9ad4\u4e2d\u6587)..." },
+  { threshold: 75, text: "Synthesizing Macro News Digest..." },
   { threshold: 90, text: "Pre-rendering Fresh K-Line Depth & Tactical Tables..." },
   { threshold: 100, text: "Arena Reset Complete. Launching Fresh Arena..." }
 ];
@@ -1148,8 +1148,8 @@ async function pollBackend() {
           const hasQuote = state.quote && (state.quote.price > 0 || state.quote.is_offline);
           const candleCount = (state.candles && state.candles.length) || 0;
           const isBootstrapped = Boolean(state.is_bootstrapped);
-          const hasZhNews = Boolean(state.intel_hub && state.intel_hub.events && state.intel_hub.events.length > 0 &&
-            state.intel_hub.events.some(e => /[\u4e00-\u9fff]/.test(e.headline || '')));
+          const hasIntelNews = Boolean(state.intel_hub && state.intel_hub.events && state.intel_hub.events.length > 0 &&
+            state.intel_hub.events.some(e => String(e.headline || '').trim().length > 0));
 
           if (hasQuote) {
             setSplashTarget(35);
@@ -1157,13 +1157,13 @@ async function pollBackend() {
           if (isBootstrapped) {
             setSplashTarget(55);
           }
-          if (isBootstrapped && (hasZhNews || candleCount >= 20)) {
+          if (isBootstrapped && (hasIntelNews || candleCount >= 20)) {
             setSplashTarget(75);
           }
-          if (isBootstrapped && candleCount >= 30 && hasZhNews && hasFirstTableRendered) {
+          if (isBootstrapped && candleCount >= 30 && hasIntelNews && hasFirstTableRendered) {
             setSplashTarget(90);
           }
-          if (isBootstrapped && candleCount >= 30 && hasZhNews && hasFirstChartDrawn && hasFirstTableRendered) {
+          if (isBootstrapped && candleCount >= 30 && hasIntelNews && hasFirstChartDrawn && hasFirstTableRendered) {
             setSplashTarget(100);
           }
         }
@@ -2024,12 +2024,12 @@ function renderMacroRibbon(state) {
     if (badge.className !== nextBadgeCls) badge.className = nextBadgeCls;
     
     const regimeLabels = {
-      'NORMAL': '\u9ad4\u5236: \u5747\u8861\u5e38\u614b',
-      'BULLISH_SURGE': '\u9ad4\u5236: \u591a\u982d\u5f37\u52e2',
-      'BEARISH_PANIC': '\u9ad4\u5236: \u6050\u614c\u7194\u65b7',
-      'HIGH_VOLATILITY_CHOP': '\u9ad4\u5236: \u9ad8\u6ce2\u9707\u76ea'
+      'NORMAL': 'Regime: Balanced',
+      'BULLISH_SURGE': 'Regime: Bullish Surge',
+      'BEARISH_PANIC': 'Regime: Bearish Panic',
+      'HIGH_VOLATILITY_CHOP': 'Regime: High-Vol Chop'
     };
-    const nextRegimeTxt = regimeLabels[mc.regime] || ('\u9ad4\u5236: ' + mc.regime);
+    const nextRegimeTxt = regimeLabels[mc.regime] || ('Regime: ' + mc.regime);
     if (regimeTxt.textContent !== nextRegimeTxt) morphText(regimeTxt, nextRegimeTxt);
   }
 
@@ -2052,7 +2052,7 @@ function renderMacroRibbon(state) {
   }
 
   if (omniTag) {
-    const nextOmni = mc.status === 'ONLINE' ? '\u667a\u8166: \u9023\u7db2\u5728\u7dda' : '\u63a8\u8ad6: \u672c\u6a5f NLP \u6975\u901f';
+    const nextOmni = mc.status === 'ONLINE' ? 'AI: Online' : 'AI: Local NLP';
     if (omniTag.textContent !== nextOmni) omniTag.textContent = nextOmni;
     if (mc.status === 'ONLINE') {
       omniTag.style.color = '#10F5A0';
@@ -2062,7 +2062,7 @@ function renderMacroRibbon(state) {
   }
 
   if (headline) {
-    const nextHeadline = mc.active_headline || '\u5168\u7403\u8a02\u55ae\u6d41\u7dad\u6301\u5b8f\u89c0\u5747\u8861\u3002\u5be6\u6642\u667a\u80fd\u60c5\u5831\u76e3\u63a7\u904b\u884c\u4e2d\u3002';
+    const nextHeadline = mc.active_headline || 'Global order flow remains in macro equilibrium. Live intelligence monitoring active.';
     if (headline.textContent !== nextHeadline) headline.textContent = nextHeadline;
   }
 
@@ -2085,21 +2085,21 @@ function renderMacroRibbon(state) {
       const acts = evt.strategy_actions;
       if (acts && acts.length > 0) {
         const a = acts[0];
-        const nextCatText = '\u64cd\u4f5c: ' + a.name + ' ' + a.action;
+        const nextCatText = 'Action: ' + a.name + ' ' + a.action;
         if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
         const nextCatCls = 'catalyst-impact-pill ' + (a.badge_cls || 'buy');
         if (catalystImpact.className !== nextCatCls) catalystImpact.className = nextCatCls;
       } else {
         if (mc.directional_bias === 'LONG_ONLY') {
-          const nextCatText = '\u7b56\u7565\u653e\u884c: \u591a\u982d\u7a81\u7834 \u00b7 \u5426\u6c7a\u9006\u52e2\u7a7a\u55ae';
+          const nextCatText = 'Directive: Bullish Breakout \u00b7 Short Entries Vetoed';
           if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
           if (catalystImpact.className !== 'catalyst-impact-pill profit') catalystImpact.className = 'catalyst-impact-pill profit';
         } else if (mc.directional_bias === 'SHORT_ONLY') {
-          const nextCatText = '\u7b56\u7565\u653e\u884c: \u9ed1\u5929\u9d5d\u7194\u65b7 \u00b7 \u5426\u6c7a\u9006\u52e2\u591a\u55ae';
+          const nextCatText = 'Directive: Risk-Off Halt \u00b7 Long Entries Vetoed';
           if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
           if (catalystImpact.className !== 'catalyst-impact-pill loss') catalystImpact.className = 'catalyst-impact-pill loss';
         } else {
-          const nextCatText = '\u7b56\u7565\u653e\u884c: 5\u5927\u7b56\u7565\u96d9\u5411\u5168\u958b \u00b7 \u57fa\u6e96\u904b\u4f5c';
+          const nextCatText = 'Directive: All 5 Strategies Bidirectional \u00b7 Baseline';
           if (catalystImpact.textContent !== nextCatText) catalystImpact.textContent = nextCatText;
           if (catalystImpact.className !== 'catalyst-impact-pill info') catalystImpact.className = 'catalyst-impact-pill info';
         }
@@ -4840,19 +4840,18 @@ function updateUiClockDisplay() {
   const intelArticleCache = {};
   const intelArticlePending = {};
 
-  // Summary cleaner (sim splitBody): the harvester summary starts with
-  // a fixed prefix and ends with a parenthetical tail carrying the
+  // Summary cleaner (sim splitBody): the harvester fallback summary starts
+  // with a fixed prefix and ends with a parenthetical tail carrying the
   // related tickers and the raw title. The display shows only the
-  // cleaned summary sentence. The CJK literals are unicode escapes so
-  // the static assets stay zero-CJK.
-  const INTEL_SUMMARY_PREFIX = '\u7D9C\u5408\u5916\u96FB\u5831\u5C0E\uFF1A';
-  const INTEL_TAIL_MARK_A = '\u95DC\u806F\u6A19\u7684';
-  const INTEL_TAIL_MARK_B = '\u539F\u6587\u6A19\u984C';
+  // cleaned summary sentence.
+  const INTEL_SUMMARY_PREFIX = 'Wire Digest: ';
+  const INTEL_TAIL_MARK_A = 'Tickers:';
+  const INTEL_TAIL_MARK_B = 'Headline:';
   function cleanIntelSummary(summary) {
     let s = String(summary || '');
     if (s.indexOf(INTEL_SUMMARY_PREFIX) === 0) s = s.slice(INTEL_SUMMARY_PREFIX.length);
     let cutTail = false;
-    const tailIdx = s.lastIndexOf('\uFF08');
+    const tailIdx = s.lastIndexOf('(');
     if (tailIdx >= 0) {
       const tail = s.slice(tailIdx);
       if (tail.indexOf(INTEL_TAIL_MARK_A) >= 0 || tail.indexOf(INTEL_TAIL_MARK_B) >= 0) {
@@ -4863,7 +4862,7 @@ function updateUiClockDisplay() {
     s = s.trim();
     // The tail carried the sentence-final period; put it back so the
     // cleaned sentence still ends with one.
-    if (cutTail && s && s.charAt(s.length - 1) !== '\u3002') s += '\u3002';
+    if (cutTail && s && s.charAt(s.length - 1) !== '.') s += '.';
     return s;
   }
 
@@ -5445,11 +5444,11 @@ function updateUiClockDisplay() {
       if (intelDomainFilter === 'macro') {
         if (dom !== 'macro' && dom !== 'corporate' && !/\b(cpi|gdp|payroll|treasury|yield|ism|macro)\b/i.test(text)) return false;
       } else if (intelDomainFilter === 'fed') {
-        if (!/\b(fed|fomc|powell|rate|cpi|pce|treasury)\b|\u806f\u6e96\u6703|\u7f8e\u806f\u5132|\u5229\u7387|\u592e\u884c/i.test(text) && dom !== 'macro') return false;
+        if (!/\b(fed|fomc|powell|rate|cpi|pce|treasury|central bank|interest rate)\b/i.test(text) && dom !== 'macro') return false;
       } else if (intelDomainFilter === 'crypto') {
         if (dom !== 'crypto' && dom !== 'forum' && dom !== 'prediction' && !/\b(eth|btc|etf|crypto|sol|xrp|defi|ethereum|bitcoin)\b/i.test(text)) return false;
       } else if (intelDomainFilter === 'tech') {
-        if (dom !== 'tech' && !/\b(ai|gpu|chip|semi|semiconductor|nvidia|tsmc|amd)\b|\u534a\u5c0e\u9ad4|\u6676\u7247/i.test(text)) return false;
+        if (dom !== 'tech' && !/\b(ai|gpu|chip|semi|semiconductor|nvidia|tsmc|amd)\b/i.test(text)) return false;
       } else if (intelDomainFilter === 'geopolitics') {
         if (dom !== 'geopolitics') return false;
       }

@@ -62,7 +62,15 @@ ARTICLE_TARGET_WORDS = 1000
 # one-line summary passed off as one); it counts as a failed generation.
 ARTICLE_MIN_CHARS = 200
 # The six article paragraphs, in order.
-ARTICLE_SECTION_HEADINGS = ("事件經過", "背景脈絡", "市場含義", "風險因素", "後續觀察", "總結")
+ARTICLE_SECTION_HEADINGS = (
+    "What Happened",
+    "Background & Context",
+    "Market Implications",
+    "Risk Factors",
+    "What to Watch",
+    "Summary",
+)
+DEFAULT_ACTIVE_HEADLINE = "Global order flow remains in macro equilibrium. Live intelligence monitoring active."
 
 
 def _dedup_tickers(tickers: Any) -> List[str]:
@@ -89,27 +97,27 @@ def build_event_article_prompts(evt: Dict[str, Any]) -> Tuple[str, str]:
     quotes or sources that are not in that material.
     """
     system_prompt = (
-        "你是一位繁體中文財經情報編輯。請根據提供的單則情報素材，整理成一篇繁體中文文章。\n"
-        "輸出必須是單一 JSON 物件，格式如下：\n"
-        '{"article": "文章全文"}\n'
-        "規則：\n"
-        "- 文章全文必須以繁體中文撰寫，約 1000 字，共 6 段。\n"
-        "- 6 段依序為：事件經過、背景脈絡、市場含義、風險因素、後續觀察、總結。\n"
-        "- 只能使用素材中已有的資訊（標題、摘要、原文標題、原文片段、來源）；不得編造素材中沒有的具體數字、日期、引言或來源。\n"
-        "- 不得把摘要本身當作文章回傳；文章必須是展開整理的完整內容。\n"
-        "- 若素材不足以支撐 1000 字，寧可寫得精簡誠實，也不要編造細節充數。\n"
-        "- 只輸出 JSON 物件，不要輸出其他文字或說明。"
+        "You are an English financial intelligence editor. Based strictly on the single intelligence item provided, write a structured English analysis article.\n"
+        "Output MUST be a single JSON object with this exact schema:\n"
+        '{"article": "Full article text"}\n'
+        "Rules:\n"
+        "- The article MUST be written strictly in clear, professional English, approximately 1000 words across 6 paragraphs.\n"
+        "- The 6 paragraphs must cover in order: What Happened, Background & Context, Market Implications, Risk Factors, What to Watch, Summary.\n"
+        "- Use ONLY information already present in the source material (headline, summary, original title, raw snippet, source); never fabricate figures, dates, quotes, or sources not in the material.\n"
+        "- Do not return the short summary itself as the article; expand and organize the full analysis.\n"
+        "- If the source material is brief, keep the article concise and honest rather than inventing filler details.\n"
+        "- Output ONLY the JSON object with no extra prose or markdown fences."
     )
     snippet = (evt.get("raw_snippet") or "").strip()
-    snippet_line = f"原文片段：{snippet}\n" if snippet else ""
+    snippet_line = f"Raw Snippet: {snippet}\n" if snippet else ""
     user_prompt = (
-        f"情報來源：{evt.get('source', '')}\n"
-        f"原文標題：{evt.get('raw_title', '')}\n"
-        f"標題：{evt.get('headline', '')}\n"
-        f"摘要：{evt.get('summary', '')}\n"
+        f"Source: {evt.get('source', '')}\n"
+        f"Original Title: {evt.get('raw_title', '')}\n"
+        f"Headline: {evt.get('headline', '')}\n"
+        f"Summary: {evt.get('summary', '')}\n"
         f"{snippet_line}"
-        "請依上述素材整理一篇繁體中文文章，約 1000 字、共 6 段"
-        "（事件經過、背景脈絡、市場含義、風險因素、後續觀察、總結）。"
+        "Write an English intelligence article based on the material above (~1000 words, 6 paragraphs covering: "
+        "What Happened, Background & Context, Market Implications, Risk Factors, What to Watch, Summary)."
     )
     return system_prompt, user_prompt
 
@@ -169,7 +177,7 @@ class MacroRegimeState:
     regime: str = "NORMAL"  # "BULLISH_SURGE", "BEARISH_PANIC", "HIGH_VOLATILITY_CHOP", "NORMAL"
     directional_bias: str = "BIDIRECTIONAL"  # "LONG_ONLY", "SHORT_ONLY", "BIDIRECTIONAL", "HOLD_CASH"
     risk_multiplier: float = 1.0  # 0.5 to 1.5
-    active_headline: str = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+    active_headline: str = DEFAULT_ACTIVE_HEADLINE
     confidence: float = 0.50
     last_synthesis_ts: float = 0.0
     # Fallback provenance (item 12 / A3 option 2): True while the current
@@ -282,7 +290,7 @@ class MacroCommander:
         self.current_state.regime = "NORMAL"
         self.current_state.directional_bias = "BIDIRECTIONAL"
         self.current_state.risk_multiplier = 1.0
-        self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+        self.current_state.active_headline = DEFAULT_ACTIVE_HEADLINE
         # No real data yet: neutral confidence, not the old 0.85.
         self.current_state.confidence = 0.50
         self.current_state.status = "ONLINE" if self.client.is_gateway_online else "STANDBY"
@@ -291,38 +299,48 @@ class MacroCommander:
         self._curated_version += 1
         self.current_state.latest_event = None
 
-    def ensure_traditional_chinese_seed_events(self) -> None:
+    def ensure_english_seed_events(self) -> None:
         """
-        Guarantees that all events currently in curated_events have Traditional Chinese
+        Guarantees that all events currently in curated_events have clean English
         headlines and summaries. Used during bootstrap and reset before UI reveal.
         """
         with self._events_lock:
             mutated = False
             for evt in self.curated_events:
-                head = evt.get("headline", "")
-                sum_txt = evt.get("summary", "")
-                if not IntelligenceHarvester._contains_cjk(head) or not IntelligenceHarvester._contains_cjk(sum_txt):
+                head = str(evt.get("headline") or "").strip()
+                sum_txt = str(evt.get("summary") or "").strip()
+                if (
+                    not head
+                    or not sum_txt
+                    or IntelligenceHarvester._contains_cjk(head)
+                    or IntelligenceHarvester._contains_cjk(sum_txt)
+                ):
                     dummy_event = StructuredEvent(
                         timestamp="",
                         entities_tickers=list(evt.get("tickers") or []),
-                        raw_title=head or evt.get("raw_title", ""),
+                        raw_title=evt.get("raw_title", "") or head,
                         source=evt.get("source", ""),
                         domain=evt.get("domain", "crypto"),
                         urgency_score=evt.get("urgency", 5),
                         sentiment_score=evt.get("sentiment", 0.0),
-                        headline_zh="",
-                        summary=sum_txt,
+                        headline_zh="" if IntelligenceHarvester._contains_cjk(head) else head,
+                        summary="" if IntelligenceHarvester._contains_cjk(sum_txt) else sum_txt,
+                        headline="" if IntelligenceHarvester._contains_cjk(head) else head,
                     )
-                    zh_h, zh_s = IntelligenceHarvester.ensure_traditional_chinese(dummy_event)
-                    evt["headline"] = zh_h
-                    evt["summary"] = zh_s
+                    en_h, en_s = IntelligenceHarvester.ensure_english(dummy_event)
+                    evt["headline"] = en_h
+                    evt["summary"] = en_s
                     mutated = True
             if mutated:
                 self._curated_version += 1
-            if not IntelligenceHarvester._contains_cjk(self.current_state.active_headline):
-                self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+            if not self.current_state.active_headline or IntelligenceHarvester._contains_cjk(self.current_state.active_headline):
+                self.current_state.active_headline = DEFAULT_ACTIVE_HEADLINE
             if self.curated_events:
                 self.current_state.latest_event = self.curated_events[0]
+
+    def ensure_traditional_chinese_seed_events(self) -> None:
+        """Backward-compatible alias delegating to English seed event normalization."""
+        self.ensure_english_seed_events()
 
     def record_strategy_action(self, strat_id: str, name: str, action: str, badge_cls: str = "buy", is_macro_action: bool = False) -> None:
         """
@@ -963,7 +981,7 @@ class MacroCommander:
         self.current_state.directional_bias = "BIDIRECTIONAL"
         self.current_state.risk_multiplier = 1.0
         self.current_state.confidence = 0.50
-        self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+        self.current_state.active_headline = DEFAULT_ACTIVE_HEADLINE
         if was_non_neutral:
             logger.info("Keyword fallback regime expired after 30m without LLM; stepped down to BIDIRECTIONAL")
 
@@ -1084,19 +1102,19 @@ class MacroCommander:
                     self._expire_fallback_if_stale(now)
                 return self.current_state
 
-            # Ingest structured events into curated timeline (newest first), ensuring Traditional Chinese headline & summary.
+            # Ingest structured events into curated timeline (newest first), ensuring clean English headline & summary.
             # Iterate in reverse so recent_events[0] lands at curated_events[0].
             with self._events_lock:
                 inserted = False
                 for e in reversed(recent_events):
-                    zh_head, zh_sum = IntelligenceHarvester.ensure_traditional_chinese(e)
-                    dedup_key = e.raw_title or zh_head
+                    en_head, en_sum = IntelligenceHarvester.ensure_english(e)
+                    dedup_key = e.raw_title or en_head
                     digest_hex = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:8]
                     already_exists = any(
                         (
                             (e.raw_title == x.get("raw_title"))
                             if (e.raw_title and x.get("raw_title"))
-                            else (x.get("headline") == zh_head)
+                            else (x.get("headline") == en_head)
                         )
                         for x in self.curated_events
                     )
@@ -1120,8 +1138,8 @@ class MacroCommander:
                             "domain": e.domain,
                             "urgency": e.urgency_score,
                             "sentiment": round(_safe_float(e.sentiment_score, 0.0), 2),
-                            "headline": zh_head,
-                            "summary": zh_sum,
+                            "headline": en_head,
+                            "summary": en_sum,
                             "raw_title": e.raw_title,
                             "raw_snippet": getattr(e, "raw_content", "") or "",
                             "tier": e.tier,
@@ -1168,7 +1186,7 @@ class MacroCommander:
                 '  "active_headline": "Concise headline (under 15 words summarizing the macro narrative)",\n'
                 '  "confidence": float between 0.5 and 1.0\n'
                 "}\n"
-                "CRITICAL REQUIREMENT: The 'active_headline' MUST be written in Traditional Chinese (繁體中文), under 25 words summarizing the current macro narrative."
+                "CRITICAL REQUIREMENT: The 'active_headline' MUST be written strictly in concise English (under 18 words) summarizing the current macro narrative."
             )
 
             user_prompt = (
@@ -1213,8 +1231,8 @@ class MacroCommander:
                     conf = max(0.0, min(1.0, _safe_float(parsed.get("confidence"), 0.70)))
                     raw_hl = parsed.get("active_headline")
                     headline = str(raw_hl).strip() if raw_hl is not None else ""
-                    if not headline:
-                        headline = "Macro regime updated from live stream"
+                    if not headline or IntelligenceHarvester._contains_cjk(headline):
+                        headline = "Macro regime updated from live intelligence stream."
 
                     self.current_state.regime = regime
                     self.current_state.directional_bias = bias
@@ -1247,17 +1265,19 @@ class MacroCommander:
                         self.current_state.regime = "BULLISH_SURGE"
                         self.current_state.directional_bias = "LONG_ONLY"
                         self.current_state.risk_multiplier = 1.25
-                        self.current_state.active_headline = (top_ev.summary or "")[:80]
+                        en_h, en_s = IntelligenceHarvester.ensure_english(top_ev)
+                        self.current_state.active_headline = (en_s or en_h or DEFAULT_ACTIVE_HEADLINE)[:100]
                     elif w_s < -0.45 and w_u >= 7 and w_n >= 1.9:
                         self.current_state.regime = "BEARISH_PANIC"
                         self.current_state.directional_bias = "SHORT_ONLY"
                         self.current_state.risk_multiplier = 0.75
-                        self.current_state.active_headline = (top_ev.summary or "")[:80]
+                        en_h, en_s = IntelligenceHarvester.ensure_english(top_ev)
+                        self.current_state.active_headline = (en_s or en_h or DEFAULT_ACTIVE_HEADLINE)[:100]
                     else:
                         self.current_state.regime = "NORMAL"
                         self.current_state.directional_bias = "BIDIRECTIONAL"
                         self.current_state.risk_multiplier = 1.0
-                        self.current_state.active_headline = "全球訂單流維持宏觀均衡。實時智能情報監控運行中。"
+                        self.current_state.active_headline = DEFAULT_ACTIVE_HEADLINE
                     self.current_state.confidence = 0.50
 
                     # Emergency backup only (item 12 / A3 option 2): the keyword

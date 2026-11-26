@@ -913,9 +913,9 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
     # when no trade has closed yet. It is a display countdown, not
     # the trigger predicate itself (the 30-minute debounce still
     # applies in _auto_evolve_reason). next_evolve_sec_latest is the
-    # pure time countdown: the latest ("\u6700\u665a") the next
-    # evolution can happen. The trade counts come from the engine's
-    # own counter (_closed_trades_since_evolve), not a new one.
+    # pure time countdown: the latest the next evolution can happen.
+    # The trade counts come from the engine's own counter
+    # (_closed_trades_since_evolve), not a new one.
     time_remaining = max(0.0, float(engine.auto_evolve_interval_sec) - elapsed_since_evolve)
     evolve_trade_threshold = int(getattr(engine, "auto_evolve_closed_trades", 30) or 30)
     closed_since_evolve = int(getattr(engine, "_closed_trades_since_evolve", 0) or 0)
@@ -926,15 +926,16 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         next_evolve_sec = time_remaining
     next_evolve_sec_latest = time_remaining
     next_evolve_note = (
-        f"\u6700\u665a {int(next_evolve_sec_latest)}s"
-        f"\uff08{int(engine.auto_evolve_interval_sec)}s \u4e0a\u9650\uff09\uff1b"
-        f"\u9084\u5dee {trades_remaining} \u7b46\u5e73\u5009\u5373\u89f8\u767c"
+        f"Latest in {int(next_evolve_sec_latest)}s "
+        f"({int(engine.auto_evolve_interval_sec)}s cap); "
+        f"{trades_remaining} closed trade{'s' if trades_remaining != 1 else ''} remaining to trigger"
     )
     # Display label for the Genetic Engine card. Frontend assets must stay
-    # CJK-free (see test_zero_cjk_in_frontend_assets), so the Chinese label
-    # is rendered here in Python and the frontend only displays it opaquely.
+    # CJK-free (see test_zero_cjk_in_frontend_assets).
     next_evolve_trades_label = (
-        f"\u9084\u5dee {trades_remaining} \u7b46" if trades_remaining > 0 else "\u5373\u5c07\u89f8\u767c"
+        f"{trades_remaining} trade{'s' if trades_remaining != 1 else ''} left"
+        if trades_remaining > 0
+        else "Triggering soon"
     )
 
     if rankings and (gen == 1 or not engine.tv_champion.get("strategy_id")):
@@ -1077,8 +1078,8 @@ def _empty_view_model(error: str) -> Dict[str, Any]:
         "next_evolve_sec_latest": 0,
         "closed_trades_since_evolve": 0,
         "closed_trades_to_next_evolve": 30,
-        "next_evolve_sec_note": "\u6700\u665a 0s\uff0821600s \u4e0a\u9650\uff09\uff1b\u9084\u5dee 30 \u7b46\u5e73\u5009\u5373\u89f8\u767c",
-        "next_evolve_trades_label": "\u9084\u5dee 30 \u7b46",
+        "next_evolve_sec_note": "Latest in 0s (21600s cap); 30 closed trades remaining to trigger",
+        "next_evolve_trades_label": "30 trades left",
         "evolution_events": [],
         "macro_commander": {},
         "intel_hub": {},

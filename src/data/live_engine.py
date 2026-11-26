@@ -667,7 +667,7 @@ class LiveArenaEngine(
                     self._raw_quote_cache = self.latest_quote
             self.last_cadence_ts = time.time()
             self.last_cadence_slot = math.floor(self.last_cadence_ts / self.cadence_sec) * self.cadence_sec
-            self.macro_commander.ensure_traditional_chinese_seed_events()
+            self.macro_commander.ensure_english_seed_events()
             self.is_bootstrapped = True
             try:
                 self._publish_state_snapshot()

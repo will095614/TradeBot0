@@ -59,13 +59,16 @@ def test_intel_event_time_hides_seconds():
 def test_article_real_streamed_progress_and_viewmodel_delta():
     # 1. Verify SSE streaming in GeminiClient.chat_json drives monotonic real progress callbacks
     article_body = (
-        "事件經過：以太坊機構資金連續五日淨流入，帶動市場交投熱絡。"
-        "背景脈絡：宏觀流動性預期轉暖，市場風險偏好顯著回升。"
-        "市場含義：現貨需求支撐價格重心上移，衍生品資金費率維持健康。"
-        "風險因素：短線獲利了結賣壓與宏觀數據公布仍可能引發波動。"
-        "後續觀察：需持續追蹤鏈上大額轉帳與 ETF 單日申贖變化。"
-        "總結：整體結構偏向中性偏多，建議嚴守風控紀律。"
-    ) * 6
+        (
+            "What Happened: Ethereum saw five consecutive days of institutional net inflows, lifting spot trading activity. "
+            "Background & Context: Improving macro liquidity expectations supported broader risk appetite across digital assets. "
+            "Market Implications: Spot demand reinforced higher support levels while derivatives funding rates remained balanced. "
+            "Risk Factors: Short-term profit-taking and upcoming macroeconomic data releases may still trigger volatility. "
+            "What to Watch: Monitor large on-chain transfers and daily ETF creation and redemption flows. "
+            "Summary: Overall structure stays constructive; maintain disciplined position sizing and stop-loss controls. "
+        )
+        * 4
+    ).strip()
     payload_json = json.dumps({"article": article_body}, ensure_ascii=False)
     # Split into 10 SSE chunks
     step = max(1, len(payload_json) // 10)
@@ -127,9 +130,9 @@ def test_article_real_streamed_progress_and_viewmodel_delta():
                     entities_tickers=["ETH"],
                     urgency_score=2,
                     sentiment_score=0.10,
-                    summary="測試摘要：以太幣社群討論升溫。",
+                    summary="Test summary: Ethereum community sentiment is heating up.",
                     raw_title="ETH community buzz rising",
-                    headline_zh="以太幣社群討論升溫",
+                    headline_zh="Ethereum Community Sentiment Heating Up",
                 )
             ]
         )

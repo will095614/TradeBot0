@@ -20,12 +20,12 @@ def _commander_with_expanded_events(count=25):
     commander.curated_events.clear()
     bodies = {}
     for i in range(count):
-        body = ("情報本文：這是為了量測而產生的長篇文章內容。" * 260) + f"#{i}"
+        body = ("Intelligence report body: long benchmark article content for telemetry sizing tests. " * 100) + f"#{i}"
         bodies[f"evt-{i}"] = body
         commander.curated_events.append({
             "id": f"evt-{i}",
-            "headline_zh": f"測試標題 {i}",
-            "summary": f"測試摘要 {i}",
+            "headline_zh": f"Test Headline {i}",
+            "summary": f"Test summary {i}",
             "source": "CoinDesk",
             "urgency_score": 6,
             "article_state": "ready",
