@@ -16,7 +16,7 @@ import weakref
 from src.arena.order import OrderSide
 from src.intelligence.gemini_client import DEFAULT_GEMINI_BASE_URL, DEFAULT_GEMINI_MODEL, GeminiClient
 from src.intelligence.forum_collector import ForumCollector
-from src.intelligence.ingestion import IntelligenceHarvester, StructuredEvent
+from src.intelligence.ingestion import IntelligenceHarvester, StructuredEvent, _dedup_normalize_title
 
 logger = logging.getLogger(__name__)
 
@@ -1108,12 +1108,16 @@ class MacroCommander:
                 inserted = False
                 for e in reversed(recent_events):
                     en_head, en_sum = IntelligenceHarvester.ensure_english(e)
-                    dedup_key = e.raw_title or en_head
-                    digest_hex = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:8]
+                    raw_key = e.raw_title or en_head
+                    norm_key = _dedup_normalize_title(raw_key) or raw_key
+                    digest_hex = hashlib.sha256(norm_key.encode("utf-8")).hexdigest()[:8]
                     already_exists = any(
                         (
-                            (e.raw_title == x.get("raw_title"))
-                            if (e.raw_title and x.get("raw_title"))
+                            (
+                                (_dedup_normalize_title(x.get("raw_title") or x.get("headline") or "") or (x.get("raw_title") or x.get("headline") or ""))
+                                == norm_key
+                            )
+                            if norm_key
                             else (x.get("headline") == en_head)
                         )
                         for x in self.curated_events

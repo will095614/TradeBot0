@@ -30,13 +30,13 @@ def _is_cjk_codepoint(cp: int) -> bool:
 
 
 def test_v321_version_and_readme_english():
-    assert APP_VERSION == "V3.2.1"
+    assert APP_VERSION == "V3.3.0"
     iss = (ROOT / "TradeBot0.iss").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert '#define MyAppVersion "V3.2.1"' in iss
-    assert "VersionInfoVersion=3.2.1" in iss
-    assert "https://github.com/will095614/TradeBot0/releases/download/v3.2.1/TradeBot0Setup-V3.2.1.exe" in readme
+    assert '#define MyAppVersion "V3.3.0"' in iss
+    assert "VersionInfoVersion=3.3.0" in iss
+    assert "https://github.com/will095614/TradeBot0/releases/download/v3.3.0/TradeBot0Setup-V3.3.0.exe" in readme
     assert "Traditional Chinese" not in readme
 
 

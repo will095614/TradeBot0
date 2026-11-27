@@ -58,7 +58,7 @@ def test_compare_versions(a, b, expected):
 
 def test_version_single_source():
     assert APP_NAME == "TradeBot0"
-    assert APP_VERSION == "V3.2.1"
+    assert APP_VERSION == "V3.3.0"
 
 
 def test_iss_version_matches_version_py():

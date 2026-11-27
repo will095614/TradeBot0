@@ -1083,6 +1083,7 @@ class ArenaDashboard:
             if not old_enabled and old_auto_evolve_disabled_ts is not None:
                 new_engine._auto_evolve_disabled_ts = old_auto_evolve_disabled_ts
             new_engine._preserved_from_reset = True
+            new_engine._publish_state_snapshot()
             with self._stop_lock:
                 if self._stopped:
                     new_engine.stop()

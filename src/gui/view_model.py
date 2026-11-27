@@ -33,10 +33,14 @@ _FAST_CLONE_DELTA_KEYS = (
     "quant_meta",
     "omni_meta",
     "macro_commander",
+    "quote",
+    "indicators",
 )
 _SHALLOW_DELTA_KEYS = frozenset(
     _SHALLOW_DELTA_DICT_LIST_KEYS + _SHALLOW_DELTA_SCALAR_LIST_KEYS + _FAST_CLONE_DELTA_KEYS
 )
+
+_PRIMITIVE_TYPES = frozenset((int, float, str, bool, type(None)))
 
 _HEATMAP_STRATEGIES = ("comp_agg", "comp_cons", "comp_trail", "comp_orb", "comp_vwap")
 _HEATMAP_LABELS = ("AGG", "CONS", "TRAIL", "ORB", "MEAN")
@@ -44,12 +48,15 @@ _HEATMAP_LABELS = ("AGG", "CONS", "TRAIL", "ORB", "MEAN")
 
 def _clone_json_tree(obj: Any) -> Any:
     """Fast recursive clone for JSON-primitive dict/list snapshots without copy.deepcopy memo overhead."""
+    t = type(obj)
+    if t is dict:
+        return {k: (v if type(v) in _PRIMITIVE_TYPES else _clone_json_tree(v)) for k, v in obj.items()}
+    if t is list:
+        return [item if type(item) in _PRIMITIVE_TYPES else _clone_json_tree(item) for item in obj]
     if isinstance(obj, dict):
-        return {k: _clone_json_tree(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_clone_json_tree(item) for item in obj]
-    if isinstance(obj, tuple):
-        return [_clone_json_tree(item) for item in obj]
+        return {k: (v if type(v) in _PRIMITIVE_TYPES else _clone_json_tree(v)) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [item if type(item) in _PRIMITIVE_TYPES else _clone_json_tree(item) for item in obj]
     return obj
 
 
@@ -105,7 +112,7 @@ class ViewModelPublisher:
             return "empty"
         last = candles[-1]
         prev = candles[-2] if len(candles) >= 2 else None
-        prev_sig = f"{prev.get('t')}:{prev.get('c')}" if isinstance(prev, dict) else ""
+        prev_sig = f"{prev.get('t')}:{prev.get('h')}:{prev.get('l')}:{prev.get('c')}" if isinstance(prev, dict) else ""
         first_t = candles[0].get("t", 0)
         return f"{len(candles)}:{first_t}:{prev_sig}:{last.get('t')}:{last.get('o')}:{last.get('h')}:{last.get('l')}:{last.get('c')}"
 
@@ -354,8 +361,7 @@ class ViewModelPublisher:
             return delta
 
         omit = set(_SHALLOW_DELTA_KEYS)
-        if intel_same:
-            omit.add("intel_hub")
+        omit.add("intel_hub")
 
         delta = copy.deepcopy({k: v for k, v in snapshot.items() if k not in omit})
         for fk in _FAST_CLONE_DELTA_KEYS:
@@ -375,10 +381,16 @@ class ViewModelPublisher:
                     hv = snapshot[hk]
                     delta[hk] = list(hv) if isinstance(hv, list) else _clone_json_tree(hv)
 
-        if intel_same and isinstance(snapshot.get("intel_hub"), dict):
-            delta["intel_hub"] = {
-                k: _clone_json_tree(v) for k, v in snapshot["intel_hub"].items() if k != "events"
-            }
+        if "intel_hub" in snapshot:
+            ih = snapshot["intel_hub"]
+            if intel_same and isinstance(ih, dict):
+                delta["intel_hub"] = {
+                    k: (v if type(v) in _PRIMITIVE_TYPES else _clone_json_tree(v))
+                    for k, v in ih.items()
+                    if k != "events"
+                }
+            else:
+                delta["intel_hub"] = _clone_json_tree(ih)
 
         delta["is_delta"] = bool(candles_same or c5_same or c15_same or fills_same or history_same or intel_same)
         delta["candles_unchanged"] = candles_same
@@ -715,9 +727,10 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
         except Exception:
             pass
 
+    comp_by_id = {comp.portfolio_id: comp for comp in engine.competitors}
     strategies: List[Dict[str, Any]] = []
     for r in rankings:
-        c = next((comp for comp in engine.competitors if comp.portfolio_id == r.portfolio_id), None)
+        c = comp_by_id.get(r.portfolio_id)
         if c is None:
             # Stale ranking entry (competitor removed): skip it instead of
             # raising StopIteration and taking down the whole view model.
@@ -866,6 +879,7 @@ def _build_engine_view_model_impl(engine: Any, rankings: List[Any], gen: int) ->
                 {
                     "seq": assigned_seq,
                     "time": _safe_fmt_hms(f.timestamp),
+                    "portfolio_id": pid,
                     "strategy": engine.STRATEGY_DISPLAY.get(pid, pid).split(" ")[0],
                     "side": f.side.value,
                     "action_label": action_label,
@@ -1103,7 +1117,7 @@ def _empty_view_model(error: str) -> Dict[str, Any]:
             },
         },
         "ui_prefs": {
-            "gemini_model": "gemini-3.1-flash-lite",
+            "gemini_model": DEFAULT_GEMINI_MODEL,
             "preload_intel_articles": True,
         },
         "mtf": {

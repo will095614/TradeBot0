@@ -256,16 +256,16 @@ def test_update_checker_semver_prerelease_and_malformed_manifest(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_v320_version_and_frontend_optimizations():
-    assert APP_VERSION == "V3.2.1"
+    assert APP_VERSION == "V3.3.0"
     iss = (ROOT / "TradeBot0.iss").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     html = (ASSETS / "index.html").read_text(encoding="utf-8")
     css = (ASSETS / "app.css").read_text(encoding="utf-8")
     js = (ASSETS / "app.js").read_text(encoding="utf-8")
 
-    assert '#define MyAppVersion "V3.2.1"' in iss
-    assert "VersionInfoVersion=3.2.1" in iss
-    assert "https://github.com/will095614/TradeBot0/releases/download/v3.2.1/TradeBot0Setup-V3.2.1.exe" in readme
+    assert '#define MyAppVersion "V3.3.0"' in iss
+    assert "VersionInfoVersion=3.3.0" in iss
+    assert "https://github.com/will095614/TradeBot0/releases/download/v3.3.0/TradeBot0Setup-V3.3.0.exe" in readme
     assert "V3.1.0" not in readme
 
     # Toast container fixed overlay & offline overlay stacking above setup wizard

@@ -382,6 +382,7 @@ class GeneticEvolver:
             comp_fitness = float(cls.calculate_composite_fitness(r))
             evolution_records.append({
                 "portfolio_id": comp.portfolio_id,
+                "name": str(getattr(comp, "base_name", comp.portfolio_id)),
                 "prev_rank": r.rank,
                 "prev_roi_pct": float(r.roi_pct),
                 "prev_max_dd_pct": float(r.max_drawdown_pct),
@@ -476,7 +477,7 @@ class GeneticEvolver:
                 storage.save_evolution_generation(
                     generation=generation,
                     champion_id=str(champ.get("portfolio_id", "")),
-                    champion_name=str(champ.get("portfolio_id", "")),
+                    champion_name=str(champ.get("name") or champ.get("portfolio_id", "")),
                     champion_roi=float(champ.get("prev_roi_pct", 0.0)),
                     champion_sharpe=float(champ.get("prev_sharpe", 0.0)),
                     champion_max_dd=float(champ.get("prev_max_dd_pct", 0.0)),

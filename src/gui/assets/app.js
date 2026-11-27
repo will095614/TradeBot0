@@ -31,6 +31,7 @@ let hasCompletedSetup = false;
 let hasCheckedOnboarding = false;
 let isWizardOpen = false;
 let wizardOpenGen = 0;
+let aiPrefsSeq = 0;
 let isSavingSetup = false;
 let wizardPrefsDirty = false;
 let stratDetailCloseTimer = null;
@@ -357,11 +358,12 @@ function startSplashSequence(isReset = false) {
 
       const elapsedMs = performance.now() - splashStartTimeMs;
       const canComplete = elapsedMs >= splashMinDurationMs;
+      const chartReadyForSplash = hasFirstChartDrawn || currentMainView !== 'arena';
 
       // Release the 90% cap the moment the exit gate genuinely opens:
       // the bar animates 90 -> 100 only when the arena is ready to
       // reveal, never before.
-      if (canComplete && hasFirstChartDrawn && hasFirstTableRendered) {
+      if (canComplete && chartReadyForSplash && hasFirstTableRendered) {
         setSplashTarget(100);
       }
 
@@ -384,7 +386,7 @@ function startSplashSequence(isReset = false) {
       if (sLbl) sLbl.textContent = activeStep;
 
       // Strict exit condition: 100% reached AND minimum duration met AND left chart drawn AND right tables rendered
-      if (splashProgress >= 99.5 && targetSplashProgress >= 100 && canComplete && hasFirstChartDrawn && hasFirstTableRendered) {
+      if (splashProgress >= 99.5 && targetSplashProgress >= 100 && canComplete && chartReadyForSplash && hasFirstTableRendered) {
         splashProgress = 100;
         if (pLbl) pLbl.textContent = '100%';
         if (sLbl) sLbl.textContent = currentSplashSteps[currentSplashSteps.length - 1].text;
@@ -451,7 +453,8 @@ function startSplashSequence(isReset = false) {
 // minimum splash duration elapsed. The bar must not show 100% while this
 // is closed.
 function isSplashGateOpen() {
-  return hasFirstChartDrawn && hasFirstTableRendered &&
+  const chartReadyForSplash = hasFirstChartDrawn || currentMainView !== 'arena';
+  return chartReadyForSplash && hasFirstTableRendered &&
     (performance.now() - splashStartTimeMs) >= splashMinDurationMs;
 }
 
@@ -538,15 +541,38 @@ if (window.pywebview && window.pywebview.api) {
 // Latest state & mode tracking initialized at top of script
 
 // Color & Motion Helpers
+const HEX_TO_RGBA_CACHE = new Map();
 function hexToRgba(hex, alpha) {
-  if (!hex || hex[0] !== '#') return `rgba(255, 184, 0, ${alpha})`;
-  let c = hex.substring(1);
-  if (c.length === 3) c = c.split('').map(x => x + x).join('');
-  const num = parseInt(c, 16);
-  const r = (num >> 16) & 255;
-  const g = (num >> 8) & 255;
-  const b = num & 255;
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  const key = `${hex}|${alpha}`;
+  const cached = HEX_TO_RGBA_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  let out;
+  if (!hex || hex[0] !== '#') {
+    out = `rgba(255, 184, 0, ${alpha})`;
+  } else {
+    let c = hex.substring(1);
+    if (c.length === 3) c = c.split('').map(x => x + x).join('');
+    const num = parseInt(c, 16);
+    const r = (num >> 16) & 255;
+    const g = (num >> 8) & 255;
+    const b = num & 255;
+    out = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  if (HEX_TO_RGBA_CACHE.size >= 256) HEX_TO_RGBA_CACHE.clear();
+  HEX_TO_RGBA_CACHE.set(key, out);
+  return out;
+}
+
+const CANVAS_TEXT_WIDTH_CACHE = new Map();
+function measureCanvasTextWidth(ctx, font, text) {
+  ctx.font = font;
+  const key = `${font}|${text}`;
+  const cached = CANVAS_TEXT_WIDTH_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  const w = ctx.measureText(text).width;
+  if (CANVAS_TEXT_WIDTH_CACHE.size >= 512) CANVAS_TEXT_WIDTH_CACHE.clear();
+  CANVAS_TEXT_WIDTH_CACHE.set(key, w);
+  return w;
 }
 
 // Active Motion Beacons & Animation Loop
@@ -779,7 +805,7 @@ toastWatchdogInterval = setInterval(() => {
   if (!container || (container.matches && container.matches(':hover'))) return;
   const now = Date.now();
   Array.from(container.children).forEach(toast => {
-    if (!toast._isDismissing && !toast._isPaused && (now - (toast._createdAt || now) > 18000) && !toast.matches(':hover')) {
+    if (!toast._isDismissing && (now - (toast._createdAt || now) > 18000) && !toast.matches(':hover')) {
       dismissToast(toast);
     }
   });
@@ -1474,6 +1500,20 @@ async function resetArena() {
   Object.keys(intelArticleProgressTimers).forEach((k) => stopIntelArticleProgressPoll(k));
   intelExpandedIds.clear();
   intelArticlePreloadQueue.length = 0;
+  intelArticlePreloadRunning = false;
+  Object.keys(intelEventNodes).forEach((k) => {
+    const node = intelEventNodes[k];
+    if (node && node.parentNode) node.parentNode.removeChild(node);
+    delete intelEventNodes[k];
+  });
+  const intelListResetEl = document.getElementById('intelEventsList');
+  if (intelListResetEl) {
+    intelListResetEl.innerHTML = '';
+    intelListResetEl._intelListSig = '';
+    intelListResetEl._intelOrder = '';
+    intelListResetEl._lastHtml = '';
+    intelListResetEl._lastVisibleCount = 0;
+  }
   stratEquityHistory.clear();
   stratCardDomMap.forEach((card) => {
     if (!card) return;
@@ -1585,6 +1625,7 @@ function setChartTimeframe(tf) {
   }
   lastNewestCandleTime = 0;
   animCandles = [];
+  candleSlideOffset = 0;
   lastPausedCanvasSig = '';
   if (latestState) drawPriceChart(latestState);
 }
@@ -1710,8 +1751,14 @@ function setGaugeArcRatio(arcEl, ratio, strokeColor) {
   const maxLen = 119.38;
   const clamped = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
   const offset = (maxLen * (1 - clamped)).toFixed(2);
-  if (arcEl.style.strokeDashoffset !== offset) arcEl.style.strokeDashoffset = offset;
-  if (strokeColor && arcEl.style.stroke !== strokeColor) arcEl.style.stroke = strokeColor;
+  if (arcEl._lastOffset !== offset) {
+    arcEl._lastOffset = offset;
+    arcEl.style.strokeDashoffset = offset;
+  }
+  if (strokeColor && arcEl._lastStroke !== strokeColor) {
+    arcEl._lastStroke = strokeColor;
+    arcEl.style.stroke = strokeColor;
+  }
 }
 
 function renderModularTelemetryBay(state) {
@@ -1873,9 +1920,24 @@ function renderAll(state) {
   }
 }
 
+const _reducedMotionMql = typeof window.matchMedia === 'function'
+  ? window.matchMedia('(prefers-reduced-motion: reduce)')
+  : null;
+let cachedReducedMotion = _reducedMotionMql ? Boolean(_reducedMotionMql.matches) : false;
+if (_reducedMotionMql) {
+  const _onReducedMotionChange = (ev) => {
+    cachedReducedMotion = Boolean(ev && ev.matches);
+    if (typeof syncAmbientShaderMotion === 'function') syncAmbientShaderMotion();
+  };
+  if (typeof _reducedMotionMql.addEventListener === 'function') {
+    _reducedMotionMql.addEventListener('change', _onReducedMotionChange);
+  } else if (typeof _reducedMotionMql.addListener === 'function') {
+    _reducedMotionMql.addListener(_onReducedMotionChange);
+  }
+}
+
 function isReducedMotionPreferred() {
-  return typeof window.matchMedia === 'function'
-    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  return cachedReducedMotion;
 }
 
 function morphText(el, nextText) {
@@ -2036,9 +2098,13 @@ function renderMacroRibbon(state) {
   if (biasTag) {
     const nextBias = mc.directional_bias || 'BIDIRECTIONAL';
     if (biasTag.textContent !== nextBias) biasTag.textContent = nextBias;
-    if (mc.directional_bias === 'LONG_ONLY') biasTag.style.color = '#4ADE80';
-    else if (mc.directional_bias === 'SHORT_ONLY') biasTag.style.color = '#FB7185';
-    else biasTag.style.color = '';
+    const nextBiasColor = mc.directional_bias === 'LONG_ONLY'
+      ? '#4ADE80'
+      : (mc.directional_bias === 'SHORT_ONLY' ? '#FB7185' : '');
+    if (biasTag._lastColor !== nextBiasColor) {
+      biasTag._lastColor = nextBiasColor;
+      biasTag.style.color = nextBiasColor;
+    }
   }
 
   if (multTag) {
@@ -2054,10 +2120,10 @@ function renderMacroRibbon(state) {
   if (omniTag) {
     const nextOmni = mc.status === 'ONLINE' ? 'AI: Online' : 'AI: Local NLP';
     if (omniTag.textContent !== nextOmni) omniTag.textContent = nextOmni;
-    if (mc.status === 'ONLINE') {
-      omniTag.style.color = '#10F5A0';
-    } else {
-      omniTag.style.color = '#38BDF8';
+    const nextOmniColor = mc.status === 'ONLINE' ? '#10F5A0' : '#38BDF8';
+    if (omniTag._lastColor !== nextOmniColor) {
+      omniTag._lastColor = nextOmniColor;
+      omniTag.style.color = nextOmniColor;
     }
   }
 
@@ -2420,6 +2486,7 @@ function renderStrategies(state) {
     }
 
     let bracketHtml = '';
+    let bracketData = null;
     if (s.in_position) {
       let pct = 50;
       const isShort = s.position_side === 'SHORT';
@@ -2441,15 +2508,18 @@ function renderStrategies(state) {
       const evBadge = (typeof s.expected_r === 'number' && Number.isFinite(s.expected_r) && Math.abs(s.expected_r) > 0.01)
         ? `<span class="ev-micro-pill num" title="Monte Carlo EV">${s.expected_r >= 0 ? '+' : ''}${s.expected_r.toFixed(1)}R</span>`
         : '';
+      const pctStr = pct.toFixed(1) + '%';
+      const entryLabelTxt = `Entry ${fmtUsd(s.entry_price, 0)}`;
+      bracketData = { pctStr, sColor, slText, entryLabelTxt, evBadge, tpText };
       bracketHtml = `
           <div class="bracket-bar-wrap">
             <div class="bracket-track">
-              <div class="bracket-fill" style="width:${pct.toFixed(1)}%;background:${sColor}"></div>
-              <div class="bracket-marker" style="left:${pct.toFixed(1)}%;border-color:${sColor}"></div>
+              <div class="bracket-fill" style="width:${pctStr};background:${sColor}"></div>
+              <div class="bracket-marker" style="left:${pctStr};border-color:${sColor}"></div>
             </div>
             <div class="bracket-labels num">
               <span class="down">${slText}</span>
-              <span class="bracket-entry-center">Entry ${fmtUsd(s.entry_price, 0)} ${evBadge}</span>
+              <span class="bracket-entry-center">${entryLabelTxt} ${evBadge}</span>
               <span class="up">${tpText}</span>
             </div>
           </div>
@@ -2525,7 +2595,10 @@ function renderStrategies(state) {
     const refs = card._refs;
     const rankTxt = '#' + (Number(s.rank) || 0);
     if (refs.rank.textContent !== rankTxt) refs.rank.textContent = rankTxt;
-    if (refs.rank.style.color !== sColor) refs.rank.style.color = sColor;
+    if (refs.rank._sColor !== sColor) {
+      refs.rank._sColor = sColor;
+      refs.rank.style.color = sColor;
+    }
     if (refs.title.textContent !== displayName) refs.title.textContent = displayName;
     if (refs.title.title !== (s.name || '')) refs.title.title = s.name || '';
 
@@ -2575,8 +2648,39 @@ function renderStrategies(state) {
       refs.spkDelta.style.color = deltaColor;
     }
 
-    if (card._lastBracketHtml !== bracketHtml) {
+    if (bracketData) {
+      if (card._bracketNodes && card._lastEvBadge === bracketData.evBadge) {
+        const bn = card._bracketNodes;
+        if (bn.fill._w !== bracketData.pctStr) { bn.fill._w = bracketData.pctStr; bn.fill.style.width = bracketData.pctStr; }
+        if (bn.fill._bg !== bracketData.sColor) { bn.fill._bg = bracketData.sColor; bn.fill.style.background = bracketData.sColor; }
+        if (bn.marker._l !== bracketData.pctStr) { bn.marker._l = bracketData.pctStr; bn.marker.style.left = bracketData.pctStr; }
+        if (bn.marker._bc !== bracketData.sColor) { bn.marker._bc = bracketData.sColor; bn.marker.style.borderColor = bracketData.sColor; }
+        if (bn.sl.textContent !== bracketData.slText) bn.sl.textContent = bracketData.slText;
+        if (bn.centerEntry && bn.centerEntry.textContent !== bracketData.entryLabelTxt) bn.centerEntry.textContent = bracketData.entryLabelTxt;
+        if (bn.tp.textContent !== bracketData.tpText) bn.tp.textContent = bracketData.tpText;
+        card._lastBracketHtml = bracketHtml;
+      } else {
+        card._lastBracketHtml = bracketHtml;
+        card._lastEvBadge = bracketData.evBadge;
+        refs.bracket.innerHTML = bracketHtml;
+        const fillEl = refs.bracket.querySelector('.bracket-fill');
+        const markerEl = refs.bracket.querySelector('.bracket-marker');
+        const slEl = refs.bracket.querySelector('.bracket-labels .down');
+        const centerEl = refs.bracket.querySelector('.bracket-entry-center');
+        const tpEl = refs.bracket.querySelector('.bracket-labels .up');
+        let centerEntry = null;
+        if (centerEl && centerEl.firstChild && centerEl.firstChild.nodeType === 3) {
+          centerEl.firstChild.textContent = bracketData.entryLabelTxt + ' ';
+          centerEntry = centerEl.firstChild;
+        }
+        card._bracketNodes = (fillEl && markerEl && slEl && centerEntry && tpEl)
+          ? { fill: fillEl, marker: markerEl, sl: slEl, centerEntry, tp: tpEl }
+          : null;
+      }
+    } else if (card._lastBracketHtml !== bracketHtml) {
       card._lastBracketHtml = bracketHtml;
+      card._lastEvBadge = undefined;
+      card._bracketNodes = null;
       refs.bracket.innerHTML = bracketHtml;
     }
 
@@ -2602,38 +2706,42 @@ function renderStrategies(state) {
     // transition play it back to the natural position. Transform-only,
     // so no layout is triggered. Only runs when the ORDER changes --
     // equity updates on the 1s tick never animate.
-    const reduceMotion = typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reduceMotion = isReducedMotionPreferred(); // honors (prefers-reduced-motion: reduce)
     const firstRects = new Map();
     strategies.forEach(s => {
       const card = stratCardDomMap.get(s.id);
       if (!card) return;
-      // Cancel any in-flight reorder cleanly: drop the class and the
-      // transform so the card sits at its current DOM slot before we
-      // measure. Renders are 1s apart and the animation is 0.35s, so
-      // this only fires on non-cadence re-renders.
       card.classList.remove('strat-card-reordering');
       card.style.transform = '';
-      firstRects.set(s.id, card.getBoundingClientRect());
+    });
+    strategies.forEach(s => {
+      const card = stratCardDomMap.get(s.id);
+      if (card) firstRects.set(s.id, card.getBoundingClientRect());
     });
     strategies.forEach(s => {
       const card = stratCardDomMap.get(s.id);
       if (card) grid.appendChild(card);
     });
     if (!reduceMotion) {
-      const moved = [];
+      const lastRects = [];
       strategies.forEach(s => {
         const card = stratCardDomMap.get(s.id);
         const first = firstRects.get(s.id);
         if (!card || !first) return;
-        const last = card.getBoundingClientRect();
+        lastRects.push([card, first, card.getBoundingClientRect()]);
+      });
+      const moved = [];
+      for (let i = 0; i < lastRects.length; i++) {
+        const card = lastRects[i][0];
+        const first = lastRects[i][1];
+        const last = lastRects[i][2];
         const dx = first.left - last.left;
         const dy = first.top - last.top;
         if (dx !== 0 || dy !== 0) {
           card.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
           moved.push(card);
         }
-      });
+      }
       if (moved.length > 0) {
         // Force a reflow so the inverted transform paints before the
         // transition class is added; otherwise the browser may skip it.
@@ -2837,14 +2945,18 @@ function renderLeaderboard(state) {
 
   const firstTops = new Map();
   if (orderChanged) {
+    const resetEls = [];
     strategies.forEach(s => {
       const el = leaderRowDomMap.get(s.id);
       if (el) {
         el.style.transition = 'none';
         el.style.transform = '';
-        firstTops.set(s.id, el.getBoundingClientRect().top);
+        resetEls.push([s.id, el]);
       }
     });
+    for (let i = 0; i < resetEls.length; i++) {
+      firstTops.set(resetEls[i][0], resetEls[i][1].getBoundingClientRect().top);
+    }
   }
 
   const leadShortCodes = {
@@ -2966,23 +3078,26 @@ function renderLeaderboard(state) {
   }
 
   if (orderChanged) {
-    const reduceMotion = typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reduceMotion = isReducedMotionPreferred();
     if (!reduceMotion) {
-      const movedRows = [];
+      const lastTops = [];
       strategies.forEach(s => {
         const prevTop = firstTops.get(s.id);
         const tr = leaderRowDomMap.get(s.id);
         if (prevTop !== undefined && tr) {
-          const newTop = tr.getBoundingClientRect().top;
-          const dy = prevTop - newTop;
-          if (Math.abs(dy) > 1) {
-            tr.style.transform = `translateY(${dy}px)`;
-            tr.style.transition = 'none';
-            movedRows.push(tr);
-          }
+          lastTops.push([tr, prevTop, tr.getBoundingClientRect().top]);
         }
       });
+      const movedRows = [];
+      for (let i = 0; i < lastTops.length; i++) {
+        const tr = lastTops[i][0];
+        const dy = lastTops[i][1] - lastTops[i][2];
+        if (Math.abs(dy) > 1) {
+          tr.style.transform = `translateY(${dy}px)`;
+          tr.style.transition = 'none';
+          movedRows.push(tr);
+        }
+      }
 
       if (movedRows.length > 0) {
         void tbody.offsetHeight;
@@ -3224,6 +3339,11 @@ function drawPriceChart(state) {
   const activeSeries = getActiveChartSeries(state);
   const rawCandles = activeSeries.candles;
   const activeTfUsed = activeSeries.tfUsed;
+  if (activeTfUsed !== activeChartTfUsed) {
+    lastNewestCandleTime = 0;
+    animCandles = [];
+    candleSlideOffset = 0;
+  }
   activeChartTfUsed = activeTfUsed;
   const readoutEl = document.getElementById('chartScrubReadout');
   if (readoutEl && !priceHoverPos) {
@@ -3240,6 +3360,7 @@ function drawPriceChart(state) {
 
   const canvas = document.getElementById('priceCanvas');
   const canvasW = (cachedCanvasSize && cachedCanvasSize.w) ? cachedCanvasSize.w : (canvas ? (canvas.clientWidth || 800) : 800);
+  const canvasH = (cachedCanvasSize && cachedCanvasSize.h) ? cachedCanvasSize.h : (canvas ? (canvas.clientHeight || 400) : 400);
   const padLeft = 12;
   const padRight = 98;
   const plotW = Math.max(50, canvasW - padLeft - padRight);
@@ -3505,14 +3626,18 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
   ctx.font = '600 9.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
   ctx.fillStyle = '#94A3B8';
   const gridCount = plotH > 380 ? 6 : 4;
+  const gridYs = [];
+  ctx.beginPath();
   for (let g = 0; g <= gridCount; g++) {
     const gv = minP + ((maxP - minP) * (gridCount - g)) / gridCount;
     const gy = Math.round(toY(gv)) + 0.5;
-    ctx.beginPath();
+    gridYs.push([gy, gv]);
     ctx.moveTo(padLeft, gy);
     ctx.lineTo(padLeft + plotW, gy);
-    ctx.stroke();
-    ctx.fillText('$' + gv.toFixed(0), padLeft + plotW + 8, gy + 3);
+  }
+  ctx.stroke();
+  for (let g = 0; g < gridYs.length; g++) {
+    ctx.fillText('$' + gridYs[g][1].toFixed(0), padLeft + plotW + 8, gridYs[g][0] + 3);
   }
 
   // Right Price Axis Divider Hairline
@@ -3534,7 +3659,7 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
 
   // 2. Candlesticks or Smooth Line Chart
   if (useCandles && visibleCandles.length > 0) {
-    if (visibleCandles.length >= 10) {
+    if (visibleCandles.length >= 10 || (activeChartTfUsed !== '1m' && visibleCandles.length >= 2)) {
       hasFirstChartDrawn = true;
       if (latestState && latestState.is_bootstrapped) {
         setSplashTarget(100);
@@ -3977,8 +4102,8 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
 
     const maxBadgeW = Math.max(60, padRight - 5);
     if (b.isSpot) {
-      ctx.font = '600 10px "SF Mono", "JetBrains Mono", Consolas, monospace';
-      const txtW = ctx.measureText(b.label).width;
+      const spotFont = '600 10px "SF Mono", "JetBrains Mono", Consolas, monospace';
+      const txtW = measureCanvasTextWidth(ctx, spotFont, b.label);
       const rw = Math.min(maxBadgeW, Math.max(84, txtW + 16));
 
       ctx.fillStyle = '#0284C7';
@@ -3990,12 +4115,12 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
       ctx.fillStyle = '#FFFFFF';
       ctx.fillText(b.label, rx + (rw - txtW) / 2, by + 3.5);
     } else {
-      ctx.font = '600 8.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
+      const tagMeasureFont = '600 8.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
       const tagText = b.subTag ? `${b.stratTag}·${b.subTag}` : b.stratTag;
-      const tagW = ctx.measureText(tagText).width;
+      const tagW = measureCanvasTextWidth(ctx, tagMeasureFont, tagText);
 
-      ctx.font = '500 8.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
-      const valW = ctx.measureText(b.label).width;
+      const valFont = '500 8.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
+      const valW = measureCanvasTextWidth(ctx, valFont, b.label);
       const rw = Math.min(maxBadgeW, Math.max(84, tagW + valW + 20));
 
       // Raised Pill Badge
@@ -4011,20 +4136,25 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
       ctx.arc(rx + 6.5, by, 2.5, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(rx + 10, by - 7.5, rw - 12, 15);
-      ctx.clip();
+      const needsClip = (12 + tagW + 4 + valW) > (rw - 2);
+      if (needsClip) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(rx + 10, by - 7.5, rw - 12, 15);
+        ctx.clip();
+      }
 
       ctx.font = '600 8px "SF Mono", "JetBrains Mono", Consolas, monospace';
       ctx.fillStyle = b.stratColor;
       ctx.fillText(tagText, rx + 12, by + 3);
 
-      ctx.font = '500 8.5px "SF Mono", "JetBrains Mono", Consolas, monospace';
+      ctx.font = valFont;
       ctx.fillStyle = b.color;
       ctx.fillText(b.label, rx + 12 + tagW + 4, by + 3);
 
-      ctx.restore();
+      if (needsClip) {
+        ctx.restore();
+      }
     }
     ctx.restore();
   });
@@ -4034,10 +4164,11 @@ function renderPriceCanvas(state, visibleCandles, spot, minP, maxP) {
     const maxPillX = padLeft + plotW - 12;
     if (offscreenTop.length > 0) {
       ctx.save();
-      ctx.font = '500 9px "SF Mono", "JetBrains Mono", Consolas, monospace';
+      const offFont = '500 9px "SF Mono", "JetBrains Mono", Consolas, monospace';
+      ctx.font = offFont;
       let tx = padLeft + 6;
       for (const item of offscreenTop.slice(0, 4)) {
-        const tw = ctx.measureText(item.label).width + 12;
+        const tw = measureCanvasTextWidth(ctx, offFont, item.label) + 12;
         if (tx + tw > maxPillX) break;
         ctx.fillStyle = 'rgba(6, 18, 42, 0.85)';
         fillRoundRect(ctx, tx, padTop + 2, tw, 16, 5);
@@ -4913,10 +5044,10 @@ function updateUiClockDisplay() {
 
   function reorderIntelEventCards(listContainer, sorted) {
     if (!listContainer || !Array.isArray(sorted)) return;
-    const reduceMotion = typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reduceMotion = isReducedMotionPreferred();
     const firstRects = new Map();
     if (!reduceMotion && listContainer.children.length > 0) {
+      const resetCards = [];
       sorted.forEach(function (evt) {
         const key = intelEventKey(evt);
         const card = intelEventNodes[key];
@@ -4924,21 +5055,30 @@ function updateUiClockDisplay() {
         card.classList.remove('intel-card-reordering');
         card.style.transform = '';
         card.style.zIndex = '';
-        firstRects.set(key, card.getBoundingClientRect());
+        resetCards.push([key, card]);
       });
+      for (let i = 0; i < resetCards.length; i++) {
+        firstRects.set(resetCards[i][0], resetCards[i][1].getBoundingClientRect());
+      }
     }
     sorted.forEach(function (evt) {
       const card = intelEventNodes[intelEventKey(evt)];
       if (card) listContainer.appendChild(card);
     });
     if (reduceMotion || firstRects.size === 0) return;
-    const moved = [];
+    const lastMeasurements = [];
     sorted.forEach(function (evt) {
       const key = intelEventKey(evt);
       const card = intelEventNodes[key];
       const first = firstRects.get(key);
       if (!card || !first) return;
-      const last = card.getBoundingClientRect();
+      lastMeasurements.push([card, first, card.getBoundingClientRect()]);
+    });
+    const moved = [];
+    for (let i = 0; i < lastMeasurements.length; i++) {
+      const card = lastMeasurements[i][0];
+      const first = lastMeasurements[i][1];
+      const last = lastMeasurements[i][2];
       const dx = first.left - last.left;
       const dy = first.top - last.top;
       if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
@@ -4946,7 +5086,7 @@ function updateUiClockDisplay() {
         card.style.zIndex = dy < 0 ? '2' : '1';
         moved.push(card);
       }
-    });
+    }
     if (moved.length === 0) return;
     void listContainer.offsetHeight;
     const flipToken = performance.now();
@@ -5067,15 +5207,21 @@ function updateUiClockDisplay() {
     if (!window.pywebview || !window.pywebview.api || typeof window.pywebview.api.get_event_article_progress !== 'function') {
       return;
     }
+    let inFlight = false;
     const tick = function () {
       if (!intelArticlePending[eventId]) {
         stopIntelArticleProgressPoll(eventId);
         return;
       }
+      if (inFlight || document.hidden || currentMainView !== 'intel' || !intelExpandedIds.has(eventId)) {
+        return;
+      }
+      inFlight = true;
       window.pywebview.api.get_event_article_progress(eventId).then(function (prog) {
+        inFlight = false;
         if (!intelArticlePending[eventId] || !prog || prog.ok !== true) return;
         updateIntelArticleLoadingUi(eventId, prog.progress, prog.stage);
-      }).catch(function () {});
+      }).catch(function () { inFlight = false; });
     };
     tick();
     intelArticleProgressTimers[eventId] = setInterval(tick, 400);
@@ -5164,6 +5310,14 @@ function updateUiClockDisplay() {
         if (result.state === 'ready' || !isPreload || intelExpandedIds.has(eventId)) {
           intelArticleCache[eventId] = result;
           renderIntelArticle(eventId, result);
+        } else {
+          const bEl = intelArticleBodyEl(eventId);
+          if (bEl) {
+            bEl.classList.remove('is-loading');
+            bEl.innerHTML = '';
+            bEl._renderedResult = null;
+            bEl._articlePct = 0;
+          }
         }
       }
     }).catch(function (err) {
@@ -5174,6 +5328,14 @@ function updateUiClockDisplay() {
         if (!isPreload || intelExpandedIds.has(eventId)) {
           intelArticleCache[eventId] = result;
           renderIntelArticle(eventId, result);
+        } else {
+          const bEl = intelArticleBodyEl(eventId);
+          if (bEl) {
+            bEl.classList.remove('is-loading');
+            bEl.innerHTML = '';
+            bEl._renderedResult = null;
+            bEl._articlePct = 0;
+          }
         }
       }
     });
@@ -5732,10 +5894,16 @@ function updateUiClockDisplay() {
         ];
         for (let i = 0; i < events.length; i++) {
           const ev = events[i];
-          const acts = ev.strategy_actions ? Object.values(ev.strategy_actions).join(',') : '';
+          const actVals = ev.strategy_actions
+            ? (Array.isArray(ev.strategy_actions) ? ev.strategy_actions : Object.values(ev.strategy_actions))
+            : [];
+          const acts = actVals.map((a) => (a && typeof a === 'object')
+            ? `${a.strat_id || ''}:${a.name || ''}:${a.action || ''}:${a.badge_cls || ''}:${a.time || ''}`
+            : String(a || '')).join(',');
           const tks = Array.isArray(ev.tickers) ? ev.tickers.join(',') : '';
-          const sumLen = ev.summary ? String(ev.summary).length : 0;
-          sigParts.push(`${intelEventKey(ev)}:${ev.urgency || 0}:${ev.sentiment || ''}:${ev.headline || ''}:${sumLen}:${tks}:${acts}:${ev.article_state || ''}:${ev.article_progress || 0}`);
+          const sumStr = ev.summary ? String(ev.summary) : '';
+          const sumSig = `${sumStr.length}:${sumStr.slice(0, 24)}:${sumStr.slice(-16)}`;
+          sigParts.push(`${intelEventKey(ev)}:${ev.urgency || 0}:${ev.sentiment || ''}:${ev.headline || ''}:${sumSig}:${tks}:${acts}:${ev.article_state || ''}:${ev.article_progress || 0}:${ev.article_stage || ''}`);
         }
         const nextListSig = sigParts.join('|');
         if (!intelSortTransitionPending && listContainer._intelListSig === nextListSig) {
@@ -5773,6 +5941,13 @@ function updateUiClockDisplay() {
               intelExpandedIds.delete(key);
             }
           });
+          if (intelArticlePreloadQueue.length > 0) {
+            for (let qi = intelArticlePreloadQueue.length - 1; qi >= 0; qi--) {
+              if (!seenKeys.has(intelArticlePreloadQueue[qi])) {
+                intelArticlePreloadQueue.splice(qi, 1);
+              }
+            }
+          }
           const emptyFilterEl = listContainer.querySelector('.intel-empty-filter');
           if (emptyFilterEl && emptyFilterEl.parentNode) {
             emptyFilterEl.parentNode.removeChild(emptyFilterEl);
@@ -5844,6 +6019,18 @@ function updateUiClockDisplay() {
     if (typeof initResetSlideConfirm === 'function') initResetSlideConfirm();
     if (typeof initCommandPalette === 'function') initCommandPalette();
     if (typeof initAmbientBackdrop === 'function') initAmbientBackdrop();
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const target = e.target;
+      if (!target || typeof target.closest !== 'function') return;
+      if (target.tagName === 'BUTTON' || target.tagName === 'A' || target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA') return;
+      const roleBtn = target.closest('[role="button"][tabindex="0"]');
+      if (roleBtn && roleBtn === target) {
+        e.preventDefault();
+        roleBtn.click();
+      }
+    });
 
     setTimeout(pollBackend, 120);
     window.pollIntervalTimer = setInterval(pollBackend, 1000);
@@ -6028,11 +6215,11 @@ function updateUiClockDisplay() {
               : '<span class="setup-status-pill neutral">Not added</span>';
           }
           const modelSel = document.getElementById('setupGeminiModelSelect');
-          if (modelSel && res.gemini_model) {
+          if (modelSel && res.gemini_model && !wizardPrefsDirty) {
             modelSel.value = res.gemini_model;
           }
           const preloadEl = document.getElementById('setupPreloadToggle');
-          if (typeof res.preload_intel_articles === 'boolean') {
+          if (typeof res.preload_intel_articles === 'boolean' && !wizardPrefsDirty) {
             intelArticlePreloadEnabled = res.preload_intel_articles;
             if (preloadEl) preloadEl.checked = res.preload_intel_articles;
           }
@@ -6405,6 +6592,10 @@ function updateUiClockDisplay() {
         closeShutdownModal();
         return;
       }
+      const offlineOverlay = document.getElementById('networkOfflineOverlay');
+      if (offlineOverlay && offlineOverlay.classList.contains('modal-visible')) {
+        return;
+      }
       const wizardCloseModal = document.getElementById('wizardCloseConfirmModal');
       if (wizardCloseModal && wizardCloseModal.classList.contains('modal-visible')) {
         closeWizardCloseConfirm();
@@ -6448,6 +6639,11 @@ function updateUiClockDisplay() {
   }
 
   function closeResetModal() {
+    const slideTrack = document.getElementById('resetSlideTrack');
+    if (slideTrack && slideTrack._commitTimer) {
+      clearTimeout(slideTrack._commitTimer);
+      slideTrack._commitTimer = null;
+    }
     const modal = document.getElementById('resetConfirmModal');
     if (modal) {
       modal.classList.remove('modal-visible');
@@ -6546,8 +6742,10 @@ function updateUiClockDisplay() {
         });
       }, { passive: true });
       if (ro) ro.observe(el);
-      updateScrollAreaFades(el);
     });
+    if (els.length > 0) {
+      refreshScrollAreaFades();
+    }
   }
 
   function resetSlideConfirmState() {
@@ -6943,7 +7141,7 @@ function updateUiClockDisplay() {
     } catch (_) {
       gl = null;
     }
-    if (!gl) return null;
+    if (!gl || (typeof gl.isContextLost === 'function' && gl.isContextLost())) return null;
 
     const cfg = {
       bg: [4 / 255, 6 / 255, 10 / 255],
@@ -7182,7 +7380,14 @@ void main() {
       if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
       if (typeof applyBackdropMode === 'function') applyBackdropMode('grainient');
     };
+    const onContextRestored = () => {
+      ambientShaderHandle = null;
+      if (backdropMode === 'shader' && typeof applyBackdropMode === 'function') {
+        applyBackdropMode('shader');
+      }
+    };
     canvas.addEventListener('webglcontextlost', onContextLost, false);
+    canvas.addEventListener('webglcontextrestored', onContextRestored, false);
 
     const drawFrame = () => {
       if (destroyed || !program) return;
@@ -7250,9 +7455,21 @@ void main() {
         if (ro) { ro.disconnect(); ro = null; }
         if (onWinResize) { window.removeEventListener('resize', onWinResize); onWinResize = null; }
         canvas.removeEventListener('webglcontextlost', onContextLost, false);
-        shaders.forEach((s) => gl.deleteShader(s));
-        if (buffer) gl.deleteBuffer(buffer);
-        if (program) gl.deleteProgram(program);
+        canvas.removeEventListener('webglcontextrestored', onContextRestored, false);
+        if (!gl.isContextLost || !gl.isContextLost()) {
+          gl.useProgram(null);
+          gl.bindBuffer(gl.ARRAY_BUFFER, null);
+          shaders.forEach((s) => {
+            if (program) {
+              try { gl.detachShader(program, s); } catch (_) { }
+            }
+            gl.deleteShader(s);
+          });
+          if (buffer) gl.deleteBuffer(buffer);
+          if (program) gl.deleteProgram(program);
+        }
+        canvas.width = 0;
+        canvas.height = 0;
       },
     };
   }
@@ -7328,6 +7545,8 @@ void main() {
     const wasEnabled = intelArticlePreloadEnabled;
     intelArticlePreloadEnabled = preloadArticles;
     wizardPrefsDirty = true;
+    const mySeq = ++aiPrefsSeq;
+    const myOpenGen = wizardOpenGen;
     if (!preloadArticles && Array.isArray(intelArticlePreloadQueue)) {
       intelArticlePreloadQueue.length = 0;
     } else if (preloadArticles && !wasEnabled && typeof preloadIntelArticles === 'function') {
@@ -7336,9 +7555,10 @@ void main() {
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.update_ai_preferences === 'function') {
       try {
         const res = await window.pywebview.api.update_ai_preferences(model, preloadArticles);
+        if (mySeq !== aiPrefsSeq || myOpenGen !== wizardOpenGen) return;
         if (res && (res.ok || res.status === 'ok')) {
           wizardPrefsDirty = false;
-          setWizardBanner('');
+          if (!isSavingSetup) setWizardBanner('');
           if (modelSel && res.gemini_model) {
             modelSel.value = res.gemini_model;
           }
@@ -7349,12 +7569,13 @@ void main() {
               preloadIntelArticles(Object.keys(intelEventNodes));
             }
           }
-        } else {
+        } else if (!isSavingSetup) {
           setWizardBanner((res && res.error) || 'Failed to save AI preferences', 'error');
         }
       } catch (err) {
+        if (mySeq !== aiPrefsSeq || myOpenGen !== wizardOpenGen) return;
         console.debug('update_ai_preferences failed:', err);
-        setWizardBanner('Failed to update AI preferences', 'error');
+        if (!isSavingSetup) setWizardBanner('Failed to update AI preferences', 'error');
       }
     }
   }
@@ -7563,7 +7784,7 @@ void main() {
     if (v === 'comp_cons' || v === 'cons' || v === 'conservative') return 'comp_cons';
     if (v === 'comp_trail' || v === 'trail' || v === 'trailing') return 'comp_trail';
     if (v === 'comp_orb' || v === 'orb') return 'comp_orb';
-    if (v === 'comp_vwap' || v === 'vwap' || v === 'institutional' || v === 'session mean' || v === 'mean') return 'comp_vwap';
+    if (v === 'comp_vwap' || v === 'vwap' || v === 'institutional' || v === 'session mean' || v === 'session' || v === 'mean') return 'comp_vwap';
     return v.replace(/^comp_/, '');
   }
 

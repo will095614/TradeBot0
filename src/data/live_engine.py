@@ -854,6 +854,8 @@ class LiveArenaEngine(
                             if cur is None or (raw.timestamp >= cur.timestamp and cur.timestamp <= fetch_started + 0.05):
                                 self._raw_quote_cache = raw
                                 self._slice_ticks.append(raw)
+                                if len(self._slice_ticks) > 1200:
+                                    del self._slice_ticks[:-1200]
             except Exception as e:
                 logger.debug("Background quote fetcher error: %s", e)
             self._stop_event.wait(1.0)
@@ -907,9 +909,22 @@ class LiveArenaEngine(
                 intel_t = self._intel_thread
             if intel_t and intel_t.is_alive():
                 intel_t.join(timeout=bg_join)
+            intel_still_alive = bool(intel_t and intel_t.is_alive())
             with self._intel_refresh_lock:
                 if self._intel_thread and not self._intel_thread.is_alive():
                     self._intel_thread = None
+            if not intel_still_alive:
+                harvester = getattr(self.macro_commander, "harvester", None)
+                if harvester is not None and hasattr(harvester, "close"):
+                    try:
+                        harvester.close()
+                    except Exception as e:
+                        logger.debug("Harvester session close failed during stop: %s", e)
+            if hasattr(self.llm_client, "close_sync"):
+                try:
+                    self.llm_client.close_sync()
+                except Exception as e:
+                    logger.debug("GeminiClient sync close failed during stop: %s", e)
             if self._mtf_seed_thread and self._mtf_seed_thread.is_alive():
                 self._mtf_seed_thread.join(timeout=bg_join)
             if self._mtf_seed_thread and not self._mtf_seed_thread.is_alive():
@@ -992,6 +1007,8 @@ class LiveArenaEngine(
                                         else raw.price
                                     )
 
+                                    eff_bid = raw.bid if raw.bid > Decimal("0") else raw.price
+                                    eff_ask = raw.ask if raw.ask > Decimal("0") else raw.price
                                     if ticks:
                                         open_p = ticks[0].price
                                         high_p = max(t.price for t in ticks)
@@ -1000,8 +1017,8 @@ class LiveArenaEngine(
                                         real_quote_ts = float(ticks[-1].timestamp)
                                     else:
                                         open_p = prev_p
-                                        high_p = max(raw.price, raw.ask)
-                                        low_p = min(raw.price, raw.bid)
+                                        high_p = max(raw.price, eff_ask)
+                                        low_p = min(raw.price, eff_bid)
                                         close_p = raw.price
                                         real_quote_ts = float(raw.timestamp)
 
@@ -1069,8 +1086,8 @@ class LiveArenaEngine(
                                             # never phantom-stop newly entered positions on the same tick.
                                             pre_fills = self.broker.on_tick(
                                                 price=cadenced_quote.price,
-                                                high=max(high_p, cadenced_quote.price, cadenced_quote.ask),
-                                                low=min(low_p, cadenced_quote.price, cadenced_quote.bid),
+                                                high=max(high_p, cadenced_quote.price, eff_ask),
+                                                low=min(low_p, cadenced_quote.price, eff_bid),
                                                 timestamp=float(current_slot),
                                                 open_price=prev_p,
                                             )
@@ -1087,8 +1104,8 @@ class LiveArenaEngine(
                                         else:
                                             fills = self.broker.on_tick(
                                                 price=cadenced_quote.price,
-                                                high=max(high_p, cadenced_quote.price, cadenced_quote.ask),
-                                                low=min(low_p, cadenced_quote.price, cadenced_quote.bid),
+                                                high=max(high_p, cadenced_quote.price, eff_ask),
+                                                low=min(low_p, cadenced_quote.price, eff_bid),
                                                 timestamp=float(current_slot),
                                                 open_price=prev_p,
                                             )

@@ -822,12 +822,12 @@ class IntelligenceHarvester:
         self.recent_structured_events: deque[StructuredEvent] = deque(maxlen=200)
         self.is_running: bool = False
         self._harvest_task: Optional[asyncio.Task] = None
-        self._interrupt_tasks: Set[asyncio.Task] = set()
-        self._http_session: Any = None
+        self._http_local = threading.local()
+        self._http_sessions: List[Any] = []
         self._http_session_lock = threading.Lock()
         self._orig_requests_get: Any = None
 
-    def _get_pooled_session(self) -> Tuple[Any, Any]:
+    def _get_thread_session(self) -> Tuple[Any, Any]:
         import requests
         from requests.adapters import HTTPAdapter
 
@@ -835,19 +835,28 @@ class IntelligenceHarvester:
             if self._orig_requests_get is None:
                 import requests.api as _req_api
                 self._orig_requests_get = _req_api.get
-            if self._http_session is None:
-                sess = requests.Session()
-                adapter = HTTPAdapter(pool_connections=16, pool_maxsize=16)
-                sess.mount("https://", adapter)
-                sess.mount("http://", adapter)
-                self._http_session = sess
-            return self._http_session, self._orig_requests_get
+            orig_get = self._orig_requests_get
+        sess = getattr(self._http_local, "session", None)
+        if sess is None:
+            sess = requests.Session()
+            adapter = HTTPAdapter(pool_connections=8, pool_maxsize=8)
+            sess.mount("https://", adapter)
+            sess.mount("http://", adapter)
+            with self._http_session_lock:
+                self._http_local.session = sess
+                self._http_sessions.append(sess)
+        return sess, orig_get
+
+    def _get_pooled_session(self) -> Tuple[Any, Any]:
+        return self._get_thread_session()
 
     def close(self) -> None:
-        """Closes pooled HTTP feed session if open."""
+        """Closes all thread-local HTTP feed sessions if open."""
         with self._http_session_lock:
-            sess, self._http_session = self._http_session, None
-        if sess is not None:
+            sessions = list(self._http_sessions)
+            self._http_sessions.clear()
+            self._http_local = threading.local()
+        for sess in sessions:
             try:
                 sess.close()
             except Exception:
@@ -880,15 +889,19 @@ class IntelligenceHarvester:
         session: Any = None,
         orig_requests_get: Any = None,
         stop_event: Optional[threading.Event] = None,
+        session_provider: Any = None,
     ) -> List[RawEvent]:
-        """Fetch + parse ONE registry entry (worker side, no shared state).
+        """Fetch + parse ONE registry entry (worker side, thread-local session).
 
-        Reuses a pooled requests.Session when requests.get is unpatched and enforces
+        Reuses a thread-local requests.Session when requests.get is unpatched and enforces
         a 2 MiB body cap plus cooperative stop_event cancellation.
         """
         if stop_event is not None and stop_event.is_set():
             return []
         import requests
+
+        if session is None and callable(session_provider):
+            session, orig_requests_get = session_provider()
 
         etype = str(entry.get("type", ""))
         ua = SEC_EDGAR_USER_AGENT if entry.get("id") == "sec_edgar_8k" else USER_AGENT
@@ -979,7 +992,6 @@ class IntelligenceHarvester:
         fetch_now = time.time()
         max_age_sec = float(max_age_hours) * 3600.0 if (max_age_hours is not None and max_age_hours > 0) else None
         workers = min(10, len(fetchable))
-        sess, orig_get = self._get_pooled_session()
         per_entry: List[List[RawEvent]] = []
         pool = ThreadPoolExecutor(max_workers=workers)
         aborted = False
@@ -992,9 +1004,8 @@ class IntelligenceHarvester:
                     timeout_sec,
                     max_age_hours=max_age_hours,
                     fetch_now=fetch_now,
-                    session=sess,
-                    orig_requests_get=orig_get,
                     stop_event=stop_event,
+                    session_provider=self._get_thread_session,
                 )
                 for entry in fetchable
             ]

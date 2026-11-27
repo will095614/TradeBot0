@@ -95,6 +95,14 @@ class Leaderboard:
     def calculate_sharpe_and_sortino(
         cls, portfolio: Portfolio, risk_free_rate: float = 0.0
     ) -> tuple[float, Optional[float]]:
+        if (
+            not isinstance(risk_free_rate, (int, float))
+            or isinstance(risk_free_rate, bool)
+            or not math.isfinite(float(risk_free_rate))
+        ):
+            risk_free_rate = 0.0
+        else:
+            risk_free_rate = float(risk_free_rate)
         history = portfolio.equity_history
         if len(history) < 3:
             return 0.0, 0.0

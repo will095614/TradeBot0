@@ -366,27 +366,46 @@ body[data-backdrop-mode="grainient"] .lg-ambient-grainient {
 }
 
 body[data-backdrop-mode="minimal"] .lg-ambient-shader,
-body[data-backdrop-mode="minimal"] .lg-ambient-grainient {
+body[data-backdrop-mode="minimal"] .lg-ambient-grainient,
+body[data-backdrop-mode="minimal"] .global-cursor-backdrop {
   opacity: 0;
   visibility: hidden;
 }
 
-/* Ambient Global Bottom-Layer Cursor Glow Halo (500% area, ~20% opacity, diffuse) */
+body[data-backdrop-mode="minimal"] .lg-glass {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgba(12, 16, 26, 0.94);
+}
+
+/* Ambient Global Bottom-Layer Cursor Glow Halo (GPU-composited translate3d, zero repaint) */
 .global-cursor-backdrop {
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 0;
   overflow: hidden;
+  opacity: 0.5;
+  transition: opacity 0.4s ease;
+}
+
+.global-cursor-backdrop::before {
+  content: '';
+  position: absolute;
+  top: -750px;
+  left: -750px;
+  width: 1500px;
+  height: 1500px;
   background: radial-gradient(
-    1500px circle at var(--gx, 50vw) var(--gy, 40vh),
+    750px circle at center,
     rgba(0, 242, 254, 0.019) 0%,
     rgba(16, 245, 160, 0.011) 28%,
     rgba(99, 102, 241, 0.006) 52%,
     transparent 72%
   );
-  opacity: 0.5;
-  transition: opacity 0.4s ease;
+  transform: translate3d(var(--gx, 50vw), var(--gy, 40vh), 0);
+  will-change: transform;
+  pointer-events: none;
 }
 
 /* ==========================================================================
@@ -1590,13 +1609,14 @@ body.arena-paused #pauseBtn:hover,
   left: 0;
   right: 0;
   bottom: 0;
-  height: calc(var(--lv, 0.5) * 100%);
-  min-height: 14%;
-  max-height: 96%;
+  height: 100%;
+  transform-origin: bottom center;
+  transform: scaleY(clamp(0.14, var(--lv, 0.5), 0.96));
   background: linear-gradient(180deg, var(--vessel-c1) 0%, var(--vessel-c2) 100%);
   box-shadow: 0 0 14px var(--vessel-c1);
   border-radius: 0 0 var(--r-pill) var(--r-pill);
-  transition: height 0.65s var(--lg-spring);
+  transition: transform 0.65s var(--lg-spring);
+  will-change: transform;
 }
 
 /* Curved liquid meniscus wave at top of fluid */
@@ -2300,11 +2320,8 @@ body.arena-paused #pauseBtn:hover,
   transition:
     transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 0.4s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 1.0s cubic-bezier(0.16, 1, 0.3, 1),
-    max-height 1.0s cubic-bezier(0.16, 1, 0.3, 1),
-    margin-bottom 1.0s cubic-bezier(0.16, 1, 0.3, 1),
-    filter 1.0s cubic-bezier(0.16, 1, 0.3, 1);
-  animation: toastSpringIn 1.25s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+    opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: toastSpringIn 0.55s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 .chart-toast:hover {
@@ -2317,13 +2334,7 @@ body.arena-paused #pauseBtn:hover,
 
 .chart-toast.toast-exit {
   animation: toastSpringOut 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
-  max-height: 0 !important;
-  margin-bottom: -8px !important;
-  padding-top: 0 !important;
-  padding-bottom: 0 !important;
   pointer-events: none !important;
-  transition: max-height 0.45s cubic-bezier(0.16, 1, 0.3, 1),
-              margin-bottom 0.45s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
 @keyframes toastSpringIn {
@@ -2715,6 +2726,9 @@ body.arena-paused #pauseBtn:hover,
   pointer-events: none;
   padding: 8px 11px;
   border-radius: var(--r-sm);
+  background: rgba(7, 13, 28, 0.94);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   font-size: 10.5px;
   color: #FFFFFF;
   z-index: 15;
@@ -4827,93 +4841,6 @@ body:not(.arena-ready) .lg-glass {
   border-color: rgba(251, 191, 36, 0.48);
 }
 
-/* Toast Notification Internals */
-.toast-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.toast-top-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.toast-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 7px;
-  border-radius: var(--r-pill);
-  font-size: 9.5px;
-  font-weight: 800;
-}
-
-.toast-pulse-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.toast-action-badge {
-  font-size: 9px;
-  font-weight: 700;
-  color: #E2E8F0;
-}
-
-.toast-meta-right {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin-left: auto;
-}
-
-.toast-clock {
-  font-size: 9px;
-  color: var(--ss-ink-3);
-  letter-spacing: 0.02em;
-}
-
-.toast-close {
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-  color: #94A3B8;
-  cursor: pointer;
-  outline: none;
-  transition: all 0.25s ease;
-  line-height: 1;
-  pointer-events: auto;
-  box-sizing: border-box;
-  flex-shrink: 0;
-}
-
-.toast-close:hover {
-  background: rgba(255, 255, 255, 0.20);
-  border-color: rgba(255, 255, 255, 0.35);
-  color: #FFFFFF;
-  transform: scale(1.1);
-}
-
-.toast-close svg {
-  display: block;
-  pointer-events: none;
-}
-
-.toast-main-row,
-.toast-bracket-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-}
-
 /* Intel Hub Dynamic Cards */
 .intel-card-header {
   display: flex;
@@ -6149,6 +6076,13 @@ body:not(.arena-ready) .lg-glass {
     box-shadow 0.3s var(--arc-ease-out) !important;
 }
 
+.toast-stack-item.toast-exit {
+  max-height: none !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
 .toast-stack-host:hover .toast-stack-item,
 .toast-stack-host:focus-within .toast-stack-item {
   translate: 0 var(--stack-expanded-y, 0px);
@@ -6306,7 +6240,6 @@ body:not(.arena-ready) .lg-glass {
     rgba(16, 245, 160, 0.55) 348deg,
     transparent 360deg
   );
-  will-change: transform;
 }
 
 .is-champion-beam > .border-beam-ring {
@@ -6315,6 +6248,7 @@ body:not(.arena-ready) .lg-glass {
 
 .is-champion-beam > .border-beam-ring::before {
   animation: borderBeamSpin 5.5s linear infinite;
+  will-change: transform;
 }
 
 /* Metal FX Cursor-Lit CTA Specular Rim (libraries.dev metal-fx) */
@@ -7439,7 +7373,16 @@ body.window-hidden .intel-article-progress-fill::after {
   .view-transition-entering,
   .view-transition-leaving,
   .text-morph-enter,
-  .directive-word {
+  .directive-word,
+  .chart-toast,
+  .toast-stack-item,
+  .lg-dropdown__menu,
+  .lg-dropdown__item,
+  .ss-modal-overlay,
+  .ss-modal,
+  .lg-tube-liquid,
+  .strat-card-reordering,
+  .intel-card-reordering {
     animation: none !important;
     transition: none !important;
   }

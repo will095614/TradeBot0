@@ -191,11 +191,14 @@ class LiveStrategyRunnerMixin:
         if fill:
             self.position_entry_ts[pid] = ts
             tp_str = f" | TP ${tp:,.2f}" if tp else ""
+            sl_str = f"SL ${sl:,.2f}" if sl is not None else "SL none"
+            raw_ev = getattr(mc_odds, "expected_r", None)
+            ev_str = f"{raw_ev:+.2f}R" if raw_ev is not None else "n/a"
             pos_label = "SHORT" if side == OrderSide.SELL else "LONG"
             event_type = "sell" if side == OrderSide.SELL else "buy"
             self.log_event(
                 event_label,
-                f"{competitor.base_name.split(' ')[0]} opened {pos_label} {fill.qty} {asset} @ ${fill.price:,.2f} (SL ${sl:,.2f}{tp_str} | EV {mc_odds.expected_r:+.2f}R)",
+                f"{competitor.base_name.split(' ')[0]} opened {pos_label} {fill.qty} {asset} @ ${fill.price:,.2f} ({sl_str}{tp_str} | EV {ev_str})",
                 event_type,
             )
             self.macro_commander.record_strategy_action(

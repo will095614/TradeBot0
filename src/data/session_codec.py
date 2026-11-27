@@ -391,7 +391,7 @@ class SessionCodecMixin:
                                 trailing_distance_pct=Decimal(str(gd.get("trailing_distance_pct", "0.006"))),
                                 cooldown_bars=int(gd.get("cooldown_bars", 0)),
                                 generation=int(gd.get("generation", 1)),
-                                leverage_enabled=bool(gd.get("leverage_enabled", False)),
+                                leverage_enabled=bool(gd.get("leverage_enabled", False)) and Decimal(str(gd.get("leverage", "1.0"))) > Decimal("1.0"),
                                 leverage=Decimal(str(gd.get("leverage", "1.0"))),
                                 news_sensitivity=float(gd.get("news_sensitivity", getattr(c, "NEWS_SENSITIVITY", 0.5))),
                             )
