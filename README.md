@@ -139,7 +139,7 @@ Development: [TradeBot0-For-Android](https://github.com/will095614/TradeBot0/tre
 
 ### Windows
 
-1. Download [TradeBot0Setup-V3.2.1.exe](https://github.com/will095614/TradeBot0/releases/download/v3.2.1/TradeBot0Setup-V3.2.1.exe) and run the installer.
+1. Download [TradeBot0Setup-V3.3.0.exe](https://github.com/will095614/TradeBot0/releases/download/v3.3.0/TradeBot0Setup-V3.3.0.exe) and run the installer.
 2. The installer is not commercially code-signed, so Windows SmartScreen may show a prompt. Click "More info" and choose "Run anyway" to continue.
 3. On first launch, a setup wizard appears: enter your Google Gemini API key, click test and launch, and you are ready to go.
 
